@@ -7,11 +7,12 @@ import (
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 func TestUpsertActiveUsesCredentialIdentity(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestUpsertActiveUsesCredentialIdentity(t *testing.T) {
 }
 
 func TestUpsertActiveUpgradesFallbackIdentityAndPreservesOwnershipOrigin(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestUpsertActiveUpgradesFallbackIdentityAndPreservesOwnershipOrigin(t *test
 }
 
 func TestUpsertActiveKeepsMetadataForWinningRecovery(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -168,12 +169,12 @@ func TestUpsertActiveKeepsMetadataForWinningRecovery(t *testing.T) {
 
 func TestUpsertActiveBeginsNewCycleAfterObservedEnable(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	st, err := store.Open(dbPath)
+	st, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	raw, err := sql.Open("sqlite", dbPath)
+	raw, err := testdb.Open(t, dbPath)
 	if err != nil {
 		t.Fatalf("open raw sqlite: %v", err)
 	}

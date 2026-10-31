@@ -1,6 +1,12 @@
 # 配置与数据目录
 
-CPAMP 的核心数据都在本地。部署时先搞清楚三件事：SQLite 放在哪里，`data.key` 怎么保存，管理员密钥从哪里来。
+CPAMP 默认使用 SQLite，也支持配置 MySQL 8.4。两种模式都需要保留本地数据目录中的 `data.key`、导入临时文件及归档文件。
+
+## MySQL
+
+设置 `USAGE_DB_DRIVER=mysql`，并通过 `USAGE_DB_DSN` 或 `USAGE_DB_DSN_FILE` 提供连接信息。JSON 配置字段为 `dbDriver`、`dbDsn` 和 `dbDsnFile`。启动时会在已有数据库中创建所需表结构。迁移已有数据前，请停止 Manager Server，并针对空 MySQL 数据库执行 `migrate-to-mysql --sqlite-path /path/to/usage.sqlite`。必须保留原 `data.key` 和归档目录。详见 [MySQL 完整说明](https://github.com/seakee/CPA-Manager-Plus/blob/main/docs/mysql.md)。
+
+以下文件说明对应默认的 SQLite 模式。
 
 ## 关键文件
 

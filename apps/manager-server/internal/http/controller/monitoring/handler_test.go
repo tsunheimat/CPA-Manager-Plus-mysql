@@ -15,6 +15,7 @@ import (
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
 
 func TestHandleAccountHistoryRejectsUnknownTargetFields(t *testing.T) {
@@ -222,7 +223,7 @@ func executeAuthorizedMonitoringRequest(t *testing.T, path, body string) *httpte
 
 func newHandlerTestStore(t testing.TB) *store.Store {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

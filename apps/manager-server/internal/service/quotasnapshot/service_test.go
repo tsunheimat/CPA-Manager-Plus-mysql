@@ -15,7 +15,8 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/codexquota"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	quotasnapshotrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -28,7 +29,7 @@ func newQuotaSnapshotTestService(t *testing.T, nowMS int64) *Service {
 func newQuotaSnapshotTestServiceWithPath(t *testing.T, nowMS int64) (*Service, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
-	st, err := store.Open(path)
+	st, err := testutil.OpenStore(t, path)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestCodexQuotaSnapshotsStayMemberScopedAndIgnoreLegacyWorkspaceKey(t *testi
 		}
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open quota database: %v", err)
 	}
@@ -348,7 +349,7 @@ func TestQueryBridgesLegacyCodexPreviousCycleOnlyForConsistentPersonalPlan(t *te
 				}
 			}
 
-			db, err := sql.Open("sqlite", path)
+			db, err := testdb.Open(t, path)
 			if err != nil {
 				t.Fatalf("open quota bridge database: %v", err)
 			}
@@ -1304,7 +1305,7 @@ func TestWriteKeepsCanonicalFieldOnlyObservationChangesIdempotent(t *testing.T) 
 	write(1)
 	write(2)
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open hash test database: %v", err)
 	}
@@ -1678,7 +1679,7 @@ func TestWriteUsageEventAndFrontendHeaderObservationUseSameDerivedCycle(t *testi
 		t.Fatalf("dual header ingestion changed the derived cycle = %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open dual-ingestion database: %v", err)
 	}
@@ -1728,7 +1729,7 @@ func TestWritePersistsCanonicalDerivedHeaderBoundaryAcrossIndependentWrites(t *t
 		}
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open quota database: %v", err)
 	}
@@ -1786,7 +1787,7 @@ func TestWriteKeepsBatchLocalBoundaryOrderForSameTimestamp(t *testing.T) {
 		t.Fatalf("write same-timestamp header batch: %v", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open quota database: %v", err)
 	}
@@ -2401,7 +2402,7 @@ func TestWriteCodexInspectionResultKeepsFailedPartialInventoryActive(t *testing.
 		t.Fatalf("failed partial inspections changed lifecycle availability = %#v", windows)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open failed-inspection test database: %v", err)
 	}
@@ -2514,7 +2515,7 @@ func TestQuotaLifecycleOrdersBatchAndKeepsReplayedObservationHistorical(t *testi
 		t.Fatalf("replayed quota observation changed current lifecycle = %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open quota lifecycle test database: %v", err)
 	}
@@ -2565,7 +2566,7 @@ func TestQuotaLifecycleKeepsNewerCompleteStateWhenOlderHeaderUsesImplicitObserva
 		t.Fatalf("older implicit header observation changed lifecycle = %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open implicit-header test database: %v", err)
 	}
@@ -2955,7 +2956,7 @@ func TestQuotaLifecyclePartialCrossScopeDoesNotMoveInventoryOwnershipOrTime(t *t
 		t.Fatalf("cross-scope partial changed current lifecycle = %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open cross-scope test database: %v", err)
 	}
@@ -3014,7 +3015,7 @@ func TestQuotaLifecycleCrossScopePartialCannotReactivateInactiveWindow(t *testin
 		t.Fatalf("cross-scope partial reactivated inactive lifecycle = %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open inactive cross-scope database: %v", err)
 	}
@@ -3154,7 +3155,7 @@ func TestQuotaLifecycleClosesFixedCycleWhenProviderChangesWindowMode(t *testing.
 		t.Fatalf("rolling mode lifecycle = %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open mode-change test database: %v", err)
 	}
@@ -3246,7 +3247,7 @@ func TestQuotaLifecycleRestoresClosedProviderCycleWithoutDuplicateInsert(t *test
 		t.Fatalf("restored provider cycle = %#v", restored)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open restored-cycle database: %v", err)
 	}
@@ -3298,7 +3299,7 @@ func TestQuotaLifecycleExactEvidenceReplacesDerivedCycleBoundary(t *testing.T) {
 		t.Fatalf("precision upgrade created previous cycle = %#v", window.PreviousCycle)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open precision-upgrade database: %v", err)
 	}
@@ -3338,7 +3339,7 @@ func TestQuotaLifecycleDoesNotReexposeCollapsedFragmentAsPrevious(t *testing.T) 
 	initial := quotaLifecycleFixedWindow("weekly", "weekly", quotaLifecycleBaseMS, durationSeconds, 70)
 	writeQuotaLifecycleObservation(t, service, "complete", quotaLifecycleBaseMS+quotaLifecycleHourMS, []WindowInput{initial})
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open collapsed-fragment database: %v", err)
 	}
@@ -3685,7 +3686,7 @@ func TestQuotaLifecycleNormalizesStoredEarlyResetBoundaryToFirstConfirmedObserva
 	reset := quotaLifecycleFixedWindow("weekly", "weekly", providerStartMS, durationSeconds, 1)
 	writeQuotaLifecycleObservation(t, service, "complete", firstRequestAtMS, []WindowInput{reset})
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open lifecycle database: %v", err)
 	}
@@ -3719,7 +3720,7 @@ func TestQuotaLifecycleDoesNotCollapseEarlyResetFragmentAcrossObservationGap(t *
 	reset := quotaLifecycleFixedWindow("weekly", "weekly", providerStartMS, durationSeconds, 1)
 	writeQuotaLifecycleObservation(t, service, "complete", firstRequestAtMS, []WindowInput{reset})
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open lifecycle database: %v", err)
 	}
@@ -3995,7 +3996,7 @@ func TestQuotaLifecycleActivatesCodexCycleFromConfirmedCallAfterProvisionalAPI(t
 		t.Fatalf("confirmed Codex lifecycle = %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open lifecycle database: %v", err)
 	}
@@ -4054,7 +4055,7 @@ func TestQuotaLifecycleNormalizesStoredProvisionalDriftChainWithoutDeletingRows(
 	oldCycle := quotaLifecycleFixedWindow("weekly", "weekly", oldStartMS, durationSeconds, 65)
 	writeQuotaLifecycleObservation(t, service, "complete", at(10, 8, 30), []WindowInput{oldCycle})
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open legacy lifecycle database: %v", err)
 	}
@@ -4210,7 +4211,7 @@ func TestQueryPrefersNewerLegacySnapshotDuringPartialLifecycleMigration(t *testi
 	older := quotaLifecycleFixedWindow("weekly", "weekly", quotaLifecycleBaseMS, 7*24*60*60, 20)
 	writeQuotaLifecycleObservation(t, service, "partial", olderObservedAtMS, []WindowInput{older})
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open partial migration database: %v", err)
 	}
@@ -4254,7 +4255,7 @@ func TestQueryKeepsNewerLifecycleSnapshotAheadOfOlderLegacyEvidence(t *testing.T
 	current.BoundaryAccuracy = "estimated"
 	writeQuotaLifecycleObservation(t, service, "partial", newerObservedAtMS, []WindowInput{current})
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open partial migration database: %v", err)
 	}
@@ -4541,7 +4542,7 @@ func TestQuotaLifecycleDoesNotUseProvisionalZeroAPINegativeJitterForScheduledRol
 		t.Fatalf("provisional negative-jitter API boundary changed lifecycle = %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open provisional lifecycle database: %v", err)
 	}
@@ -4705,7 +4706,7 @@ func TestQuotaLifecycleRefreshesExpiredBoundaryFromFreshOverlappingObservation(t
 				t.Fatalf("refreshed window must not be stale: %#v", window)
 			}
 
-			db, err := sql.Open("sqlite", path)
+			db, err := testdb.Open(t, path)
 			if err != nil {
 				t.Fatalf("open expired-refresh database: %v", err)
 			}
@@ -4770,7 +4771,7 @@ func TestQuotaLifecycleRefreshesExpiredCalendarBoundaryFromFreshOverlappingObser
 		t.Fatalf("refreshed calendar window must not be stale: %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open calendar-refresh database: %v", err)
 	}
@@ -4859,7 +4860,7 @@ func TestQuotaLifecycleDoesNotReplaceFreshCurrentBoundaryWithLaterExpiredExactEv
 		t.Fatalf("window boundary did not keep the fresh current cycle: %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open expired-evidence database: %v", err)
 	}
@@ -4924,7 +4925,7 @@ func TestQuotaLifecycleExpiredBoundaryRefreshPreservesConfirmedResetTransition(t
 		t.Fatalf("window boundary = %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open reset-transition database: %v", err)
 	}
@@ -5013,7 +5014,7 @@ func TestQuotaLifecycleAccuracyUpgradeAfterExpiredRefreshPreservesConfirmedReset
 		t.Fatalf("previous cycle no longer meets the confirmed transition: %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open accuracy-upgrade database: %v", err)
 	}
@@ -5089,7 +5090,7 @@ func TestQuotaLifecycleExpiredBoundaryEvidenceCannotCreateStaleResetCycle(t *tes
 		t.Fatalf("current cycle is stale after canonicalized reset: %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open stale-reset database: %v", err)
 	}
@@ -5160,7 +5161,7 @@ func TestQuotaLifecycleUnreliableExpiredBoundaryCannotGainResetAuthority(t *test
 		t.Fatalf("current cycle became stale after unreliable evidence: %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open unreliable-evidence database: %v", err)
 	}
@@ -5235,7 +5236,7 @@ func TestQuotaLifecycleStaleBoundaryAfterActiveExpiryCannotResetLifecycle(t *tes
 		t.Fatalf("expired preserved boundary must report stale rather than roll back: %#v", window)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open post-expiry database: %v", err)
 	}
@@ -5323,7 +5324,7 @@ func TestQuotaLifecycleAllowsHigherAccuracyCorrectionWithinBoundaryJitter(t *tes
 		t.Fatalf("jitter upgrade boundary = %#v", window.CurrentCycle)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open jitter-upgrade database: %v", err)
 	}
@@ -5410,7 +5411,7 @@ func TestQuotaLifecycleReclassifiesLegacyCodexSparkAllScope(t *testing.T) {
 		t.Fatalf("legacy Spark all-scope window was not retained as inactive: %#v", all.Items[0].Windows)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open reclassification database: %v", err)
 	}
@@ -5552,7 +5553,7 @@ func TestQuerySuppressesUnmigratedLegacyCodexSparkAllScope(t *testing.T) {
 	scoped.ModelIDs = []string{codexquota.SparkModelID}
 	writeQuotaLifecycleObservation(t, service, "partial", 20_000, []WindowInput{scoped})
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open unmigrated quota database: %v", err)
 	}
@@ -5643,7 +5644,7 @@ func TestQuotaLifecycleMigratesLegacyCodexMainAllScopeInPlace(t *testing.T) {
 		t.Fatalf("main migration created duplicate logical windows: %#v", all)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open main migration database: %v", err)
 	}
@@ -5752,7 +5753,7 @@ func writeQuotaLifecycleObservation(t *testing.T, service *Service, inventoryMod
 
 func rewriteQuotaLifecycleProviderWindowID(t *testing.T, path, from, to string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
+	db, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open legacy quota database: %v", err)
 	}

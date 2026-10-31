@@ -186,59 +186,73 @@ export function UsageMaintenanceOverviewView({
             <div className={`${styles.iconWrap} ${styles.iconCyan}`} aria-hidden="true">
               <IconHardDrive size={18} />
             </div>
-            <dt className={styles.cardTitle}>{t('usage_maintenance.sqlite_total')}</dt>
+            <dt className={styles.cardTitle}>
+              {t(
+                maintenance.storage.driver === 'mysql'
+                  ? 'usage_maintenance.storage_mysql_title'
+                  : 'usage_maintenance.sqlite_total'
+              )}
+            </dt>
           </div>
           <div className={styles.cardBody}>
             <dd className={styles.cardValue}>
               {stale ? '—' : formatFileSize(maintenance.storage.total_bytes)}
             </dd>
-            <small className={styles.cardSub}>{t('usage_maintenance.sqlite_total_hint')}</small>
-          </div>
-        </div>
-        <div className={styles.summaryCard}>
-          <div className={styles.cardHeader}>
-            <div className={`${styles.iconWrap} ${styles.iconGreen}`} aria-hidden="true">
-              <IconSparkles size={18} />
-            </div>
-            <dt className={styles.cardTitle}>{t('usage_maintenance.reclaimable')}</dt>
-            <button
-              type="button"
-              className={styles.actionChip}
-              onClick={() => onNavigate('advanced')}
-            >
-              {t('usage_maintenance.offline_reclaim')}
-            </button>
-          </div>
-          <div className={styles.cardBody}>
-            <dd className={styles.cardValue}>
-              {stale ? '—' : formatFileSize(maintenance.storage.reclaimable_bytes)}
-            </dd>
             <small className={styles.cardSub}>
-              {t('usage_maintenance.advanced_sqlite_note_short', {
-                defaultValue: '离线收缩可释放磁盘空间',
-              })}
+              {t(
+                maintenance.storage.driver === 'mysql'
+                  ? 'usage_maintenance.storage_mysql_hint'
+                  : 'usage_maintenance.sqlite_total_hint'
+              )}
             </small>
-            {!stale &&
-            maintenance.storage.reclaimable_bytes > 50 * 1024 * 1024 &&
-            maintenance.storage.total_bytes > 0 ? (
-              <div className={styles.reclaimHighlight}>
-                <span>
-                  {t('usage_maintenance.reclaim_estimated_benefit', {
-                    defaultValue:
-                      'Compaction recommended: expected to shrink from {{total}} to ~{{compacted}}',
-                    total: formatFileSize(maintenance.storage.total_bytes),
-                    compacted: formatFileSize(
-                      Math.max(
-                        0,
-                        maintenance.storage.total_bytes - maintenance.storage.reclaimable_bytes
-                      )
-                    ),
-                  })}
-                </span>
-              </div>
-            ) : null}
           </div>
         </div>
+        {maintenance.storage.driver !== 'mysql' ? (
+          <div className={styles.summaryCard}>
+            <div className={styles.cardHeader}>
+              <div className={`${styles.iconWrap} ${styles.iconGreen}`} aria-hidden="true">
+                <IconSparkles size={18} />
+              </div>
+              <dt className={styles.cardTitle}>{t('usage_maintenance.reclaimable')}</dt>
+              <button
+                type="button"
+                className={styles.actionChip}
+                onClick={() => onNavigate('advanced')}
+              >
+                {t('usage_maintenance.offline_reclaim')}
+              </button>
+            </div>
+            <div className={styles.cardBody}>
+              <dd className={styles.cardValue}>
+                {stale ? '—' : formatFileSize(maintenance.storage.reclaimable_bytes)}
+              </dd>
+              <small className={styles.cardSub}>
+                {t('usage_maintenance.advanced_sqlite_note_short', {
+                  defaultValue: '离线收缩可释放磁盘空间',
+                })}
+              </small>
+              {!stale &&
+              maintenance.storage.reclaimable_bytes > 50 * 1024 * 1024 &&
+              maintenance.storage.total_bytes > 0 ? (
+                <div className={styles.reclaimHighlight}>
+                  <span>
+                    {t('usage_maintenance.reclaim_estimated_benefit', {
+                      defaultValue:
+                        'Compaction recommended: expected to shrink from {{total}} to ~{{compacted}}',
+                      total: formatFileSize(maintenance.storage.total_bytes),
+                      compacted: formatFileSize(
+                        Math.max(
+                          0,
+                          maintenance.storage.total_bytes - maintenance.storage.reclaimable_bytes
+                        )
+                      ),
+                    })}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </dl>
       {active ? (
         <section
@@ -808,9 +822,7 @@ export function UsageArchiveRunView({
                     {t(progress.labelKey)}
                   </strong>
                   {progress.percent !== null ? (
-                    <span className={styles.subphasePercent}>
-                      {progress.percent.toFixed(1)}%
-                    </span>
+                    <span className={styles.subphasePercent}>{progress.percent.toFixed(1)}%</span>
                   ) : null}
                 </div>
                 {progress.total > 0 ? (

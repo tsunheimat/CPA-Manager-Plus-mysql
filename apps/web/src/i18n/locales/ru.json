@@ -263,6 +263,13 @@
     "usage_maintenance_short": "Обслуживание"
   },
   "usage_maintenance": {
+    "storage_mysql_operations": "Остановите Manager Server перед резервным копированием или оптимизацией таблиц. Перестроение таблиц может потребовать дополнительного места. После обслуживания запустите сервер снова.",
+    "storage_mysql_copy_backup": "Копировать команду резервного копирования",
+    "storage_mysql_copy_compact": "Копировать команду оптимизации",
+    "storage_mysql_title": "Хранилище MySQL",
+    "storage_mysql_hint": "Оценка размера таблиц и индексов, сообщаемая MySQL.",
+    "storage_mysql_note": "MySQL управляет повторным использованием места после удаления. Команды сжатия SQLite не применяются.",
+    "storage_mysql_backup": "Сохраняйте резервную копию MySQL вместе с data.key и каталогом usage-archives. При переносе сервера сохраните исходный ключ данных.",
     "archive_management": "Управление архивами",
     "archive_records": "Архивы",
     "archive_retained": "Архив сохранён",

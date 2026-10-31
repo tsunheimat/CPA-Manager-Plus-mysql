@@ -11,10 +11,11 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 func TestAcquireRunUsesSingleGlobalLease(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestAcquireRunUsesSingleGlobalLease(t *testing.T) {
 }
 
 func TestHistoricalRunWritesCannotBypassActiveLeaseLifecycle(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestHistoricalRunWritesCannotBypassActiveLeaseLifecycle(t *testing.T) {
 }
 
 func TestAcquireRunReclaimsExpiredLeaseAndInterruptsOldRun(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestAcquireRunReclaimsExpiredLeaseAndInterruptsOldRun(t *testing.T) {
 }
 
 func TestAcquireRunDoesNotStrandReplacementWhenRecoveryLogFails(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestAcquireRunDoesNotStrandReplacementWhenRecoveryLogFails(t *testing.T) {
 	if _, err := db.Exec(`update codex_inspection_leases set heartbeat_at_ms = 0, lease_expires_at_ms = 0 where id = 1`); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
-	if _, err := db.Exec(`create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs begin select raise(abort, 'forced recovery log failure'); end`); err != nil {
+	if _, err := db.Exec(testdb.SQL(db, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs begin select raise(abort, 'forced recovery log failure'); end`, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs for each row signal sqlstate '45000' set message_text='forced recovery log failure'`)); err != nil {
 		t.Fatalf("create log failure trigger: %v", err)
 	}
 
@@ -173,7 +174,7 @@ func TestAcquireRunDoesNotStrandReplacementWhenRecoveryLogFails(t *testing.T) {
 }
 
 func TestFinalizeRunReleasesLease(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -199,7 +200,7 @@ func TestFinalizeRunReleasesLease(t *testing.T) {
 }
 
 func TestFinalizeRunDoesNotOverwriteCommittedCancellation(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -258,7 +259,7 @@ func TestFinalizeRunDoesNotOverwriteCommittedCancellation(t *testing.T) {
 }
 
 func TestForceFinalizeRunDoesNotOverwriteCommittedCancellation(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -285,7 +286,7 @@ func TestForceFinalizeRunDoesNotOverwriteCommittedCancellation(t *testing.T) {
 }
 
 func TestFinalizeRunRejectsExpiredLease(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -311,7 +312,7 @@ func TestFinalizeRunRejectsExpiredLease(t *testing.T) {
 }
 
 func TestFinalizeRunRejectsNonTerminalStatus(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -333,7 +334,7 @@ func TestFinalizeRunRejectsNonTerminalStatus(t *testing.T) {
 }
 
 func TestForceFinalizeRunRecoversExpiredLease(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -367,7 +368,7 @@ func TestForceFinalizeRunRecoversExpiredLease(t *testing.T) {
 }
 
 func TestForceFinalizeRunRequiresTheOriginalLease(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -393,7 +394,7 @@ func TestForceFinalizeRunRequiresTheOriginalLease(t *testing.T) {
 }
 
 func TestForceFinalizeRunDoesNotLetLogFailureStrandState(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -424,7 +425,7 @@ func TestForceFinalizeRunDoesNotLetLogFailureStrandState(t *testing.T) {
 }
 
 func TestFinalizeRunRollsBackWhenFinalLogFails(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -511,7 +512,7 @@ func TestFinalizeRunRetriesRealSQLiteWriteLock(t *testing.T) {
 }
 
 func TestMarkRunCancellingRejectsExpiredLease(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -530,7 +531,7 @@ func TestMarkRunCancellingRejectsExpiredLease(t *testing.T) {
 }
 
 func TestHeartbeatRunCannotResurrectInterruptedRun(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -674,7 +675,7 @@ func TestAcquireTimestampIsTakenAfterSQLiteWriterWait(t *testing.T) {
 }
 
 func TestUpdateRunProgressPreservesCancellingAndRejectsReclaimedLease(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -725,7 +726,7 @@ func TestUpdateRunProgressPreservesCancellingAndRejectsReclaimedLease(t *testing
 }
 
 func TestGetActiveLeaseIgnoresUnboundLeaseRow(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -746,7 +747,7 @@ func TestGetActiveLeaseIgnoresUnboundLeaseRow(t *testing.T) {
 }
 
 func TestAcquireRunReclaimsUnboundLeaseRow(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -771,7 +772,7 @@ func TestAcquireRunReclaimsUnboundLeaseRow(t *testing.T) {
 }
 
 func TestAcquireRunReclaimsLeaseBoundToTerminalRun(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -802,7 +803,7 @@ func TestAcquireRunReclaimsLeaseBoundToTerminalRun(t *testing.T) {
 }
 
 func TestMarkRunCancellingRejectsUnboundLeaseRow(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -824,7 +825,7 @@ func TestMarkRunCancellingRejectsUnboundLeaseRow(t *testing.T) {
 }
 
 func TestRecoverStaleRunsPreservesValidLeaseAndHistoricalRuns(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -870,14 +871,14 @@ func TestRecoverStaleRunsPreservesValidLeaseAndHistoricalRuns(t *testing.T) {
 }
 
 func TestRecoverStaleRunsDoesNotRollBackWhenRecoveryLogFails(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	repository := New(db)
 	stale := insertLifecycleTestRun(t, db, newLifecycleTestRun(model.CodexInspectionTriggerManual, "stale-log-failure"))
-	if _, err := db.ExecContext(context.Background(), `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs begin select raise(abort, 'forced recovery log failure'); end`); err != nil {
+	if _, err := db.ExecContext(context.Background(), testdb.SQL(db, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs begin select raise(abort, 'forced recovery log failure'); end`, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs for each row signal sqlstate '45000' set message_text='forced recovery log failure'`)); err != nil {
 		t.Fatalf("create log failure trigger: %v", err)
 	}
 	_, err = repository.RecoverStaleRuns(context.Background(), time.Now().UnixMilli(), "服务重启或任务租约过期，巡检已中断")

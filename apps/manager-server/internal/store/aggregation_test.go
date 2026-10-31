@@ -12,7 +12,7 @@ import (
 )
 
 func TestAggregateBetween(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestAggregateBetween(t *testing.T) {
 }
 
 func TestFilterOptionValuesWithFilterIncludesHeaderTraceIDs(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -161,7 +161,7 @@ func aggregationEvent(
 }
 
 func TestIssue941CanonicalAccountingFlowsIntoAnalytics(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -216,4 +216,3 @@ func TestIssue941CanonicalAccountingFlowsIntoAnalytics(t *testing.T) {
 		t.Fatalf("aggregate #941 long-context tokens = %#v", agg.LongContextTokens)
 	}
 }
-

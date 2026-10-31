@@ -62,6 +62,9 @@ legacy_env_backup=""
 legacy_cpa_runtime_config_modified="0"
 docker_data_snapshot_dir=""
 docker_data_snapshot_created="0"
+db_driver="${CPAMP_DB_DRIVER:-${USAGE_DB_DRIVER:-sqlite}}"
+mysql_dsn="${CPAMP_MYSQL_DSN:-${USAGE_DB_DSN:-}}"
+mysql_dsn_file="${CPAMP_MYSQL_DSN_FILE:-${USAGE_DB_DSN_FILE:-}}"
 docker_db_path="/data/usage.sqlite"
 docker_data_key_path="/data/data.key"
 docker_data_volume_root="/data"
@@ -1045,6 +1048,76 @@ normalize_native_entry_path() {
   record_native_entry_path "$source" "$variable" "$value"
 }
 
+set_installer_driver() {
+  case "$1" in
+    ''|[Ss][Qq][Ll][Ii][Tt][Ee]) db_driver=sqlite ;;
+    [Mm][Yy][Ss][Qq][Ll]) db_driver=mysql ;;
+    *) die "Database driver must be sqlite or mysql." ;;
+  esac
+}
+
+collect_mysql_storage() {
+  if [ "$existing_install_state" = "fresh" ]; then
+    set_installer_driver "$(prompt_choice "Database (sqlite/mysql)" "$db_driver" "sqlite mysql")"
+  fi
+  [ "$db_driver" = "mysql" ] || return 0
+  if [ -z "$mysql_dsn" ] && [ -n "$mysql_dsn_file" ]; then
+    mysql_dsn="$(read_existing_secret "$mysql_dsn_file")" || die "Cannot read the MySQL DSN file."
+  fi
+  if [ -z "$mysql_dsn" ] && [ -f "$install_dir/secrets/mysql-dsn" ]; then
+    mysql_dsn="$(read_existing_secret "$install_dir/secrets/mysql-dsn")"
+  fi
+  if [ -z "$mysql_dsn" ]; then
+    mysql_dsn="$(prompt_secret "MySQL DSN (existing empty MySQL 8.4 database)" "")"
+  fi
+  [ -n "$mysql_dsn" ] || die "MySQL requires CPAMP_MYSQL_DSN_FILE or CPAMP_MYSQL_DSN."
+  validate_single_line "MySQL DSN" "$mysql_dsn"
+}
+
+persist_mysql_storage() {
+  [ "$db_driver" = "mysql" ] || return 0
+  [ -n "$mysql_dsn" ] || die "MySQL DSN is unavailable; set CPAMP_MYSQL_DSN_FILE."
+  if [ -f "$install_dir/secrets/mysql-dsn" ] && [ "$(read_existing_secret "$install_dir/secrets/mysql-dsn")" != "$mysql_dsn" ]; then
+    die "MySQL DSN differs from the saved installation secret; update that secret explicitly before upgrading."
+  fi
+  mysql_dsn="$(ensure_secret_file "$install_dir/secrets/mysql-dsn" "$mysql_dsn")"
+  mysql_dsn_file="$install_dir/secrets/mysql-dsn"
+}
+
+append_native_mysql_config() {
+  local file="$1"
+  [ "$db_driver" = "mysql" ] || return 0
+  persist_mysql_storage
+  [ "$dry_run" = "1" ] && return 0
+  local dsn_path="$(yaml_double_quote_escape "$mysql_dsn_file")"
+  local temp="${file}.mysql.$$"
+  # Both the generated and sanitized configurations are pretty-printed objects.
+  awk '
+    /^  "/ && tolower($0) ~ /^  "(dbdriver|dbdsn|dbdsnfile)"[[:space:]]*:/ { next }
+    /^}[[:space:]]*$/ { next }
+    { lines[++count]=$0 }
+    END { sub(/,[[:space:]]*$/, "", lines[count]); for (i=1;i<=count;i++) print lines[i] }
+  ' "$file" > "$temp"
+  printf ',\n  "dbDriver": "mysql",\n  "dbDsn": "",\n  "dbDsnFile": "%s"\n}\n' "$dsn_path" >> "$temp"
+  mv -f "$temp" "$file"
+}
+
+configure_mysql_compose() {
+  local file="$1"
+  [ "$db_driver" = "mysql" ] || return 0
+  persist_mysql_storage
+  local temp="${file}.mysql.$$"
+  awk '
+    /^  cpa-manager-plus:/ { manager=1 }
+    manager && /^    environment:/ { print; print "      USAGE_DB_DRIVER: mysql"; print "      USAGE_DB_DSN_FILE: /run/secrets/mysql_dsn"; next }
+    manager && /^    secrets:/ { print; print "      - mysql_dsn"; next }
+    /^[^ ]/ { manager=0 }
+    { print }
+  ' "$file" > "$temp"
+  printf '  mysql_dsn:\n    file: ./secrets/mysql-dsn\n' >> "$temp"
+  mv -f "$temp" "$file"
+}
+
 parse_native_run_paths() {
   local line=""
   local variable=""
@@ -1060,6 +1133,18 @@ parse_native_run_paths() {
     case "$line" in
       [[:space:]]*\#*) continue ;;
     esac
+    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(USAGE_DB_DSN|USAGE_DB_DSN_FILE)[[:space:]]*=(.*)$ ]]; then
+      variable="${BASH_REMATCH[2]}"
+      raw_value="$(decode_native_entry_value "${BASH_REMATCH[3]}" run)" || die "Cannot parse MySQL runtime configuration."
+      if [ "$variable" = "USAGE_DB_DSN" ]; then mysql_dsn="$raw_value"; else mysql_dsn_file="$(resolve_native_config_path "$raw_value" "$native_existing_config_dir")"; mysql_dsn="$(read_existing_secret "$mysql_dsn_file")"; fi
+      continue
+    fi
+    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?USAGE_DB_DRIVER[[:space:]]*=(.*)$ ]]; then
+      raw_value="$(decode_native_entry_value "${BASH_REMATCH[2]}" run)" ||
+        die "Unable to parse USAGE_DB_DRIVER in the native run.sh entry."
+      set_installer_driver "$raw_value"
+      continue
+    fi
     if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(USAGE_DATA_DIR|USAGE_DB_PATH|CPA_MANAGER_DATA_KEY_PATH)[[:space:]]*=(.*)$ ]]; then
       variable="${BASH_REMATCH[2]}"
       raw_value="${BASH_REMATCH[3]}"
@@ -1102,6 +1187,12 @@ parse_native_systemd_paths() {
       raw_value="${BASH_REMATCH[1]}"
       value="$(decode_native_entry_value "$raw_value" systemd)" ||
         die "Unable to parse an Environment entry from the existing native systemd service."
+      if [[ "$value" == USAGE_DB_DSN=* ]]; then mysql_dsn="${value#USAGE_DB_DSN=}"; continue; fi
+      if [[ "$value" == USAGE_DB_DSN_FILE=* ]]; then mysql_dsn_file="$(resolve_native_config_path "${value#USAGE_DB_DSN_FILE=}" "$native_existing_config_dir")"; mysql_dsn="$(read_existing_secret "$mysql_dsn_file")"; continue; fi
+      if [[ "$value" == USAGE_DB_DRIVER=* ]]; then
+        set_installer_driver "${value#USAGE_DB_DRIVER=}"
+        continue
+      fi
       if [[ "$value" =~ ^(USAGE_DATA_DIR|USAGE_DB_PATH|CPA_MANAGER_DATA_KEY_PATH)=(.*)$ ]]; then
         variable="${BASH_REMATCH[1]}"
         raw_value="${BASH_REMATCH[2]}"
@@ -1296,6 +1387,7 @@ require_native_manager_data_files() {
   local file=""
   for label in "Manager database" "Manager data key"; do
     if [ "$label" = "Manager database" ]; then
+      [ "$db_driver" = "mysql" ] && continue
       file="$native_db_path"
     else
       file="$native_data_key_path"
@@ -2023,6 +2115,12 @@ resolve_docker_container_paths() {
   # the project .env is merely an interpolation candidate; treating it as an
   # implicit container variable could make an upgrade operate on a database
   # the running Manager Server never opened.
+  if value="$(compose_service_environment_value USAGE_DB_DRIVER)"; then
+    set_installer_driver "$value"
+  else
+    status=$?
+    [ "$status" -eq 1 ] || die "Unable to resolve USAGE_DB_DRIVER from the existing Docker Compose configuration."
+  fi
   if value="$(compose_service_environment_value USAGE_DB_PATH)"; then
     [ -n "$value" ] && docker_db_path="$value"
   else
@@ -2142,8 +2240,20 @@ load_existing_native_config() {
   cpamp_version="${CPAMP_VERSION:-latest}"
   validate_version_value "$(text version)" "$cpamp_version"
   locate_existing_native_config
+  if json_key_declared "$native_existing_config_file" dbDriver; then
+    set_installer_driver "$(require_json_string_value "$native_existing_config_file" dbDriver)"
+  fi
   config_dir="$(dirname "$native_existing_config_file")"
   native_existing_config_dir="$config_dir"
+  if [ "$db_driver" = "mysql" ]; then
+    if json_key_declared "$native_existing_config_file" dbDsn; then
+      mysql_dsn="$(require_json_string_value "$native_existing_config_file" dbDsn)"
+    fi
+    if json_key_declared "$native_existing_config_file" dbDsnFile; then
+      mysql_dsn_file="$(resolve_native_config_path "$(require_json_string_value "$native_existing_config_file" dbDsnFile)" "$config_dir")"
+      mysql_dsn="$(read_existing_secret "$mysql_dsn_file")"
+    fi
+  fi
 
   if json_key_declared "$native_existing_config_file" httpAddr; then
     http_addr="$(require_json_string_value "$native_existing_config_file" httpAddr)"
@@ -2181,7 +2291,7 @@ load_existing_native_config() {
   native_config_db_path="$native_db_path"
   native_config_data_key_path="$native_data_key_path"
   resolve_native_runtime_paths
-  reconcile_legacy_native_manager_paths
+  if [ "$db_driver" = "sqlite" ]; then reconcile_legacy_native_manager_paths; fi
   require_native_manager_data_files
 
   raw_admin_key_file="$(require_json_string_value "$native_existing_config_file" adminKeyFile)"
@@ -2248,6 +2358,10 @@ load_existing_docker_config() {
   [ -f "$install_dir/compose.yaml" ] || die "Missing existing config: $install_dir/compose.yaml"
   deploy_method="docker"
   resolve_docker_container_paths
+  if [ "$db_driver" = "mysql" ]; then
+    mysql_dsn="$(compose_service_environment_value USAGE_DB_DSN || true)"
+    if [ -z "$mysql_dsn" ] && [ -f "$install_dir/secrets/mysql-dsn" ]; then mysql_dsn="$(read_existing_secret "$install_dir/secrets/mysql-dsn")"; fi
+  fi
   cpamp_image="$(read_env_value "$install_dir/.env" CPAMP_IMAGE 2>/dev/null || printf '%s' "$default_cpamp_image")"
   validate_image_ref "$(text cpamp_image)" "$cpamp_image"
   cpamp_port="$(read_env_value "$install_dir/.env" CPAMP_PORT 2>/dev/null || printf '18317')"
@@ -2546,6 +2660,8 @@ collect_choices() {
     return 1
   fi
 
+  collect_mysql_storage
+
   cpamp_port="$(prompt_line "$(text cpamp_port)" "${CPAMP_PORT:-${cpamp_port:-18317}}")"
   normalize_port "$cpamp_port" || die "Invalid CPAMP port: $cpamp_port"
 
@@ -2620,6 +2736,7 @@ print_summary() {
   if [ "$deploy_method" = "docker" ]; then
     say "$(text project_name): $compose_project_name"
   fi
+  say "Database: $db_driver"
   say "$(text cpamp_port): $cpamp_port"
   if [ "$deploy_method" = "docker" ]; then
     say "$(text cpamp_image): $cpamp_image"
@@ -3077,6 +3194,7 @@ secrets:
     file: ./secrets/cpamp-admin-key
 EOF
   fi
+  configure_mysql_compose "$tmp"
   mv -f "$tmp" "$file"
 }
 
@@ -3130,7 +3248,9 @@ needs_cpa_connection_import() {
 
 print_docker_connection_import_command() {
   local key_file="${cpa_management_key_file:-$install_dir/secrets/cpa-management-key}"
-  say "cd \"$install_dir\" && docker compose run --rm --no-deps -e CPA_UPSTREAM_URL= -e CPA_MANAGEMENT_KEY= -e CPA_MANAGEMENT_KEY_FILE=/dev/null -v \"$key_file:/run/cpamp-import/cpa-management-key:ro\" cpa-manager-plus store-cpa-connection --cpa-base-url \"$cpa_url\" --management-key-file /run/cpamp-import/cpa-management-key --db-path \"$docker_db_path\" --data-key-path \"$docker_data_key_path\""
+  local database_flags=""
+  if [ "$db_driver" = "sqlite" ]; then database_flags="--db-path \"$docker_db_path\""; fi
+  say "cd \"$install_dir\" && docker compose run --rm --no-deps -e CPA_UPSTREAM_URL= -e CPA_MANAGEMENT_KEY= -e CPA_MANAGEMENT_KEY_FILE=/dev/null -v \"$key_file:/run/cpamp-import/cpa-management-key:ro\" cpa-manager-plus store-cpa-connection --cpa-base-url \"$cpa_url\" --management-key-file /run/cpamp-import/cpa-management-key $database_flags --data-key-path \"$docker_data_key_path\""
 }
 
 print_full_upgrade_command() {
@@ -3163,6 +3283,8 @@ run_docker_connection_import() {
   local key_file="${cpa_management_key_file:-$install_dir/secrets/cpa-management-key}"
   materialize_cpa_management_key_file
   persist_cpa_import_retry_state
+  local database_args=()
+  if [ "$db_driver" = "sqlite" ]; then database_args=(--db-path "$docker_db_path"); fi
   (
     cd "$install_dir"
     docker compose run --rm --no-deps \
@@ -3173,13 +3295,15 @@ run_docker_connection_import() {
       cpa-manager-plus store-cpa-connection \
       --cpa-base-url "$cpa_url" \
       --management-key-file /run/cpamp-import/cpa-management-key \
-      --db-path "$docker_db_path" \
+      "${database_args[@]}" \
       --data-key-path "$docker_data_key_path"
   )
 }
 
 run_docker_data_snapshot() {
   local action="$1"
+  local database_args=()
+  if [ "$db_driver" = "sqlite" ]; then database_args=(--db-path "$docker_db_path"); fi
   (
     cd "$install_dir"
     if [ "$action" = "delete" ]; then
@@ -3196,7 +3320,7 @@ run_docker_data_snapshot() {
         -e CPA_MANAGEMENT_KEY_FILE=/dev/null \
         cpa-manager-plus manager-data-snapshot "$action" \
         --snapshot-dir "$docker_data_snapshot_dir" \
-        --db-path "$docker_db_path" \
+        "${database_args[@]}" \
         --data-key-path "$docker_data_key_path"
     fi
   )
@@ -3219,6 +3343,10 @@ verify_docker_container_paths() {
   fi
   (
     cd "$install_dir"
+    if [ "$db_driver" = "mysql" ]; then
+      docker compose run --rm --no-deps --entrypoint /bin/sh cpa-manager-plus -c 'test -f "$1" && test -r "$1"' sh "$docker_data_key_path"
+      exit $?
+    fi
     docker compose run --rm --no-deps --entrypoint /bin/sh cpa-manager-plus \
       -c 'test -f "$1" && test -r "$1"' sh "$docker_db_path" &&
       docker compose run --rm --no-deps --entrypoint /bin/sh cpa-manager-plus \
@@ -3771,6 +3899,7 @@ write_native_config() {
   "queryLimit": 50000
 }
 EOF
+  append_native_mysql_config "$tmp"
   mv -f "$tmp" "$file"
 }
 
@@ -3784,6 +3913,7 @@ write_native_upgrade_config() {
     --output "$file"; then
     die "Failed to sanitize the existing native runtime config."
   fi
+  append_native_mysql_config "$file"
   if grep -qiE '"(cpaUpstreamUrl|managementKeyFile)"[[:space:]]*:' "$file"; then
     die "The generated native runtime config still contains legacy CPA credentials."
   fi
@@ -4012,7 +4142,9 @@ print_native_connection_import_command() {
   local key_file="${cpa_management_key_file:-$install_dir/secrets/cpa-management-key}"
   local db_path="${native_db_path:-$install_dir/data/usage.sqlite}"
   local data_key_path="${native_data_key_path:-$install_dir/data/data.key}"
-  say "CPA_MANAGER_CONFIG=\"$native_binary_dir/config.json\" CPA_UPSTREAM_URL= CPA_MANAGEMENT_KEY= CPA_MANAGEMENT_KEY_FILE=/dev/null \"$native_binary_dir/cpa-manager-plus\" store-cpa-connection --cpa-base-url \"$cpa_url\" --management-key-file \"$key_file\" --db-path \"$db_path\" --data-key-path \"$data_key_path\""
+  local database_flags=""
+  if [ "$db_driver" = "sqlite" ]; then database_flags="--db-path \"$db_path\""; fi
+  say "CPA_MANAGER_CONFIG=\"$native_binary_dir/config.json\" CPA_UPSTREAM_URL= CPA_MANAGEMENT_KEY= CPA_MANAGEMENT_KEY_FILE=/dev/null \"$native_binary_dir/cpa-manager-plus\" store-cpa-connection --cpa-base-url \"$cpa_url\" --management-key-file \"$key_file\" $database_flags --data-key-path \"$data_key_path\""
 }
 
 print_native_post_import_validation_commands() {
@@ -4028,6 +4160,8 @@ run_native_connection_import() {
   local key_file="${cpa_management_key_file:-$install_dir/secrets/cpa-management-key}"
   local db_path="${native_db_path:-$install_dir/data/usage.sqlite}"
   local data_key_path="${native_data_key_path:-$install_dir/data/data.key}"
+  local database_args=()
+  if [ "$db_driver" = "sqlite" ]; then database_args=(--db-path "$db_path"); fi
   if ! needs_cpa_connection_import; then
     return
   fi
@@ -4053,7 +4187,7 @@ run_native_connection_import() {
     "$native_binary_dir/cpa-manager-plus" store-cpa-connection \
     --cpa-base-url "$cpa_url" \
     --management-key-file "$key_file" \
-    --db-path "$db_path" \
+    "${database_args[@]}" \
     --data-key-path "$data_key_path"; then
     die "$(text cpa_import_failed)"
   fi
@@ -4280,14 +4414,16 @@ restore_native_upgrade_file() {
 run_native_data_snapshot() {
   local action="$1"
   local binary="${native_binary_dir:-$native_existing_binary_dir}/cpa-manager-plus"
+  local database_args=()
+  if [ "$db_driver" = "sqlite" ]; then database_args=(--db-path "$native_db_path"); fi
   [ -n "$native_upgrade_snapshot_dir" ] || return 1
   if [ "$action" = "delete" ]; then
-    "$binary" manager-data-snapshot delete \
+    CPA_MANAGER_CONFIG="${native_binary_dir:-$native_existing_binary_dir}/config.json" "$binary" manager-data-snapshot delete \
       --snapshot-dir "$native_upgrade_snapshot_dir"
   else
-    "$binary" manager-data-snapshot "$action" \
+    CPA_MANAGER_CONFIG="${native_binary_dir:-$native_existing_binary_dir}/config.json" "$binary" manager-data-snapshot "$action" \
       --snapshot-dir "$native_upgrade_snapshot_dir" \
-      --db-path "$native_db_path" \
+      "${database_args[@]}" \
       --data-key-path "$native_data_key_path"
   fi
 }
@@ -4612,6 +4748,7 @@ post_install_message() {
 
 main() {
   parse_arguments "$@"
+  set_installer_driver "$db_driver"
   detect_environment
   require_interactive_tty
   if [ -z "$lang_code" ] && [ "$non_interactive" != "1" ]; then

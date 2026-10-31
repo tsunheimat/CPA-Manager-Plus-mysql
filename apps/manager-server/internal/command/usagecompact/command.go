@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/database"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
+	mysqlrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 )
 
@@ -61,6 +63,32 @@ func runWithCompactorAndInterval(
 		cfg, err := config.LoadWithoutCreatingDefault()
 		if err != nil {
 			return fmt.Errorf("load config without creating defaults: %w", err)
+		}
+		if cfg.DBDriver == "mysql" {
+			lock, err := database.Acquire(ctx, &cfg)
+			if err != nil {
+				return err
+			}
+			defer lock.Close()
+			if err := database.RequireExistingMySQL(ctx, cfg); err != nil {
+				return err
+			}
+			db, err := mysqlrepo.OpenNative(ctx, cfg.DBDSN)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			result, err := mysqlrepo.Compact(ctx, db, func(name string) error {
+				if err := lock.Check(ctx); err != nil {
+					return err
+				}
+				_, err := fmt.Fprintf(stderr, "[compact-usage] optimizing MySQL table %s\n", name)
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(stdout).Encode(result)
 		}
 		path = cfg.DBPath
 	}

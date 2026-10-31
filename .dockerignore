@@ -7,3 +7,5 @@ npm-debug.log*
 apps/manager-server/*.sqlite
 apps/manager-server/*.sqlite-shm
 apps/manager-server/*.sqlite-wal
+deploy/k3s/secrets.yaml
+deploy/k3s/*.local.yaml

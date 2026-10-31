@@ -17,6 +17,7 @@ import (
 	collectorservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	managerconfigservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
 
 type latestScheduledRunErrorRepository struct {
@@ -264,7 +265,7 @@ func TestCodexInspectionWorkerUsesLatestScheduledRunBeyondHistoryPage(t *testing
 
 func newWorkerInspectionStore(t *testing.T, path string) *store.Store {
 	t.Helper()
-	st, err := store.Open(path)
+	st, err := testutil.OpenStore(t, path)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

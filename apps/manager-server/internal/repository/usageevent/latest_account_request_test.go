@@ -2,6 +2,7 @@ package usageevent
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -9,12 +10,13 @@ import (
 	"time"
 
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 func TestRecentAccountRequestsUseSnapshotIdentityLimitAndConservativeLegacyFallback(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -112,16 +114,12 @@ func TestRecentAccountRequestsFiltersCodexWorkspaceMembers(t *testing.T) {
 	ctx := context.Background()
 	seed := func(t *testing.T, withIndexes bool) []LatestAccountRequest {
 		t.Helper()
-		db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+		db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 		if err != nil {
 			t.Fatalf("open database: %v", err)
 		}
 		t.Cleanup(func() { _ = db.Close() })
-		if withIndexes {
-			if err := sqliterepo.RunDerivedStartupMaintenance(ctx, db); err != nil {
-				t.Fatalf("prepare latest-request indexes: %v", err)
-			}
-		}
+		prepareLatestRequestTestIndexes(t, ctx, db, withIndexes)
 		repo := New(db)
 		alice := latestAccountRequestEvent("codex-alice", 1_700_000_020_000, "shared.json", "auth-shared", "shared.json")
 		alice.Provider = "codex"
@@ -210,13 +208,13 @@ func TestRecentAccountRequestsFiltersCodexWorkspaceMembers(t *testing.T) {
 }
 
 func TestRecentAccountRequestsStopsAtLimitInsteadOfScanningOlderRows(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
-	if err := sqliterepo.RunDerivedStartupMaintenance(ctx, db); err != nil {
+	if err := testdb.PrepareIndexes(ctx, db); err != nil {
 		t.Fatalf("prepare latest-request indexes: %v", err)
 	}
 	repo := New(db)
@@ -271,7 +269,7 @@ func TestRecentAccountRequestsUsesSourceIndexForLegacyFallback(t *testing.T) {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := sqliterepo.RunDerivedStartupMaintenance(context.Background(), db); err != nil {
+	if err := testdb.PrepareIndexes(context.Background(), db); err != nil {
 		t.Fatalf("prepare latest-request indexes: %v", err)
 	}
 
@@ -343,16 +341,12 @@ func TestRecentAccountRequestsIndexedMatchesBatchedFallback(t *testing.T) {
 	ctx := context.Background()
 	seed := func(t *testing.T, withIndexes bool) Repository {
 		t.Helper()
-		db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+		db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 		if err != nil {
 			t.Fatalf("open database: %v", err)
 		}
 		t.Cleanup(func() { _ = db.Close() })
-		if withIndexes {
-			if err := sqliterepo.RunDerivedStartupMaintenance(ctx, db); err != nil {
-				t.Fatalf("prepare latest-request indexes: %v", err)
-			}
-		}
+		prepareLatestRequestTestIndexes(t, ctx, db, withIndexes)
 		repo := New(db)
 		legacy := latestAccountRequestEvent("legacy", 1_700_000_003_000, "", "legacy.json", "legacy.json")
 		latest := latestAccountRequestEvent("latest", 1_700_000_002_000, "credential-a.json", "auth-a", "source-a")
@@ -395,7 +389,7 @@ func TestSnapshotLatestRequestQueryUsesAuthFileAndAuthIndexIndex(t *testing.T) {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := sqliterepo.RunDerivedStartupMaintenance(context.Background(), db); err != nil {
+	if err := testdb.PrepareIndexes(context.Background(), db); err != nil {
 		t.Fatalf("prepare latest-request indexes: %v", err)
 	}
 
@@ -435,7 +429,7 @@ func TestSnapshotLatestRequestEmptyAuthIndexUsesCompositeIndex(t *testing.T) {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := sqliterepo.RunDerivedStartupMaintenance(context.Background(), db); err != nil {
+	if err := testdb.PrepareIndexes(context.Background(), db); err != nil {
 		t.Fatalf("prepare latest-request indexes: %v", err)
 	}
 
@@ -470,12 +464,12 @@ func TestSnapshotLatestRequestEmptyAuthIndexUsesCompositeIndex(t *testing.T) {
 }
 
 func TestRecentAccountRequestsMatchesNullAndEmptyAuthIndex(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := sqliterepo.RunDerivedStartupMaintenance(context.Background(), db); err != nil {
+	if err := testdb.PrepareIndexes(context.Background(), db); err != nil {
 		t.Fatalf("prepare latest-request indexes: %v", err)
 	}
 	repo := New(db)
@@ -548,12 +542,12 @@ func TestRecentAccountRequestsMatchesNullAndEmptyAuthIndex(t *testing.T) {
 }
 
 func TestRecentAccountRequestsMergesNewerLegacyWithoutSnapshot(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := sqliterepo.RunDerivedStartupMaintenance(context.Background(), db); err != nil {
+	if err := testdb.PrepareIndexes(context.Background(), db); err != nil {
 		t.Fatalf("prepare latest-request indexes: %v", err)
 	}
 	repo := New(db)
@@ -582,16 +576,12 @@ func TestRecentAccountRequestsRejectsInvalidCodexWorkspaceTargets(t *testing.T) 
 		withIndexes := withIndexes
 		t.Run(map[bool]string{true: "indexed", false: "batched"}[withIndexes], func(t *testing.T) {
 			ctx := context.Background()
-			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatalf("open database: %v", err)
 			}
 			t.Cleanup(func() { _ = db.Close() })
-			if withIndexes {
-				if err := sqliterepo.RunDerivedStartupMaintenance(ctx, db); err != nil {
-					t.Fatalf("prepare latest-request indexes: %v", err)
-				}
-			}
+			prepareLatestRequestTestIndexes(t, ctx, db, withIndexes)
 
 			event := latestAccountRequestEvent("codex-workspace", 1_700_000_050_000, "shared.json", "auth-shared", "shared.json")
 			event.Provider = "codex"
@@ -627,16 +617,12 @@ func TestRecentAccountRequestsRejectsConflictingCodexWorkspaceMarker(t *testing.
 		withIndexes := withIndexes
 		t.Run(map[bool]string{true: "indexed", false: "batched"}[withIndexes], func(t *testing.T) {
 			ctx := context.Background()
-			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatalf("open database: %v", err)
 			}
 			t.Cleanup(func() { _ = db.Close() })
-			if withIndexes {
-				if err := sqliterepo.RunDerivedStartupMaintenance(ctx, db); err != nil {
-					t.Fatalf("prepare latest-request indexes: %v", err)
-				}
-			}
+			prepareLatestRequestTestIndexes(t, ctx, db, withIndexes)
 
 			valid := latestAccountRequestEvent("codex-project", 1_700_000_050_000, "shared.json", "auth-shared", "shared.json")
 			valid.Provider = "codex"
@@ -677,16 +663,12 @@ func TestRecentAccountRequestsRejectsConflictingCodexTargetMarker(t *testing.T) 
 		withIndexes := withIndexes
 		t.Run(map[bool]string{true: "indexed", false: "batched"}[withIndexes], func(t *testing.T) {
 			ctx := context.Background()
-			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatalf("open database: %v", err)
 			}
 			t.Cleanup(func() { _ = db.Close() })
-			if withIndexes {
-				if err := sqliterepo.RunDerivedStartupMaintenance(ctx, db); err != nil {
-					t.Fatalf("prepare latest-request indexes: %v", err)
-				}
-			}
+			prepareLatestRequestTestIndexes(t, ctx, db, withIndexes)
 
 			event := latestAccountRequestEvent("codex-target-marker", 1_700_000_070_000, "shared.json", "auth-shared", "shared.json")
 			event.Provider = "codex"
@@ -735,13 +717,13 @@ func sameLatestAccountRequests(left, right []LatestAccountRequest) bool {
 }
 
 func BenchmarkRecentAccountRequests200Targets(b *testing.B) {
-	db, err := sqliterepo.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open database: %v", err)
 	}
 	b.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
-	if err := sqliterepo.RunDerivedStartupMaintenance(ctx, db); err != nil {
+	if err := testdb.PrepareIndexes(ctx, db); err != nil {
 		b.Fatalf("prepare latest-request indexes: %v", err)
 	}
 	repo := New(db)
@@ -774,12 +756,12 @@ func BenchmarkRecentAccountRequests200Targets(b *testing.B) {
 }
 
 func BenchmarkRecentAccountRequestsDenseCredential(b *testing.B) {
-	db, err := sqliterepo.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open database: %v", err)
 	}
 	b.Cleanup(func() { _ = db.Close() })
-	if err := sqliterepo.RunDerivedStartupMaintenance(context.Background(), db); err != nil {
+	if err := testdb.PrepareIndexes(context.Background(), db); err != nil {
 		b.Fatalf("prepare latest-request indexes: %v", err)
 	}
 	if _, err := db.Exec(`with recursive ids(id) as (
@@ -817,6 +799,23 @@ func BenchmarkRecentAccountRequestsDenseCredential(b *testing.B) {
 		}
 		if len(requests) != 10 {
 			b.Fatalf("recent account requests = %d, want 10", len(requests))
+		}
+	}
+}
+
+func prepareLatestRequestTestIndexes(t *testing.T, ctx context.Context, db *sql.DB, enabled bool) {
+	t.Helper()
+	if enabled {
+		if err := testdb.PrepareIndexes(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+	} else if testdb.MySQL() {
+		// MySQL creates indexes synchronously. Remove just these optional lookup
+		// indexes in this isolated fixture to exercise the actual fallback path.
+		for _, name := range []string{latestRequestAuthFileIndex, latestRequestSourceIndex} {
+			if _, err := db.ExecContext(ctx, "drop index "+name+" on usage_events"); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }

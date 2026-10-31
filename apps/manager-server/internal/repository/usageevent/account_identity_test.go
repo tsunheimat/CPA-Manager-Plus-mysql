@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -122,7 +122,7 @@ func TestResolveCodexLegacyAccountKeyRequiresProviderAndMatchingAccountIDs(t *te
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatalf("open database: %v", err)
 			}
@@ -227,7 +227,7 @@ func TestResolveCodexLegacyAccountKeyAcceptsOnlyLeadingWeakIdentityPrefix(t *tes
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatalf("open database: %v", err)
 			}
@@ -256,7 +256,7 @@ func TestResolveCodexLegacyAccountKeyAcceptsOnlyLeadingWeakIdentityPrefix(t *tes
 }
 
 func TestResolveCodexLegacyAccountKeyAcceptsLegacySourceFile(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestResolveCodexLegacyAccountKeyAcceptsLegacySourceFile(t *testing.T) {
 }
 
 func TestResolveCodexLegacyAccountKeyAcceptsSourceOnlyHistory(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestResolveCodexLegacyAccountKeySharesEvidenceAcrossPhysicalPredicates(t *t
 		{name: "source predicate has different provider", member: "same@example.com", accountID: "account-a", provider: "openai"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatalf("open database: %v", err)
 			}
@@ -492,7 +492,7 @@ func TestGroupedLegacyAccountIdentityEvidenceCompactsDuplicateRowsAndPreservesCo
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatalf("open database: %v", err)
 			}
@@ -599,7 +599,7 @@ func TestResolveCodexLegacyAccountKeyAcceptsValidMarkerOnlyHistory(t *testing.T)
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatalf("open database: %v", err)
 			}
@@ -768,7 +768,7 @@ func TestResolveCodexLegacyAccountKeyStateMachine(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatalf("open database: %v", err)
 			}
@@ -796,7 +796,7 @@ func TestResolveCodexLegacyAccountKeyStateMachine(t *testing.T) {
 		})
 
 		t.Run(test.name+"_reverse_insert", func(t *testing.T) {
-			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 			if err != nil {
 				t.Fatalf("open database: %v", err)
 			}
@@ -840,7 +840,7 @@ func TestResolveCodexLegacyAccountKeyTimeFallback(t *testing.T) {
 	}
 
 	t.Run("Case A: auth_snapshot_at_ms takes precedence over created_at_ms", func(t *testing.T) {
-		db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+		db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 		if err != nil {
 			t.Fatalf("open db: %v", err)
 		}
@@ -867,7 +867,7 @@ func TestResolveCodexLegacyAccountKeyTimeFallback(t *testing.T) {
 	})
 
 	t.Run("Case B: auth_snapshot_at_ms is 0 falls back to created_at_ms", func(t *testing.T) {
-		db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+		db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 		if err != nil {
 			t.Fatalf("open db: %v", err)
 		}
@@ -892,7 +892,7 @@ func TestResolveCodexLegacyAccountKeyTimeFallback(t *testing.T) {
 	})
 
 	t.Run("Case C: weak history with both timestamps 0 fails closed", func(t *testing.T) {
-		db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+		db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 		if err != nil {
 			t.Fatalf("open db: %v", err)
 		}
@@ -916,7 +916,7 @@ func TestResolveCodexLegacyAccountKeyTimeFallback(t *testing.T) {
 	})
 
 	t.Run("Case D: marker-only history with both timestamps 0 succeeds", func(t *testing.T) {
-		db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+		db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 		if err != nil {
 			t.Fatalf("open db: %v", err)
 		}
@@ -950,7 +950,7 @@ func TestResolveCodexLegacyAccountKeyJSONLRoundTrip(t *testing.T) {
 	}
 
 	t.Run("Round-trip Case A: weak to direct preserves ALLOW across export/import", func(t *testing.T) {
-		dbA, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage-a.sqlite"))
+		dbA, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage-a.sqlite"))
 		if err != nil {
 			t.Fatalf("open dbA: %v", err)
 		}
@@ -977,7 +977,7 @@ func TestResolveCodexLegacyAccountKeyJSONLRoundTrip(t *testing.T) {
 			t.Fatalf("export dbA: %v", err)
 		}
 
-		dbB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage-b.sqlite"))
+		dbB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage-b.sqlite"))
 		if err != nil {
 			t.Fatalf("open dbB: %v", err)
 		}
@@ -1004,7 +1004,7 @@ func TestResolveCodexLegacyAccountKeyJSONLRoundTrip(t *testing.T) {
 		}
 
 		// Verify inverted insertion order in DB C (direct inserted before weak, so direct gets lower row ID)
-		dbC, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage-c.sqlite"))
+		dbC, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage-c.sqlite"))
 		if err != nil {
 			t.Fatalf("open dbC: %v", err)
 		}
@@ -1024,7 +1024,7 @@ func TestResolveCodexLegacyAccountKeyJSONLRoundTrip(t *testing.T) {
 	})
 
 	t.Run("Round-trip Case B: direct to weak preserves DENY across export/import", func(t *testing.T) {
-		dbA, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage-a.sqlite"))
+		dbA, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage-a.sqlite"))
 		if err != nil {
 			t.Fatalf("open dbA: %v", err)
 		}
@@ -1051,7 +1051,7 @@ func TestResolveCodexLegacyAccountKeyJSONLRoundTrip(t *testing.T) {
 			t.Fatalf("export dbA: %v", err)
 		}
 
-		dbB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage-b.sqlite"))
+		dbB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage-b.sqlite"))
 		if err != nil {
 			t.Fatalf("open dbB: %v", err)
 		}
@@ -1076,7 +1076,7 @@ func TestResolveCodexLegacyAccountKeyJSONLRoundTrip(t *testing.T) {
 	})
 
 	t.Run("Round-trip Case C: same evidence time fails closed across export/import", func(t *testing.T) {
-		dbA, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage-a.sqlite"))
+		dbA, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage-a.sqlite"))
 		if err != nil {
 			t.Fatalf("open dbA: %v", err)
 		}
@@ -1103,7 +1103,7 @@ func TestResolveCodexLegacyAccountKeyJSONLRoundTrip(t *testing.T) {
 			t.Fatalf("export dbA: %v", err)
 		}
 
-		dbB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage-b.sqlite"))
+		dbB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage-b.sqlite"))
 		if err != nil {
 			t.Fatalf("open dbB: %v", err)
 		}

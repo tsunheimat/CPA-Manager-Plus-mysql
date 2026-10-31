@@ -10,7 +10,7 @@ import (
 
 func TestStoreEncryptsSetupAndManagerConfigSecrets(t *testing.T) {
 	protector := newTestProtector(t)
-	db, err := Open(t.TempDir()+"/usage.sqlite", protector)
+	db, err := openPortableTestStore(t, t.TempDir()+"/usage.sqlite", protector)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestStoreEncryptsSetupAndManagerConfigSecrets(t *testing.T) {
 
 func TestStoreReadsLegacyPlaintextSecretsAndRewritesEncrypted(t *testing.T) {
 	protector := newTestProtector(t)
-	db, err := Open(t.TempDir()+"/usage.sqlite", protector)
+	db, err := openPortableTestStore(t, t.TempDir()+"/usage.sqlite", protector)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestStoreReadsLegacyPlaintextSecretsAndRewritesEncrypted(t *testing.T) {
 
 func TestStoreEncryptsPrefixCollidingManagementKeys(t *testing.T) {
 	protector := newTestProtector(t)
-	db, err := Open(t.TempDir()+"/usage.sqlite", protector)
+	db, err := openPortableTestStore(t, t.TempDir()+"/usage.sqlite", protector)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

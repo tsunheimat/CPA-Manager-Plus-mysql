@@ -363,6 +363,9 @@ func clearConfigEnv(t *testing.T) {
 		"HTTP_ADDR",
 		"USAGE_DATA_DIR",
 		"USAGE_DB_PATH",
+		"USAGE_DB_DRIVER",
+		"USAGE_DB_DSN",
+		"USAGE_DB_DSN_FILE",
 		"CPA_UPSTREAM_URL",
 		"CPA_MANAGEMENT_KEY",
 		"CPA_MANAGEMENT_KEY_FILE",
@@ -388,5 +391,48 @@ func clearConfigEnv(t *testing.T) {
 		"PANEL_PATH",
 	} {
 		t.Setenv(key, "")
+	}
+}
+
+func TestMySQLConfig(t *testing.T) {
+	clearConfigEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	t.Setenv(configEnvKey, path)
+	if err := os.WriteFile(path, []byte(`{"dbDriver":"mysql","dbDsnFile":"mysql.secret","dbPath":"old/usage.sqlite"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mysql.secret"), []byte("user:secret@tcp(db:3306)/manager\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DBDriver != "mysql" || cfg.DBDSN != "user:secret@tcp(db:3306)/manager" {
+		t.Fatal("MySQL secret configuration was not loaded")
+	}
+	if cfg.UsageArchiveDir != filepath.Join(dir, "data", "usage-archives") {
+		t.Fatalf("MySQL archive directory follows SQLite path: %s", cfg.UsageArchiveDir)
+	}
+	t.Setenv("USAGE_DB_DSN", "override:password@tcp(other:3306)/manager")
+	t.Setenv("USAGE_DB_DSN_FILE", filepath.Join(dir, "absent"))
+	cfg, err = Load()
+	if err != nil || cfg.DBDSN != "override:password@tcp(other:3306)/manager" {
+		t.Fatal("explicit DSN did not override secret file")
+	}
+}
+
+func TestDatabaseConfigRejectsMissingSecretsAndUnknownDrivers(t *testing.T) {
+	for _, tc := range []struct{ driver, file string }{{"mysql", ""}, {"mysql", "missing.secret"}, {"postgres", ""}} {
+		t.Run(tc.driver+tc.file, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv(configEnvKey, filepath.Join(t.TempDir(), "config.json"))
+			t.Setenv("USAGE_DB_DRIVER", tc.driver)
+			t.Setenv("USAGE_DB_DSN_FILE", tc.file)
+			if _, err := LoadWithoutCreatingDefault(); err == nil {
+				t.Fatal("invalid database config accepted")
+			}
+		})
 	}
 }

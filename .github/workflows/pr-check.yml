@@ -1,6 +1,12 @@
 name: PR Check
 
 on:
+  workflow_dispatch:
+    inputs:
+      publish_image:
+        description: Publish the validated image to GHCR (main branch only)
+        type: boolean
+        default: false
   pull_request:
     branches:
       - main
@@ -59,7 +65,10 @@ jobs:
           set -euo pipefail
 
           changed_files="${RUNNER_TEMP}/pr-check-changed-files.bin"
-          if [ "${EVENT_NAME}" = "pull_request" ]; then
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            # An empty path list selects every check for an explicit CI run.
+            : > "${changed_files}"
+          elif [ "${EVENT_NAME}" = "pull_request" ]; then
             git diff --name-only --no-renames -z "${PR_BASE_SHA}...${PR_HEAD_SHA}" > "${changed_files}"
           elif [ -z "${PUSH_BEFORE_SHA}" ] || [[ "${PUSH_BEFORE_SHA}" =~ ^0+$ ]]; then
             git show --pretty=format: --name-only --no-renames -z "${CURRENT_SHA}" > "${changed_files}"
@@ -120,6 +129,20 @@ jobs:
     if: needs.changes.outputs.manager_server == 'true'
     runs-on: ubuntu-latest
 
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: integration-test-password
+          MYSQL_DATABASE: cpamp_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=30
+
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -133,6 +156,20 @@ jobs:
       - name: Test
         working-directory: apps/manager-server
         run: go test ./...
+
+      - name: Test MySQL integration
+        env:
+          CPA_TEST_MYSQL_DSN: root:integration-test-password@tcp(127.0.0.1:3306)/cpamp_test
+        run: bash bin/ci/test-mysql.sh
+
+      - name: Test MySQL process and server crash recovery
+        run: bash bin/ci/test-mysql-recovery.sh
+
+      - name: Check generated MySQL schema
+        working-directory: apps/manager-server
+        run: |
+          go generate ./internal/repository/mysql
+          git diff --exit-code -- internal/repository/mysql/schema.sql
 
   manager-server-windows-sqlite:
     name: Manager Server SQLite (Windows)
@@ -189,14 +226,19 @@ jobs:
         run: bash -n bin/release/package-native.sh
 
   docker-build:
-    name: Docker Build
+    name: Build and publish Manager image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     needs:
+      - security
       - changes
       - frontend
       - manager-server
     if: >-
       always() &&
+      needs.security.result == 'success' &&
       needs.changes.outputs.docker == 'true' &&
       (needs.frontend.result == 'success' || needs.frontend.result == 'skipped') &&
       (needs['manager-server'].result == 'success' || needs['manager-server'].result == 'skipped')
@@ -204,21 +246,125 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve image publication
+        id: image
+        shell: bash
+        env:
+          PUBLISH_REQUESTED: ${{ inputs.publish_image }}
+        run: |
+          set -euo pipefail
+          publish=false
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            publish=true
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$PUBLISH_REQUESTED" = true ]; then
+            if [ "$GITHUB_REF" != refs/heads/main ]; then
+              echo 'Image publication is restricted to main.' >&2
+              exit 1
+            fi
+            publish=true
+          fi
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "version=sha-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      - name: Validate Docker Compose configuration
-        run: docker compose -f docker-compose.manager.yml config
+      - name: Validate deployment manifests
+        env:
+          MYSQL_ROOT_PASSWORD: ci-configuration-only
+          MYSQL_PASSWORD: ci-configuration-only
+        run: |
+          docker compose -f docker-compose.manager.yml config --quiet
+          docker compose -f docker-compose.mysql.yml config --quiet
+          docker run --rm -v "$GITHUB_WORKSPACE/deploy/k3s:/manifests:ro" \
+            ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary \
+            /manifests/cpa-manager-plus.yaml /manifests/secrets.example.yaml
 
-      - name: Build Manager Server image
+      - name: Build image for runtime smoke test
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile.manager-server
+          platforms: linux/amd64
+          load: true
           push: false
+          tags: cpamp-image-test:${{ github.sha }}
           build-args: |
-            VERSION=ci
+            VERSION=${{ steps.image.outputs.version }}
+            SOURCE_COMMIT=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.image.outputs.version }}
+          cache-from: type=gha,scope=cpamp-image
+
+      - name: Smoke test image with MySQL
+        env:
+          CPAMP_EXPECTED_REVISION: ${{ github.sha }}
+        run: bash bin/ci/smoke-manager-image.sh "cpamp-image-test:$GITHUB_SHA"
+
+      - name: Log in to GHCR
+        if: steps.image.outputs.publish == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build both architectures and publish eligible images
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.manager-server
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.image.outputs.publish == 'true' }}
+          tags: |
+            ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+            ${{ steps.image.outputs.name }}:main
+          build-args: |
+            VERSION=${{ steps.image.outputs.version }}
+            SOURCE_COMMIT=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.image.outputs.version }}
+          cache-from: type=gha,scope=cpamp-image
+          cache-to: type=gha,mode=max,scope=cpamp-image
+
+      - name: Record published image
+        if: steps.image.outputs.publish == 'true'
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker buildx imagetools inspect "$IMAGE_NAME@$IMAGE_DIGEST" --raw > image-manifest.json
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' image-manifest.json
+          mkdir -p artifacts
+          jq -n --arg image "$IMAGE_NAME" --arg digest "$IMAGE_DIGEST" --arg source "$GITHUB_SHA" \
+            '{image:$image,digest:$digest,source:$source,platforms:["linux/amd64","linux/arm64"]}' > artifacts/image.json
+          printf 'CPAMP_IMAGE=%s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST" > artifacts/image.env
+          printf 'Published `%s@%s` from `%s`.\n' "$IMAGE_NAME" "$IMAGE_DIGEST" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload image receipt
+        if: steps.image.outputs.publish == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: manager-image-${{ github.sha }}
+          path: artifacts/image.*
+          retention-days: 7
+          if-no-files-found: error
 
   demo-docs:
     name: Demo and Docs

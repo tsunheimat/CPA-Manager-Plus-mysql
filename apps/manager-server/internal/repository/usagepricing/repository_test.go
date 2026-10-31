@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -86,8 +86,8 @@ func TestPricingRollupRebuildsFromRetainedProjectionAfterRawDeletion(t *testing.
 	price := store.ModelPrice{
 		Prompt: 1,
 		ContextTiers: []store.ModelPriceContextTier{{
-			ThresholdTokens: 100,
-			Prompt:          2,
+			ThresholdTokens:  100,
+			Prompt:           2,
 			PromptConfigured: true,
 		}},
 	}
@@ -112,7 +112,7 @@ func TestPricingRollupRebuildsFromRetainedProjectionAfterRawDeletion(t *testing.
 		t.Fatalf("build initial pricing rollup: %v", err)
 	}
 
-	db, err := sqliterepo.Open(cfg.DBPath)
+	db, err := testdb.Open(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open raw sqlite handle: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestPricingRollupRebuildsFromRetainedProjectionAfterRawDeletion(t *testing.
 		events[1].EventHash).Scan(&deletedID, &deletedTimestamp); err != nil {
 		t.Fatalf("resolve deleted event: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, `pragma foreign_keys = off`); err != nil {
+	if _, err := db.ExecContext(ctx, testdb.SQL(db, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
 		t.Fatalf("disable foreign keys: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `insert into usage_archive_event_refs(

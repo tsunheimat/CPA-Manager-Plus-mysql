@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	storepkg "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	usageparser "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -183,7 +183,7 @@ func TestImportCanonicalizesNewLegacyEventHashAndDeduplicatesRepeat(t *testing.T
 func TestImportRoundTripCanonicalizesLegacyExportWithoutDuplicatingUpgradedDatabase(t *testing.T) {
 	ctx := context.Background()
 	legacyHash := "legacy/noncanonical/event-hash"
-	legacyDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "legacy.sqlite"))
+	legacyDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "legacy.sqlite"))
 	if err != nil {
 		t.Fatalf("open legacy database: %v", err)
 	}

@@ -3,10 +3,12 @@ package usagemonitoring_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
 
+	mysqlrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
@@ -57,9 +59,17 @@ func TestCodexLegacyIdentityEvidenceRollupCommitsCheckpointAtomically(t *testing
 	ctx := context.Background()
 	db, st := newMonitoringRepositoryStore(t)
 	seedCodexLegacyIdentityEvents(t, db, 3)
-	if _, err := db.Exec(`create trigger fail_identity_checkpoint before update of coverage_event_id on usage_monitoring_rollup_state
+	trigger := `create trigger fail_identity_checkpoint before update of coverage_event_id on usage_monitoring_rollup_state
 		when new.rollup_name = 'codex_legacy_identity_v1' and new.coverage_event_id > 0
-		begin select raise(abort, 'checkpoint failure'); end`); err != nil {
+		begin select raise(abort, 'checkpoint failure'); end`
+	if mysqlrepo.IsMySQL(db) {
+		trigger = `create trigger fail_identity_checkpoint before update on usage_monitoring_rollup_state
+			for each row begin
+			if new.rollup_name = 'codex_legacy_identity_v1' and new.coverage_event_id > 0 then
+				signal sqlstate '45000' set message_text = 'checkpoint failure';
+			end if; end`
+	}
+	if _, err := db.Exec(trigger); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.CatchUpCodexLegacyIdentityEvidence(ctx, 1000, 1); err == nil {
@@ -118,7 +128,7 @@ func TestCodexLegacyIdentityEvidenceMigrationRecoversMissingDerivation(t *testin
 	for _, missing := range []string{"table", "state"} {
 		t.Run(missing, func(t *testing.T) {
 			dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-			db, st := openMonitoringRepositoryStore(t, dbPath)
+			db, st := openSQLiteMonitoringRepositoryStore(t, dbPath)
 			defer func() { _ = db.Close() }()
 			seedCodexLegacyIdentityEvents(t, db, 5)
 			finishCodexEvidenceRollup(t, st, 1000)
@@ -132,7 +142,7 @@ func TestCodexLegacyIdentityEvidenceMigrationRecoversMissingDerivation(t *testin
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
-			db, st = openMonitoringRepositoryStore(t, dbPath)
+			db, st = openSQLiteMonitoringRepositoryStore(t, dbPath)
 			state, err := st.UsageMonitoringState(context.Background(), usageevent.CodexLegacyIdentityRollupName)
 			if err != nil || state.CoverageEventID != 0 || state.TargetEventID != 5 {
 				t.Fatalf("recovered state = %+v err=%v", state, err)
@@ -154,8 +164,16 @@ func TestCodexLegacyIdentityEvidenceMigrationRecoversMissingDerivation(t *testin
 
 func seedCodexLegacyIdentityEvents(t testing.TB, db *sql.DB, count int64) {
 	t.Helper()
-	_, err := db.Exec(`with recursive ids(id) as (
-		select 1 union all select id + 1 from ids where id < ?
+	ids := make([]int64, count)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	payload, err := json.Marshal(ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`with ids(id) as (
+		select value from json_each(?)
 	) insert into usage_events (
 		id, event_hash, timestamp_ms, timestamp, model, created_at_ms,
 		provider, auth_provider_snapshot, auth_file_snapshot, source,
@@ -163,7 +181,7 @@ func seedCodexLegacyIdentityEvents(t testing.TB, db *sql.DB, count int64) {
 	) select id, 'identity-' || id, id, cast(id as text), 'gpt-test', id,
 		'codex', 'codex', case id % 3 when 0 then 'codex-a.json' when 1 then null else '' end,
 		'codex-a.json', 'auth-a', case when id <= ? then '' else 'account-a' end,
-		'same@example.com' from ids`, count, count/2)
+		'same@example.com' from ids`, string(payload), count/2)
 	if err != nil {
 		t.Fatal(err)
 	}

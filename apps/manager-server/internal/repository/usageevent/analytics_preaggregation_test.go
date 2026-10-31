@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -179,7 +179,7 @@ func TestCredentialAnalyticsHidesHistoricalCodexProjectMarker(t *testing.T) {
 
 func newAnalyticsPreaggregationRepo(t *testing.T) *repository {
 	t.Helper()
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}

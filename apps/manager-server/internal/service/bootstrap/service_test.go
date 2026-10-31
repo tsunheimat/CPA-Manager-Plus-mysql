@@ -14,13 +14,14 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
-
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	_ "modernc.org/sqlite"
 )
 
 func TestRunMigratesLegacySetupAndEncryptsSecrets(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	legacyStore, err := store.Open(dbPath)
+	legacyStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open legacy store: %v", err)
 	}
@@ -40,7 +41,7 @@ func TestRunMigratesLegacySetupAndEncryptsSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create protector: %v", err)
 	}
-	st, err := store.Open(dbPath, protector)
+	st, err := testutil.OpenStore(t, dbPath, protector)
 	if err != nil {
 		t.Fatalf("open protected store: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestRunMigratesLegacySetupAndEncryptsSecrets(t *testing.T) {
 
 func TestMigrateLegacySetupRepairsPartialManagerConfig(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	legacyStore, err := store.Open(dbPath)
+	legacyStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open legacy store: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestMigrateLegacySetupRepairsPartialManagerConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create protector: %v", err)
 	}
-	st, err := store.Open(dbPath, protector)
+	st, err := testutil.OpenStore(t, dbPath, protector)
 	if err != nil {
 		t.Fatalf("open protected store: %v", err)
 	}
@@ -158,7 +159,7 @@ func TestMigrateLegacySetupRepairsPartialManagerConfig(t *testing.T) {
 
 func TestMigrateLegacySetupKeepsCompleteManagerConfigAsAuthority(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	legacyStore, err := store.Open(dbPath)
+	legacyStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open legacy store: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestMigrateLegacySetupKeepsCompleteManagerConfigAsAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create protector: %v", err)
 	}
-	st, err := store.Open(dbPath, protector)
+	st, err := testutil.OpenStore(t, dbPath, protector)
 	if err != nil {
 		t.Fatalf("open protected store: %v", err)
 	}
@@ -265,7 +266,7 @@ func TestMigrateLegacyPartialConnectionRowsNormalizeSecretsWithoutCombiningRows(
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-			legacyStore, err := store.Open(dbPath)
+			legacyStore, err := testutil.OpenStore(t, dbPath)
 			if err != nil {
 				t.Fatalf("open legacy store: %v", err)
 			}
@@ -283,7 +284,7 @@ func TestMigrateLegacyPartialConnectionRowsNormalizeSecretsWithoutCombiningRows(
 				if err != nil {
 					t.Fatalf("marshal setup: %v", err)
 				}
-				if err := writeRawSetting(dbPath, "setup", string(data)); err != nil {
+				if err := writeRawSetting(t, dbPath, "setup", string(data)); err != nil {
 					t.Fatalf("write partial setup: %v", err)
 				}
 			}
@@ -292,7 +293,7 @@ func TestMigrateLegacyPartialConnectionRowsNormalizeSecretsWithoutCombiningRows(
 			if err != nil {
 				t.Fatalf("create protector: %v", err)
 			}
-			st, err := store.Open(dbPath, protector)
+			st, err := testutil.OpenStore(t, dbPath, protector)
 			if err != nil {
 				t.Fatalf("open protected store: %v", err)
 			}
@@ -327,7 +328,7 @@ func TestMigrateLegacyPartialConnectionRowsNormalizeSecretsWithoutCombiningRows(
 					setup, tt.wantSetupURL, tt.wantSetupKey)
 			}
 			for _, key := range []string{"setup", "manager_config_v1"} {
-				raw, err := rawSettingValueIfPresent(dbPath, key)
+				raw, err := rawSettingValueIfPresent(t, dbPath, key)
 				if err != nil {
 					t.Fatalf("read raw %s: %v", key, err)
 				}
@@ -384,7 +385,7 @@ func TestMigrateLegacyConfigRejectsOverlappingPartialConflicts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-			legacyStore, err := store.Open(dbPath)
+			legacyStore, err := testutil.OpenStore(t, dbPath)
 			if err != nil {
 				t.Fatalf("open legacy store: %v", err)
 			}
@@ -399,7 +400,7 @@ func TestMigrateLegacyConfigRejectsOverlappingPartialConflicts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("marshal partial setup: %v", err)
 			}
-			if err := writeRawSetting(dbPath, "setup", string(setupData)); err != nil {
+			if err := writeRawSetting(t, dbPath, "setup", string(setupData)); err != nil {
 				t.Fatalf("write partial setup: %v", err)
 			}
 
@@ -407,7 +408,7 @@ func TestMigrateLegacyConfigRejectsOverlappingPartialConflicts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create protector: %v", err)
 			}
-			st, err := store.Open(dbPath, protector)
+			st, err := testutil.OpenStore(t, dbPath, protector)
 			if err != nil {
 				t.Fatalf("open protected store: %v", err)
 			}
@@ -439,7 +440,7 @@ func TestMigrateLegacyConfigRejectsOverlappingPartialConflicts(t *testing.T) {
 
 func TestRunDoesNotAdvanceMigrationVersionForPartialAuthorityConflict(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	legacyStore, err := store.Open(dbPath)
+	legacyStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open legacy store: %v", err)
 	}
@@ -449,7 +450,7 @@ func TestRunDoesNotAdvanceMigrationVersionForPartialAuthorityConflict(t *testing
 		_ = legacyStore.Close()
 		t.Fatalf("save partial manager config: %v", err)
 	}
-	if err := writeRawSetting(dbPath, "setup",
+	if err := writeRawSetting(t, dbPath, "setup",
 		"{\"cpaBaseUrl\":\"http://manager-b.local:8317\",\"managementKey\":\"setup-key\"}"); err != nil {
 		_ = legacyStore.Close()
 		t.Fatalf("write conflicting setup: %v", err)
@@ -467,7 +468,7 @@ func TestRunDoesNotAdvanceMigrationVersionForPartialAuthorityConflict(t *testing
 	if err != nil {
 		t.Fatalf("create protector: %v", err)
 	}
-	st, err := store.Open(dbPath, protector)
+	st, err := testutil.OpenStore(t, dbPath, protector)
 	if err != nil {
 		t.Fatalf("open protected store: %v", err)
 	}
@@ -494,7 +495,7 @@ func TestRunDoesNotAdvanceMigrationVersionForPartialAuthorityConflict(t *testing
 
 func rawBootstrapSettingValue(t testing.TB, dbPath string, key string) string {
 	t.Helper()
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := testdb.Open(t, dbPath)
 	if err != nil {
 		t.Fatalf("open raw sqlite: %v", err)
 	}
@@ -507,8 +508,8 @@ func rawBootstrapSettingValue(t testing.TB, dbPath string, key string) string {
 	return raw
 }
 
-func rawSettingValueIfPresent(dbPath string, key string) (string, error) {
-	db, err := sql.Open("sqlite", dbPath)
+func rawSettingValueIfPresent(t testing.TB, dbPath string, key string) (string, error) {
+	db, err := testdb.Open(t, dbPath)
 	if err != nil {
 		return "", err
 	}
@@ -521,8 +522,8 @@ func rawSettingValueIfPresent(dbPath string, key string) (string, error) {
 	return raw, err
 }
 
-func writeRawSetting(dbPath string, key string, value string) error {
-	db, err := sql.Open("sqlite", dbPath)
+func writeRawSetting(t testing.TB, dbPath string, key string, value string) error {
+	db, err := testdb.Open(t, dbPath)
 	if err != nil {
 		return err
 	}
@@ -534,7 +535,7 @@ func writeRawSetting(dbPath string, key string, value string) error {
 
 func TestRunNormalizesLegacyConflictDespiteOldMigratedLegacyFlag(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	legacyStore, err := store.Open(dbPath)
+	legacyStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open legacy store: %v", err)
 	}
@@ -569,7 +570,7 @@ func TestRunNormalizesLegacyConflictDespiteOldMigratedLegacyFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create protector: %v", err)
 	}
-	st, err := store.Open(dbPath, protector)
+	st, err := testutil.OpenStore(t, dbPath, protector)
 	if err != nil {
 		t.Fatalf("open protected store: %v", err)
 	}
@@ -624,7 +625,7 @@ func TestRunNormalizesLegacyConflictDespiteOldMigratedLegacyFlag(t *testing.T) {
 
 func TestRunDoesNotMarkMigrationVersionWhenNormalizationFails(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	legacyStore, err := store.Open(dbPath)
+	legacyStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open legacy store: %v", err)
 	}
@@ -652,7 +653,7 @@ func TestRunDoesNotMarkMigrationVersionWhenNormalizationFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create protector: %v", err)
 	}
-	st, err := store.Open(dbPath, protector)
+	st, err := testutil.OpenStore(t, dbPath, protector)
 	if err != nil {
 		t.Fatalf("open protected store: %v", err)
 	}
@@ -683,7 +684,7 @@ func TestRunDoesNotMarkMigrationVersionWhenNormalizationFails(t *testing.T) {
 
 func upsertRawBootstrapState(t testing.TB, dbPath string, value string) error {
 	t.Helper()
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := testdb.Open(t, dbPath)
 	if err != nil {
 		return err
 	}
@@ -695,7 +696,7 @@ func upsertRawBootstrapState(t testing.TB, dbPath string, value string) error {
 
 func blockSetupWrites(t testing.TB, dbPath string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := testdb.Open(t, dbPath)
 	if err != nil {
 		t.Fatalf("open raw sqlite: %v", err)
 	}
@@ -706,6 +707,9 @@ func blockSetupWrites(t testing.TB, dbPath string) {
 		`create trigger block_bootstrap_setup_update before update on settings
 		 when new.key = 'setup' begin select raise(abort, 'setup write blocked'); end`,
 	} {
+		if testdb.MySQL() {
+			statement = strings.ReplaceAll(statement, "when new.key = 'setup' begin select raise(abort, 'setup write blocked'); end", "for each row begin if new.`key` = 'setup' then signal sqlstate '45000' set message_text = 'setup write blocked'; end if; end")
+		}
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("install setup write blocker: %v", err)
 		}
@@ -714,7 +718,7 @@ func blockSetupWrites(t testing.TB, dbPath string) {
 
 func unblockSetupWrites(t testing.TB, dbPath string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := testdb.Open(t, dbPath)
 	if err != nil {
 		t.Fatalf("open raw sqlite: %v", err)
 	}
@@ -731,7 +735,7 @@ func unblockSetupWrites(t testing.TB, dbPath string) {
 
 func TestRunDoesNotPersistAdminCredentialWhenMigrationFails(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	legacyStore, err := store.Open(dbPath)
+	legacyStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open legacy store: %v", err)
 	}
@@ -741,7 +745,7 @@ func TestRunDoesNotPersistAdminCredentialWhenMigrationFails(t *testing.T) {
 		_ = legacyStore.Close()
 		t.Fatalf("save partial manager config: %v", err)
 	}
-	if err := writeRawSetting(dbPath, "setup",
+	if err := writeRawSetting(t, dbPath, "setup",
 		"{\"cpaBaseUrl\":\"http://manager-b.local:8317\",\"managementKey\":\"setup-key\"}"); err != nil {
 		_ = legacyStore.Close()
 		t.Fatalf("write conflicting setup: %v", err)
@@ -754,7 +758,7 @@ func TestRunDoesNotPersistAdminCredentialWhenMigrationFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create protector: %v", err)
 	}
-	st, err := store.Open(dbPath, protector)
+	st, err := testutil.OpenStore(t, dbPath, protector)
 	if err != nil {
 		t.Fatalf("open protected store: %v", err)
 	}
@@ -778,7 +782,7 @@ func TestBootstrapSucceedsAfterExplicitConflictRepair(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "usage.sqlite")
 	dataKeyPath := filepath.Join(dir, "data.key")
-	legacyStore, err := store.Open(dbPath)
+	legacyStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open legacy store: %v", err)
 	}
@@ -788,7 +792,7 @@ func TestBootstrapSucceedsAfterExplicitConflictRepair(t *testing.T) {
 		_ = legacyStore.Close()
 		t.Fatalf("save partial manager config: %v", err)
 	}
-	if err := writeRawSetting(dbPath, "setup",
+	if err := writeRawSetting(t, dbPath, "setup",
 		"{\"cpaBaseUrl\":\"http://manager-b.local:8317\",\"managementKey\":\"setup-key\"}"); err != nil {
 		_ = legacyStore.Close()
 		t.Fatalf("write conflicting setup: %v", err)
@@ -802,13 +806,20 @@ func TestBootstrapSucceedsAfterExplicitConflictRepair(t *testing.T) {
 		t.Fatalf("write management key: %v", err)
 	}
 	var stdout, stderr bytes.Buffer
-	if err := cpaconnection.Run(context.Background(), []string{
+	repairArgs := []string{
 		"--db-path", dbPath,
 		"--data-key-path", dataKeyPath,
 		"--cpa-base-url", "http://cpa-c.local:8317",
 		"--management-key-file", managementKeyPath,
 		"--repair-conflict",
-	}, &stdout, &stderr); err != nil {
+	}
+	if testdb.MySQL() {
+		t.Setenv("USAGE_DB_DRIVER", "mysql")
+		t.Setenv("USAGE_DB_DSN", testdb.DSN(t, dbPath))
+		t.Setenv("CPA_MANAGER_CONFIG", filepath.Join(dir, "config.json"))
+		repairArgs = repairArgs[2:]
+	}
+	if err := cpaconnection.Run(context.Background(), repairArgs, &stdout, &stderr); err != nil {
 		t.Fatalf("explicit repair: %v stderr=%s", err, stderr.String())
 	}
 
@@ -820,7 +831,7 @@ func TestBootstrapSucceedsAfterExplicitConflictRepair(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create protector: %v", err)
 	}
-	st, err := store.Open(dbPath, protector)
+	st, err := testutil.OpenStore(t, dbPath, protector)
 	if err != nil {
 		t.Fatalf("open protected store: %v", err)
 	}
@@ -860,7 +871,7 @@ func TestRunReEncryptsLegacyPlaintextPrefixedWithEnvelopePrefix(t *testing.T) {
 	const legacyPlaintextKey = "enc:v1:legacy-real-cpa-key"
 
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	legacyStore, err := store.Open(dbPath)
+	legacyStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open legacy store: %v", err)
 	}
@@ -876,7 +887,7 @@ func TestRunReEncryptsLegacyPlaintextPrefixedWithEnvelopePrefix(t *testing.T) {
 	// Write the legacy setup directly as a raw plaintext JSON row so the
 	// migration boundary sees the same prefix-colliding plaintext exactly as an
 	// older release would have persisted it in both connection rows.
-	if err := writeRawSetting(dbPath, "setup",
+	if err := writeRawSetting(t, dbPath, "setup",
 		`{"cpaBaseUrl":"http://cpa-legacy.local:8317","managementKey":"`+legacyPlaintextKey+`","queue":"usage","popSide":"right"}`); err != nil {
 		_ = legacyStore.Close()
 		t.Fatalf("write prefix-colliding legacy setup: %v", err)
@@ -889,7 +900,7 @@ func TestRunReEncryptsLegacyPlaintextPrefixedWithEnvelopePrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create protector: %v", err)
 	}
-	st, err := store.Open(dbPath, protector)
+	st, err := testutil.OpenStore(t, dbPath, protector)
 	if err != nil {
 		t.Fatalf("open protected store: %v", err)
 	}

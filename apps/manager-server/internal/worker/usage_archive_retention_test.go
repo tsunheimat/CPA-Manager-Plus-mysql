@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	usagearchive "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagearchive"
 	usageservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	usageparser "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -478,7 +478,7 @@ func resumeRetentionWorkerFixtureAfterRestart(t *testing.T, fixture *retentionWo
 	if err := fixture.store.Close(); err != nil {
 		t.Fatalf("close retention store: %v", err)
 	}
-	restartedStore, err := store.Open(fixture.dbPath)
+	restartedStore, err := testutil.OpenStore(t, fixture.dbPath)
 	if err != nil {
 		t.Fatalf("reopen retention store: %v", err)
 	}
@@ -774,7 +774,7 @@ func formatTestInt(value int64) string {
 
 func TestUsageArchiveRetentionWorkerDoesNotDeadlockOnNoncanonicalHash(t *testing.T) {
 	cfg := testutil.NewConfig(t)
-	rawDB, err := sqliterepo.Open(cfg.DBPath)
+	rawDB, err := testdb.Open(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}

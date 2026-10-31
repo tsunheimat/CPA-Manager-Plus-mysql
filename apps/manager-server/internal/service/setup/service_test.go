@@ -2,7 +2,6 @@ package setup
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	_ "modernc.org/sqlite"
 )
 
@@ -174,7 +174,7 @@ func TestSetupKeepsCompleteConnectionRotationRules(t *testing.T) {
 func newSetupService(t *testing.T, managerCfg *store.ManagerConfig, setup *store.Setup) (*Service, *store.Store, config.Config) {
 	t.Helper()
 	cfg := testutil.NewConfig(t)
-	schemaStore, err := store.Open(cfg.DBPath)
+	schemaStore, err := testutil.OpenStore(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("initialize setup fixture database: %v", err)
 	}
@@ -193,7 +193,7 @@ func writePartialConnectionRows(t *testing.T, dbPath string, managerCfg *store.M
 	// Seed the raw historical rows before opening the service store. Keeping two
 	// SQLite pools open while replacing settings makes the fixture depend on
 	// connection scheduling and can hide the behavior under test.
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := testdb.Open(t, dbPath)
 	if err != nil {
 		t.Fatalf("open raw sqlite: %v", err)
 	}

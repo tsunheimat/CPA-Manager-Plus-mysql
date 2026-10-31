@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/database"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
@@ -29,6 +30,15 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 	adminKey, err := resolveAdminKey(opts)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(opts.DBPath) == "" {
+		cfg, err := config.LoadWithoutCreatingDefault()
+		if err != nil {
+			return err
+		}
+		if database.Driver(cfg) == "mysql" {
+			return runMySQL(ctx, cfg, adminKey, stdout)
+		}
 	}
 	dbPath, err := resolveDBPath(opts.DBPath)
 	if err != nil {
@@ -176,6 +186,33 @@ func ensureManagerDB(ctx context.Context, dbPath string) error {
 	}
 	if !found["settings"] || !found["usage_events"] {
 		return fmt.Errorf("SQLite database at %s does not look like a CPA Manager Plus Manager Server database", dbPath)
+	}
+	return nil
+}
+
+func runMySQL(ctx context.Context, cfg config.Config, adminKey string, stdout io.Writer) error {
+	lock, err := database.Acquire(ctx, &cfg)
+	if err != nil {
+		return fmt.Errorf("acquire admin reset lock; stop Manager Server and retry: %w", err)
+	}
+	defer lock.Close()
+	if err := database.RequireExistingMySQL(ctx, cfg); err != nil {
+		return err
+	}
+	st, err := store.OpenConfigured(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	result, err := adminauthsvc.ResetAdminKey(ctx, st, adminKey)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(stdout, "CPA Manager Plus admin key reset.")
+	if result.Generated {
+		_, _ = fmt.Fprintf(stdout, "New admin key: %s\nSave this value now. It will not be shown again.\n", result.AdminKey)
+	} else {
+		_, _ = fmt.Fprintln(stdout, "Use the provided admin key to log in after restarting Manager Server.")
 	}
 	return nil
 }

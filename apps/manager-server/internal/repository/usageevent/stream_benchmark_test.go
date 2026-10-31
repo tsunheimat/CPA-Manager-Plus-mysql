@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 const compatibleUsageBenchmarkBaseTimestampMS = int64(1_700_000_000_000)
@@ -67,7 +67,7 @@ func BenchmarkWriteCompatibleUsage(b *testing.B) {
 
 func openCompatibleUsageBenchmarkDB(b *testing.B) *sql.DB {
 	b.Helper()
-	db, err := sqliterepo.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open benchmark database: %v", err)
 	}

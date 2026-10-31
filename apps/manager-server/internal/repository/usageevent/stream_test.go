@@ -15,11 +15,12 @@ import (
 	"time"
 
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 func TestWriteCompatibleUsageMatchesBuildPayload(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -367,9 +368,11 @@ func TestWriteCompatibleUsageReleasesReaderBeforeSlowWriter(t *testing.T) {
 	if _, err := repo.InsertBatch(ctx, events); err != nil {
 		t.Fatalf("insert events: %v", err)
 	}
-	busy, _, _ := runCompatibleUsageCheckpoint(t, db, "truncate")
-	if busy != 0 {
-		t.Fatalf("initial truncate checkpoint busy = %d", busy)
+	if !testdb.MySQL() {
+		busy, _, _ := runCompatibleUsageCheckpoint(t, db, "truncate")
+		if busy != 0 {
+			t.Fatalf("initial truncate checkpoint busy = %d", busy)
+		}
 	}
 
 	writer, errCh := startBlockedCompatibleUsageExport(t, ctx, repo, len(events))
@@ -392,25 +395,27 @@ func TestWriteCompatibleUsageReleasesReaderBeforeSlowWriter(t *testing.T) {
 	if _, err := repo.InsertBatch(ctx, appended); err != nil {
 		t.Fatalf("append WAL events: %v", err)
 	}
-	busy, logFrames, checkpointedFrames := runCompatibleUsageCheckpoint(t, db, "passive")
-	t.Logf(
-		"passive checkpoint while HTTP writer is blocked: busy=%d log_frames=%d checkpointed_frames=%d",
-		busy,
-		logFrames,
-		checkpointedFrames,
-	)
-	if busy != 0 {
-		t.Fatalf("passive checkpoint busy = %d", busy)
-	}
-	if logFrames <= 0 {
-		t.Fatalf("passive checkpoint log frames = %d, want positive", logFrames)
-	}
-	if checkpointedFrames != logFrames {
-		t.Fatalf(
-			"passive checkpoint frames = %d/%d, want checkpoint to catch up while writer is blocked",
-			checkpointedFrames,
+	if !testdb.MySQL() {
+		busy, logFrames, checkpointedFrames := runCompatibleUsageCheckpoint(t, db, "passive")
+		t.Logf(
+			"passive checkpoint while HTTP writer is blocked: busy=%d log_frames=%d checkpointed_frames=%d",
+			busy,
 			logFrames,
+			checkpointedFrames,
 		)
+		if busy != 0 {
+			t.Fatalf("passive checkpoint busy = %d", busy)
+		}
+		if logFrames <= 0 {
+			t.Fatalf("passive checkpoint log frames = %d, want positive", logFrames)
+		}
+		if checkpointedFrames != logFrames {
+			t.Fatalf(
+				"passive checkpoint frames = %d/%d, want checkpoint to catch up while writer is blocked",
+				checkpointedFrames,
+				logFrames,
+			)
+		}
 	}
 
 	if err := finishBlockedCompatibleUsageExport(t, writer, errCh); err != nil {
@@ -445,7 +450,7 @@ func TestWriteCompatibleUsageStopsAfterContextCancellation(t *testing.T) {
 }
 
 func TestCompatibleUsageQueryPlans(t *testing.T) {
-	db, repo := openCompatibleUsageStreamTestRepository(t)
+	db, repo := openCompatibleUsageStreamTestRepository(t, true)
 	ctx := context.Background()
 	events := []usage.Event{
 		streamTestEvent("compatible-plan-a", 100, "endpoint-a", "model-a"),
@@ -496,7 +501,7 @@ func TestCompatibleUsageQueryPlans(t *testing.T) {
 }
 
 func TestInsertBatchSelectsServiceTierByProviderSemantics(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -534,7 +539,7 @@ func TestInsertBatchSelectsServiceTierByProviderSemantics(t *testing.T) {
 }
 
 func TestWriteExportJSONLUsesRecentLimitAndAscendingKeysetOrder(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -598,7 +603,7 @@ func TestWriteExportJSONLUsesRecentLimitAndAscendingKeysetOrder(t *testing.T) {
 }
 
 func TestWriteFullExportJSONLIgnoresQueryLimitAndUsesSnapshotBoundary(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -649,7 +654,7 @@ func TestWriteFullExportJSONLIgnoresQueryLimitAndUsesSnapshotBoundary(t *testing
 }
 
 func TestWriteFullExportJSONLRetainsRowsDeletedAfterSnapshot(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -699,7 +704,7 @@ func TestWriteFullExportJSONLRetainsRowsDeletedAfterSnapshot(t *testing.T) {
 }
 
 func TestWriteFullExportJSONLStopsWhenContextIsCancelledDuringStreaming(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -721,7 +726,7 @@ func TestWriteFullExportJSONLStopsWhenContextIsCancelledDuringStreaming(t *testi
 }
 
 func TestWriteFullExportJSONLEmptyDatabaseReturnsEmptyJSONL(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -769,9 +774,16 @@ func TestValidatedMetadataJSONRequiresJSONObject(t *testing.T) {
 	}
 }
 
-func openCompatibleUsageStreamTestRepository(t *testing.T) (*sql.DB, *repository) {
+func openCompatibleUsageStreamTestRepository(t *testing.T, sqliteOnly ...bool) (*sql.DB, *repository) {
 	t.Helper()
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	var db *sql.DB
+	var err error
+	path := filepath.Join(t.TempDir(), "usage.sqlite")
+	if len(sqliteOnly) > 0 && sqliteOnly[0] {
+		db, err = sqliterepo.Open(path)
+	} else {
+		db, err = testdb.Open(t, path)
+	}
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -1019,7 +1031,7 @@ func streamTestEvent(hash string, timestampMS int64, endpoint, model string) usa
 }
 
 func TestWriteExportJSONLAndCompatibleUsagePreserveRequestMetadata(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -1129,7 +1141,7 @@ func TestWriteExportJSONLAndCompatibleUsagePreserveRequestMetadata(t *testing.T)
 }
 
 func TestListRecentUsesCanonicalCacheAccountingEvidence(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -1181,7 +1193,7 @@ func TestListRecentUsesCanonicalCacheAccountingEvidence(t *testing.T) {
 }
 
 func TestWriteExportJSONLPreservesExplicitCacheModeProvenance(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -1228,11 +1240,9 @@ func TestWriteExportJSONLPreservesExplicitCacheModeProvenance(t *testing.T) {
 	}
 }
 
-
-
 func TestDerivedCacheModeJSONLRoundTripPersistsAsOneAccountingResult(t *testing.T) {
 	ctx := context.Background()
-	sourceDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "source.sqlite"))
+	sourceDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "source.sqlite"))
 	if err != nil {
 		t.Fatalf("open source database: %v", err)
 	}
@@ -1290,7 +1300,7 @@ func TestDerivedCacheModeJSONLRoundTripPersistsAsOneAccountingResult(t *testing.
 		t.Fatalf("derived mode escalated into raw explicit provenance: %q", hints.ExplicitMode)
 	}
 
-	restoredDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "restored.sqlite"))
+	restoredDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "restored.sqlite"))
 	if err != nil {
 		t.Fatalf("open restored database: %v", err)
 	}

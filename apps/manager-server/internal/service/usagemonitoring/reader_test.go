@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	monitoringrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 func TestSupportsStatsFilterKeepsHighCardinalityFallbacksExplicit(t *testing.T) {
@@ -78,7 +78,7 @@ func TestEventProjectionPreferenceKeepsTimeOnlyPagesOnTimestampIndex(t *testing.
 
 func TestAccountWindowStatsReturnsUnavailableForProjectionSchemaMismatch(t *testing.T) {
 	ctx := context.Background()
-	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	sqlDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

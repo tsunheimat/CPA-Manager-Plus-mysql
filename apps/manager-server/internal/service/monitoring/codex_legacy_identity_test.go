@@ -7,11 +7,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 func TestCodexLegacyEvidencePreservesHistoryAndWindowResponses(t *testing.T) {
@@ -67,7 +68,7 @@ func BenchmarkCodexLegacyIdentityServices(b *testing.B) {
 	ctx := context.Background()
 	wantRequests := []int64{int64(count * 154 / 610), int64(count * 296 / 610)}
 	var databaseBytes int64
-	if err := db.QueryRow("select page_count * page_size from pragma_page_count(), pragma_page_size()").Scan(&databaseBytes); err != nil {
+	if err := db.QueryRow(testdb.SQL(db, "select page_count * page_size from pragma_page_count(), pragma_page_size()", "select sum(data_length+index_length) from information_schema.tables where table_schema=database()")).Scan(&databaseBytes); err != nil {
 		b.Fatal(err)
 	}
 	b.Logf("fixture prepared elapsed=%s database_bytes=%d", time.Since(preparedAt), databaseBytes)
@@ -146,39 +147,44 @@ func newCodexLegacyServiceFixture(t testing.TB, count int, payload string) (*sql
 	if count < 12 {
 		t.Fatal("identity service fixture requires at least 12 events")
 	}
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
-	if err := sqliterepo.RunDerivedStartupMaintenance(ctx, db); err != nil {
+	if err := testdb.PrepareIndexes(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 	const fromMS int64 = 1_700_000_000_000
 	toMS := fromMS + int64(count)*1000 + 1
 	aCount, bCount := count*154/610, count*296/610
-	if _, err := db.Exec(`with recursive ids(id) as (
-		select 1 union all select id + 1 from ids where id < @rows
-	), credentials as (
-		select id, case when id <= @a then 0 when id <= @a + @b then 1 else 2 end as credential
-		from ids
-	) insert into usage_events (
-		id, event_hash, timestamp_ms, timestamp, model, requested_model, created_at_ms,
-		provider, auth_provider_snapshot, auth_file_snapshot, source, auth_index,
-		auth_account_id_snapshot, account_snapshot, input_tokens, output_tokens, total_tokens, raw_json
-	) select id, 'identity-' || id, @base + id * 1000, cast(@base + id * 1000 as text),
-		'gpt-test', 'gpt-test', @base + id * 1000, 'codex', 'codex',
-		'codex-' || credential || '.json', 'codex-' || credential || '.json', 'auth-' || credential,
-		case when id > case credential
-			when 0 then @a / 2 when 1 then @a + @b / 2
-			else @a + @b + (@rows - @a - @b) / 2 end
-		then 'workspace-' || credential else '' end,
-		'member-' || credential || '@example.com', 100, 20, 120, @payload
-	from credentials`, sql.Named("rows", count), sql.Named("a", aCount), sql.Named("b", bCount),
-		sql.Named("base", fromMS), sql.Named("payload", payload)); err != nil {
-		t.Fatal(err)
+	const batchSize = 512
+	for start := 1; start <= count; start += batchSize {
+		var values []any
+		var rows []string
+		for id := start; id <= count && id < start+batchSize; id++ {
+			credential, boundary := 0, aCount/2
+			if id > aCount {
+				credential, boundary = 1, aCount+bCount/2
+			}
+			if id > aCount+bCount {
+				credential, boundary = 2, aCount+bCount+(count-aCount-bCount)/2
+			}
+			account := ""
+			if id > boundary {
+				account = fmt.Sprintf("workspace-%d", credential)
+			}
+			ts := fromMS + int64(id)*1000
+			file := fmt.Sprintf("codex-%d.json", credential)
+			values = append(values, id, fmt.Sprintf("identity-%d", id), ts, fmt.Sprint(ts), "gpt-test", "gpt-test", ts, "codex", "codex", file, file, fmt.Sprintf("auth-%d", credential), account, fmt.Sprintf("member-%d@example.com", credential), 100, 20, 120, payload)
+			rows = append(rows, "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+		}
+		if _, err := db.Exec(`insert into usage_events(id,event_hash,timestamp_ms,timestamp,model,requested_model,created_at_ms,provider,auth_provider_snapshot,auth_file_snapshot,source,auth_index,auth_account_id_snapshot,account_snapshot,input_tokens,output_tokens,total_tokens,raw_json) values `+strings.Join(rows, ","), values...); err != nil {
+			t.Fatal(err)
+		}
 	}
+
 	st := store.New(db)
 	if err := st.SaveModelPrices(ctx, map[string]store.ModelPrice{"gpt-test": {Prompt: 1, Completion: 2}}); err != nil {
 		t.Fatal(err)
@@ -218,7 +224,7 @@ func newCodexLegacyServiceFixture(t testing.TB, count int, payload string) (*sql
 	// queries after checkpointing that setup work, with the same database for
 	// both evidence readers. Reopening a connection does not clear OS caches.
 	var busy, logFrames, checkpointed int
-	if err := db.QueryRow("pragma wal_checkpoint(truncate)").Scan(&busy, &logFrames, &checkpointed); err != nil || busy != 0 {
+	if err := db.QueryRow(testdb.SQL(db, "pragma wal_checkpoint(truncate)", "select 0,0,0")).Scan(&busy, &logFrames, &checkpointed); err != nil || busy != 0 {
 		t.Fatalf("checkpoint identity fixture: busy=%d err=%v", busy, err)
 	}
 	history := AccountHistoryRequest{}

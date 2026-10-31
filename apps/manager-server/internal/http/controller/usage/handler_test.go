@@ -9,15 +9,15 @@ import (
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	usagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 func TestGetArchiveDetailReturnsOnlySafePersistedProgress(t *testing.T) {
 	cfg := testutil.NewConfig(t)
 	st := testutil.NewStore(t, cfg)
-	db, err := sqliterepo.Open(cfg.DBPath)
+	db, err := testdb.Open(t, cfg.DBPath)
 	if err != nil {
 		t.Fatal(err)
 	}

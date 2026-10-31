@@ -49,3 +49,7 @@ TODO.md
 
 # Local temp scratch files
 .tmp-*
+
+# Local k3s credentials; only the example belongs in source control.
+/deploy/k3s/secrets.yaml
+/deploy/k3s/*.local.yaml

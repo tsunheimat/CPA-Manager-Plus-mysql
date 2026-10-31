@@ -646,6 +646,95 @@ const stopNativeFixtureProcess = (installDir) => {
 };
 
 describe('installer script', () => {
+  it.each(['docker', 'native'])('generates a %s installation with a private MySQL DSN file', (method) => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-mysql-install-'));
+    const secret = 'cpamp:test-password@tcp(database.example:3306)/cpamp';
+    try {
+      const result = runInstaller({
+        CPAMP_DRY_RUN: '0', CPAMP_SKIP_EXECUTE: '1', CPAMP_CONFIRM: '1',
+        CPAMP_INSTALL_DIR: installDir, CPAMP_INSTALL_MODE: 'cpamp',
+        CPAMP_DEPLOY_METHOD: method, CPAMP_DB_DRIVER: 'mysql',
+        CPAMP_MYSQL_DSN: secret, CPAMP_VERSION: 'vnext',
+      });
+      expect(combinedOutput(result)).not.toContain(secret);
+      expect(result.status, combinedOutput(result)).toBe(0);
+      const secretPath = path.join(installDir, 'secrets/mysql-dsn');
+      expect(readFileSync(secretPath, 'utf8').trim()).toBe(secret);
+      expect(statSync(secretPath).mode & 0o777).toBe(0o600);
+      if (method === 'docker') {
+        const compose = readFileSync(path.join(installDir, 'compose.yaml'), 'utf8');
+        expect(compose).toContain('USAGE_DB_DRIVER: mysql');
+        expect(compose).toContain('USAGE_DB_DSN_FILE: /run/secrets/mysql_dsn');
+        expect(compose).toContain('file: ./secrets/mysql-dsn');
+        expect(compose).not.toContain(secret);
+      } else {
+        const runtime = readdirSync(path.join(installDir, 'runtime'))[0];
+        const config = JSON.parse(readFileSync(path.join(installDir, 'runtime', runtime, 'config.json'), 'utf8'));
+        expect(config.dbDriver).toBe('mysql');
+        expect(config.dbDsnFile).toBe(secretPath);
+      }
+    } finally { rmSync(installDir, { recursive: true, force: true }); }
+  });
+
+  it.each(['config', 'run script', 'systemd'])('preserves native MySQL from %s during an upgrade', (source) => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-mysql-upgrade-'));
+    const release = writeFakeNativeRelease();
+    const secret = 'cpamp:test-password@tcp(database.example:3306)/cpamp';
+    const legacy = writeLegacyNativeInstall(installDir, {
+      runEnvironment: source === 'run script' ? `export USAGE_DB_DRIVER=mysql\nexport USAGE_DB_DSN='${secret}'\n` : '',
+      serviceEnvironment: source === 'systemd' ? `Environment="USAGE_DB_DRIVER=mysql"\nEnvironment="USAGE_DB_DSN=${secret}"\n` : '',
+    });
+    if (source === 'config') {
+      const config = JSON.parse(readFileSync(legacy.configPath, 'utf8'));
+      writeFileSync(legacy.configPath, JSON.stringify({ ...config, dbDriver: 'mysql', dbDsn: secret }));
+    }
+    const log = path.join(installDir, 'commands.log');
+    try {
+      const result = runInstaller({
+        CPAMP_DRY_RUN: '0', CPAMP_CONFIRM: '1', CPAMP_OPERATION: 'upgrade',
+        CPAMP_VERSION: 'vnext', CPAMP_INSTALL_DIR: installDir,
+        CPAMP_FAKE_NATIVE_ARCHIVE: release.archivePath,
+        FAKE_NATIVE_COMMAND_LOG: log, FAKE_NATIVE_DB_PATH: legacy.dbPath,
+        PATH: `${release.fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+      });
+      expect(result.status, combinedOutput(result)).toBe(0);
+      expect(combinedOutput(result)).not.toContain(secret);
+      const config = JSON.parse(readFileSync(path.join(installDir, 'runtime', `cpa-manager-plus_vnext_${nativePlatform}_${nativeArch}`, 'config.json'), 'utf8'));
+      expect(config.dbDriver).toBe('mysql');
+      expect(readFileSync(config.dbDsnFile, 'utf8').trim()).toBe(secret);
+      expect(readFileSync(log, 'utf8')).not.toContain('--db-path');
+    } finally {
+      stopNativeFixtureProcess(installDir);
+      rmSync(installDir, { recursive: true, force: true });
+      rmSync(release.fakeBin, { recursive: true, force: true });
+      rmSync(release.fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('upgrades a MySQL Docker service without passing a SQLite database override', () => {
+    const installDir = mkdtempSync(path.join(os.tmpdir(), 'cpamp-mysql-upgrade-'));
+    const fakeBin = mkdtempSync(path.join(os.tmpdir(), 'cpamp-mysql-bin-'));
+    const fixture = writeCustomDockerInstall(installDir);
+    const composePath = path.join(installDir, 'compose.yaml');
+    writeFileSync(composePath, fixture.composeContent.replace('    environment:', '    environment:\n      USAGE_DB_DRIVER: mysql\n      USAGE_DB_DSN: cpamp:test@tcp(mysql:3306)/cpamp'));
+    const dockerLog = path.join(fakeBin, 'docker.log');
+    writeFakeDocker(fakeBin);
+    try {
+      const result = runInstaller({
+        CPAMP_DRY_RUN: '0', CPAMP_CONFIRM: '1', CPAMP_OPERATION: 'upgrade',
+        CPAMP_INSTALL_DIR: installDir, FAKE_DOCKER_LOG: dockerLog,
+        FAKE_DOCKER_DB_PATH: fixture.databasePath,
+        FAKE_DOCKER_DATA_KEY_PATH: fixture.dataKeyPath,
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ''}`,
+      });
+      expect(result.status, combinedOutput(result)).toBe(0);
+      const calls = readFileSync(dockerLog, 'utf8');
+      expect(calls).toContain('manager-data-snapshot create');
+      expect(calls).not.toContain('--db-path');
+      expect(readFileSync(composePath, 'utf8')).toContain('USAGE_DB_DRIVER: mysql');
+    } finally { rmSync(installDir, { recursive: true, force: true }); rmSync(fakeBin, { recursive: true, force: true }); }
+  });
+
   it('passes shell syntax validation', () => {
     const result = spawnSync('bash', ['-n', installerPath], {
       cwd: repoRoot,

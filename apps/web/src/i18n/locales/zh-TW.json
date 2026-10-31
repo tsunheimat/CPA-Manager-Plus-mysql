@@ -257,6 +257,13 @@
     "usage_maintenance_short": "維護"
   },
   "usage_maintenance": {
+    "storage_mysql_operations": "備份或最佳化資料表之前請停止 Manager Server。最佳化會重建資料表，可能需要額外磁碟空間。維護完成後重新啟動 Manager Server。",
+    "storage_mysql_copy_backup": "複製備份命令",
+    "storage_mysql_copy_compact": "複製最佳化命令",
+    "storage_mysql_title": "MySQL 儲存空間",
+    "storage_mysql_hint": "MySQL 回報的資料表與索引估算大小。",
+    "storage_mysql_note": "刪除後由 MySQL 管理儲存空間重用，不適用 SQLite 離線壓縮命令。",
+    "storage_mysql_backup": "請同時備份 MySQL、data.key 與 usage-archives 目錄。遷移伺服器時必須保留原資料金鑰。",
     "archive_management": "封存管理",
     "archive_records": "封存紀錄",
     "archive_retained": "封存仍保留",

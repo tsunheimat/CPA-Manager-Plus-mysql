@@ -1861,21 +1861,52 @@ func clearInactiveContainerRelationships(
 		)`, updatedAtMS, accountKey, provider); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `update account_quota_windows
-		set relationship_kind = null, container_provider_window_id = null, updated_at_ms = ?
-		where account_key = ? and provider = ?
-			and coalesce(trim(relationship_kind), '') <> ''
-			and coalesce(trim(container_provider_window_id), '') <> ''
-			and exists (
-				select 1 from account_quota_windows parent
-				where parent.account_key = account_quota_windows.account_key
-					and parent.provider = account_quota_windows.provider
-					and parent.provider_window_id = account_quota_windows.container_provider_window_id
-					and parent.scope_fingerprint = account_quota_windows.scope_fingerprint
-					and parent.inventory_scope_key = account_quota_windows.inventory_scope_key
-					and parent.availability = 'inactive'
-			)`, updatedAtMS, accountKey, provider)
-	return err
+	// Select identities before updating the same table. MySQL does not allow
+	// this correlated self-read inside UPDATE, and both backends retain the
+	// selection and mutation within the caller's writer transaction.
+	rows, err := tx.QueryContext(ctx, `select distinct child.id
+		from account_quota_windows child
+		join account_quota_windows parent
+			on parent.account_key = child.account_key
+			and parent.provider = child.provider
+			and parent.provider_window_id = child.container_provider_window_id
+			and parent.scope_fingerprint = child.scope_fingerprint
+			and parent.inventory_scope_key = child.inventory_scope_key
+		where child.account_key = ? and child.provider = ?
+			and coalesce(trim(child.relationship_kind), '') <> ''
+			and coalesce(trim(child.container_provider_window_id), '') <> ''
+			and parent.availability = 'inactive'`, accountKey, provider)
+	if err != nil {
+		return err
+	}
+	var ids []any
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for len(ids) > 0 {
+		n := min(len(ids), 500)
+		args := append([]any{updatedAtMS}, ids[:n]...)
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", n), ",")
+		if _, err := tx.ExecContext(ctx, `update account_quota_windows
+			set relationship_kind = null, container_provider_window_id = null, updated_at_ms = ?
+			where id in (`+placeholders+`)`, args...); err != nil {
+			return err
+		}
+		ids = ids[n:]
+	}
+	return nil
 }
 
 func insertSnapshot(ctx context.Context, tx *sql.Tx, snapshot model.AccountQuotaSnapshot) error {

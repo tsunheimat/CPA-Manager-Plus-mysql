@@ -731,6 +731,7 @@ export interface UsageMaintenanceStatus {
   storage: {
     page_size: number;
     page_count: number;
+    driver?: 'sqlite' | 'mysql';
     freelist_count: number;
     reclaimable_bytes: number;
     database_bytes: number;
@@ -738,7 +739,7 @@ export interface UsageMaintenanceStatus {
     shm_bytes: number;
     total_bytes: number;
   };
-  compact_requires_stopped_server: true;
+  compact_requires_stopped_server: boolean;
 }
 
 const demoUsageImportSessions = new Map<string, UsageImportSession>();

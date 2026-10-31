@@ -25,6 +25,7 @@ import (
 	usagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -475,7 +476,7 @@ func TestServerCompatStatusAuthAndCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
-	rawDB, err := sqliterepo.Open(configuredCfg.DBPath)
+	rawDB, err := testdb.Open(t, configuredCfg.DBPath)
 	if err != nil {
 		t.Fatalf("open migration state database: %v", err)
 	}
@@ -552,8 +553,11 @@ func TestServerCompatStatusIncludesSanitizedDerivedMaintenanceState(t *testing.T
 	if err := json.Unmarshal(degradedPayload.DatabaseMaintenance, &degraded); err != nil {
 		t.Fatalf("decode maintenance payload: %v", err)
 	}
-	if !degraded.Required || !degraded.PerformanceDegraded || degraded.DeferredIndexes == 0 || degraded.Command != "cleanup-derived" {
+	if !testdb.MySQL() && (!degraded.Required || !degraded.PerformanceDegraded || degraded.DeferredIndexes == 0 || degraded.Command != "cleanup-derived") {
 		t.Fatalf("degraded maintenance payload = %#v", degraded)
+	}
+	if testdb.MySQL() && (degraded.Required || degraded.DeferredIndexes != 0) {
+		t.Fatalf("MySQL indexes should already be installed: %#v", degraded)
 	}
 	maintenanceJSON := strings.ToLower(string(degradedPayload.DatabaseMaintenance))
 	for _, forbidden := range []string{"idx_", "create index", "usage_monitoring_event_projection", strings.ToLower(cfg.DBPath)} {
@@ -1029,7 +1033,7 @@ func TestServerCompatUsageArchiveLifecycleAndSanitizedResponses(t *testing.T) {
 	}
 
 	const internalError = "/private/archive/internal failure detail"
-	rawDB, err := sqliterepo.Open(cfg.DBPath)
+	rawDB, err := testdb.Open(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open archive status DB: %v", err)
 	}
@@ -1164,7 +1168,7 @@ func TestServerCompatUsageArchiveLifecycleAndSanitizedResponses(t *testing.T) {
 			t.Fatalf("maintenance status omitted %s: %s", field, maintenanceRR.Body.String())
 		}
 	}
-	if !maintenance.CompactRequiresStoppedServer || maintenance.Storage.PageSize <= 0 || maintenance.Storage.PageCount <= 0 {
+	if !maintenance.CompactRequiresStoppedServer || (maintenance.Storage.Driver != "mysql" && (maintenance.Storage.PageSize <= 0 || maintenance.Storage.PageCount <= 0)) {
 		t.Fatalf("maintenance compact/storage status = %#v", maintenance)
 	}
 	if maintenance.Storage.DatabaseBytes <= 0 || maintenance.Storage.TotalBytes != maintenance.Storage.DatabaseBytes+maintenance.Storage.WALBytes+maintenance.Storage.SHMBytes {
@@ -1250,7 +1254,7 @@ func TestServerCompatUsageMaintenanceRejectsStaleAggregateState(t *testing.T) {
 			cfg.DashboardHourlyRollupEnabled = true
 			handler, _ := newCompatHandler(t, cfg, nil)
 
-			rawDB, err := sqliterepo.Open(cfg.DBPath)
+			rawDB, err := testdb.Open(t, cfg.DBPath)
 			if err != nil {
 				t.Fatalf("open aggregate state: %v", err)
 			}

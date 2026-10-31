@@ -93,7 +93,7 @@ See [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/gui
 
 ### Request Monitoring And Failure Diagnosis
 
-- Persist requests from the CPA usage queue in local SQLite and search account, client API key, and realtime request views.
+- Persist requests from the CPA usage queue in SQLite or MySQL 8.4 and search account, client API key, and realtime request views.
 - Inspect status, latency, token, cache, trace, and redacted failure evidence without exposing raw failure bodies.
 - Export or import request history as JSONL.
 - Open the [Monitoring Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/monitoring).
@@ -117,6 +117,8 @@ See [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/gui
 - Run CPAMP Full Mode as one Docker container or a native Linux, macOS, or Windows package for amd64/arm64; the full stack can run alongside CPA.
 - Keep request history, Manager configuration, automation state, and model prices in local files with no account registration or telemetry SDK.
 - Back up SQLite files together with `data.key` to preserve encrypted CPA Management Keys.
+- For MySQL configuration, Docker Compose, SQLite migration, and backups, see [MySQL storage](docs/mysql.md).
+- For k3s manifests with MySQL and automatic GHCR image builds, see [k3s deployment](deploy/k3s/README.md).
 - If you harden the runtime with a read-only root filesystem or a non-root user, give SQLite a writable temporary directory and a writable database file; see [Read-Only Root Filesystem](https://seakee.github.io/CPA-Manager-Plus/docs/en/deployment/docker.html).
 
 Want to preview the interface first? Open the [Live Demo](https://seakee.github.io/CPA-Manager-Plus/). The demo uses fictional data only. It is not a deployment or runtime mode and cannot connect to, manage, or monitor a real CPA instance.
@@ -208,7 +210,7 @@ Recommended CPA version: `v7.3.4+`. The HTTP usage queue needs `v6.10.8+`.
 - CPAMP does not phone home, include analytics SDKs, or require account registration.
 - External calls are limited to the CPA gateway and integrations you explicitly configure or trigger, such as OAuth, provider checks, plugin releases, and model price sync.
 - Request history, configuration, model prices, inspection history, and automation state stay in local files.
-- CPA Management Keys are encrypted before SQLite persistence; backups require the SQLite files and `data.key`.
+- CPA Management Keys are encrypted before database persistence; backups require the database and `data.key`.
 - Normal APIs and JSONL exports expose redacted failure summaries, never raw failure bodies or stored raw JSON.
 - CPAMP is intended for traffic and credentials you are authorized to operate.
 

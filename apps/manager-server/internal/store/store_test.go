@@ -12,7 +12,7 @@ import (
 )
 
 func TestStorePausesRollupsUntilUsageCacheAccountingMigrationCompletes(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestStorePausesRollupsUntilUsageCacheAccountingMigrationCompletes(t *testin
 }
 
 func TestStorePersistsAccountSnapshot(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestStorePersistsAccountSnapshot(t *testing.T) {
 }
 
 func TestStoreBackfillsUsageResponseMetadata(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestStoreBackfillsUsageResponseMetadata(t *testing.T) {
 }
 
 func TestStoreBackfillsCamelCaseUsageResponseMetadata(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestStoreBackfillsCamelCaseUsageResponseMetadata(t *testing.T) {
 }
 
 func TestStoreEnrichesExistingXAIResponseMetadata(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestStoreEnrichesExistingXAIResponseMetadata(t *testing.T) {
 }
 
 func TestStoreCompletesPartialXAIProviderUsageMetadata(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestStoreCompletesPartialXAIProviderUsageMetadata(t *testing.T) {
 }
 
 func TestStoreBackfillSkipsUnsupportedRateLimitHeadersWithoutStarvingLaterRows(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestStoreBackfillSkipsUnsupportedRateLimitHeadersWithoutStarvingLaterRows(t
 }
 
 func TestStoreBackfillMarksUnsupportedOnlyHeaderRowsProcessed(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestStoreBackfillMarksUnsupportedOnlyHeaderRowsProcessed(t *testing.T) {
 }
 
 func TestStorePersistsRequestedAndResolvedModels(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestStorePersistsRequestedAndResolvedModels(t *testing.T) {
 }
 
 func TestStoreAPIKeyAliases(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -581,7 +581,7 @@ func TestStoreAPIKeyAliases(t *testing.T) {
 }
 
 func TestStoreAPIKeyAliasesActiveHashesMigration(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := openPortableTestStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -32,7 +32,7 @@ func (r *blockingUsageAggregateRepository) LoadRowsTx(ctx context.Context, tx *s
 
 func TestLoadUsageHourlyPricingSnapshotIsConsistentDuringConcurrentWrites(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(t.TempDir() + "/usage.sqlite")
+	db, err := openPortableTestStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestLoadUsageHourlyPricingSnapshotIsConsistentDuringConcurrentWrites(t *tes
 
 func TestWithModelPriceSnapshotBlocksMutationsUntilReadCompletes(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(t.TempDir() + "/usage.sqlite")
+	db, err := openPortableTestStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -255,7 +255,7 @@ func pricingSnapshotCalls(rows []UsagePricingHourlyRow) int64 {
 
 func TestLoadUsageHourlyPricingSnapshotEdgeErrorClassification(t *testing.T) {
 	ctx := context.Background()
-	db, err := Open(t.TempDir() + "/usage.sqlite")
+	db, err := openPortableTestStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

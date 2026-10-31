@@ -8,12 +8,12 @@ import (
 	"testing"
 	"unicode"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 func TestRequestMetadataPersistsAndIsSearchable(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestRequestMetadataPersistsAndIsSearchable(t *testing.T) {
 }
 
 func TestInsertBatchNormalizesRequestMetadataAtPersistenceBoundary(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestInsertBatchNormalizesRequestMetadataAtPersistenceBoundary(t *testing.T)
 }
 
 func TestNewRequestMetadataFieldsPersistAndLoad(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}

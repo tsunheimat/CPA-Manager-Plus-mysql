@@ -13,8 +13,9 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -345,7 +346,7 @@ func catchUpReaderRollup(t *testing.T, ctx context.Context, db *store.Store) {
 
 func newReaderTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(t.TempDir() + "/usage.sqlite")
+	db, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -373,7 +374,7 @@ func readerEvent(hash string, timestampMS int64, model string, failed bool, inpu
 
 func newReaderTestStoreWithDB(t *testing.T) (*store.Store, *sql.DB) {
 	t.Helper()
-	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	sqlDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -395,7 +396,7 @@ func TestReaderClassifiesSnapshotErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		catchUpReaderRollup(t, ctx, db)
-		if _, err := sqlDB.ExecContext(ctx, `drop table usage_hourly_aggregate_v1`); err != nil {
+		if _, err := testdb.ExecScript(ctx, sqlDB, `drop table usage_hourly_aggregate_v1`); err != nil {
 			t.Fatal(err)
 		}
 		snapshot, ok := reader.LoadAnalytics(ctx, filter, "hour", time.UTC, false)
@@ -414,7 +415,7 @@ func TestReaderClassifiesSnapshotErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		catchUpReaderRollup(t, ctx, db)
-		if _, err := sqlDB.ExecContext(ctx, `delete from usage_monitoring_rollup_state where rollup_name = 'projection_v1'`); err != nil {
+		if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_monitoring_rollup_state where rollup_name = 'projection_v1'`); err != nil {
 			t.Fatal(err)
 		}
 		snapshot, ok := reader.LoadAnalytics(ctx, filter, "hour", time.UTC, false, DeletedEdges{Left: true})
@@ -433,7 +434,7 @@ func TestReaderClassifiesSnapshotErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		catchUpReaderRollup(t, ctx, db)
-		if _, err := sqlDB.ExecContext(ctx, `delete from usage_pricing_hourly_rollups_v1;
+		if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_pricing_hourly_rollups_v1;
 			alter table usage_monitoring_event_projection_v1 rename column normalized_total_input_tokens to unavailable_tokens`); err != nil {
 			t.Fatal(err)
 		}

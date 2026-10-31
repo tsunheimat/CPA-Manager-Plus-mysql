@@ -22,11 +22,12 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/cpaconnection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/derivedmaintenance"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/managerdatasnapshot"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/mysqlmigrate"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/runtimeconfig"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/usagecompact"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/database"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/httpapi"
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	bootstrapservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/bootstrap"
@@ -45,6 +46,14 @@ func main() {
 	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "migrate-to-mysql":
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			if err := mysqlmigrate.Run(ctx, os.Args[2:], os.Stdout, os.Stderr); err != nil {
+				log.Printf("migrate to MySQL: %v", err)
+				os.Exit(1)
+			}
+			return
 		case "reset-admin-key", "reset-admin-password":
 			if err := adminreset.Run(context.Background(), os.Args[2:], os.Stdout, os.Stderr); err != nil {
 				log.Printf("reset admin key: %v", err)
@@ -112,7 +121,7 @@ func runServer() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	databaseLock, err := processlock.Acquire(cfg.DBPath)
+	databaseLock, err := database.Acquire(context.Background(), &cfg)
 	if err != nil {
 		log.Fatalf("acquire manager database process lock: %v", err)
 	}
@@ -121,13 +130,7 @@ func runServer() {
 			log.Printf("close manager database process lock: %v", err)
 		}
 	}()
-	cfg.DBPath = databaseLock.DatabasePath()
-	if err := sqliterepo.RequireExistingDataKeyForEncryptedCPAConnection(
-		context.Background(),
-		cfg.DBPath,
-		cfg.DataKey,
-		cfg.DataKeyPath,
-	); err != nil {
+	if err := database.RequireDataKey(context.Background(), cfg); err != nil {
 		log.Fatalf("validate data key availability: %v", err)
 	}
 	dataKey, dataKeyCreated, err := security.LoadOrCreateDataKey(cfg.DataKey, cfg.DataKeyPath)
@@ -138,13 +141,13 @@ func runServer() {
 	if err != nil {
 		log.Fatalf("initialize secret protector: %v", err)
 	}
-	db, err := store.Open(cfg.DBPath, protector)
+	db, err := store.OpenConfigured(context.Background(), cfg, protector)
 	if err != nil {
-		log.Fatalf("open sqlite: %v", err)
+		log.Fatalf("open database: %v", err)
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			log.Printf("close sqlite: %v", err)
+			log.Printf("close database: %v", err)
 		}
 	}()
 
@@ -169,20 +172,39 @@ func runServer() {
 	collectorWorker := worker.NewCollectorWorker(cfg, db, collectorService)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	walMaintenance, err := sqliterepo.NewWALMaintenance(cfg.DBPath)
-	if err != nil {
-		log.Printf("configure SQLite WAL maintenance: %v", err)
-	} else {
-		walMaintenance.Start(ctx)
-		defer func() {
-			if err := walMaintenance.Close(); err != nil {
-				log.Printf("close SQLite WAL maintenance: %v", err)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := databaseLock.Check(ctx); err != nil && ctx.Err() == nil {
+					log.Fatalf("manager database ownership lost: %v", err)
+				}
 			}
-		}()
+		}
+	}()
+	var walMaintenance *sqliterepo.WALMaintenance
+	if database.Driver(cfg) == "sqlite" {
+		walMaintenance, err = sqliterepo.NewWALMaintenance(cfg.DBPath)
+		if err != nil {
+			log.Printf("configure SQLite WAL maintenance: %v", err)
+		} else {
+			walMaintenance.Start(ctx)
+			defer func() {
+				if err := walMaintenance.Close(); err != nil {
+					log.Printf("close SQLite WAL maintenance: %v", err)
+				}
+			}()
+		}
 	}
 
 	serverApp := httpapi.New(cfg, db, manager)
-	serverApp.AppContext().DatabaseMaintenance = walMaintenance
+	if walMaintenance != nil {
+		serverApp.AppContext().DatabaseMaintenance = walMaintenance
+	}
 	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := serverApp.AppContext().CodexInspectionService.Recover(recoveryCtx); err != nil {
 		log.Printf("recover codex inspection runs: %v", err)

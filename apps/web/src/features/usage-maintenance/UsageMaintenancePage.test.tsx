@@ -376,6 +376,25 @@ afterEach(() => {
 });
 
 describe('UsageMaintenancePage', () => {
+  it('shows MySQL backup and optimization commands without SQLite paths', async () => {
+    const state = maintenance({
+      compact_requires_stopped_server: true,
+      storage: { ...maintenance().storage, driver: 'mysql', reclaimable_bytes: 0 },
+    });
+    const renderer = await renderOverviewPage(state);
+    expect(getText(renderer.root)).toContain(en.usage_maintenance.storage_mysql_title);
+    expect(findButtons(renderer, 'New archive')).toHaveLength(1);
+    await act(async () => {
+      findButtons(renderer, 'Storage and compaction')[0].props.onClick();
+    });
+    const text = getText(renderer.root);
+    expect(text).toContain(en.usage_maintenance.storage_mysql_backup);
+    expect(text).not.toContain('usage.sqlite');
+    expect(text).toContain('compact-usage');
+    expect(text).toContain('manager-data-snapshot create');
+    expect(findButtons(renderer, en.usage_maintenance.storage_mysql_copy_backup)).toHaveLength(1);
+    expect(findButtons(renderer, en.usage_maintenance.storage_mysql_copy_compact)).toHaveLength(1);
+  });
   it('keeps verified archives complete without presenting them as pending cleanup', async () => {
     const renderer = await renderOverviewPage(maintenance(), [archive('verified')]);
     expect(findButtons(renderer, 'Continue this record')).toHaveLength(0);

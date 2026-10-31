@@ -16,6 +16,7 @@ import (
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
 	quotasnapshotsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -1107,7 +1108,7 @@ func TestManagerSkipsUsageControlPayloadsAndRefreshesSnapshots(t *testing.T) {
 
 func newTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

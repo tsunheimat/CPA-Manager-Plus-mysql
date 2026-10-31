@@ -14,7 +14,7 @@ import (
 	collectorpkg "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialpolicy"
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -286,7 +286,7 @@ func TestAccountActionCandidateFromEventDeletesAccountDeactivatedHeader(t *testi
 }
 
 func TestAccountActionCandidateWorkerSavesQueueOnly(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestAccountActionCandidateWorkerSavesQueueOnly(t *testing.T) {
 }
 
 func TestAccountActionCandidateWorkerAutoDisablesMatchingIdentity(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestAccountActionCandidateWorkerAutoDisablesMatchingIdentity(t *testing.T) 
 }
 
 func TestAccountActionCandidateWorkerRejectsAmbiguousStatusMutationScope(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -467,7 +467,7 @@ func TestAccountActionCandidateWorkerRejectsAmbiguousStatusMutationScope(t *test
 }
 
 func TestAccountActionCandidateWorkerRejectsDuplicateCodexCredentialLocator(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -547,7 +547,7 @@ func TestAccountActionCandidateWorkerRejectsDuplicateCodexCredentialLocator(t *t
 }
 
 func TestAccountActionCandidateWorkerRollsBackWhenAutoDisableMarkerFails(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -608,7 +608,7 @@ func TestAccountActionCandidateWorkerRollsBackWhenAutoDisableMarkerFails(t *test
 }
 
 func TestAccountActionCandidateWorkerCompensatesAfterParentCancellation(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -669,7 +669,7 @@ func TestAccountActionCandidateWorkerCompensatesAfterParentCancellation(t *testi
 }
 
 func TestAccountActionCandidateWorkerCompensationHasTotalTimeout(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -725,7 +725,7 @@ func TestAccountActionCandidateWorkerCompensationHasTotalTimeout(t *testing.T) {
 }
 
 func TestAccountActionCandidateWorkerRollsBackWhenCandidateLeavesPendingAfterPatch(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -799,7 +799,7 @@ func TestAccountActionCandidateWorkerRollsBackWhenCandidateLeavesPendingAfterPat
 }
 
 func TestAccountActionCandidateWorkerDoesNotRollbackSamePathReplacement(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -868,7 +868,7 @@ func TestAccountActionCandidateWorkerDoesNotRollbackSamePathReplacement(t *testi
 }
 
 func TestAccountActionCandidateWorkerAutoDisableRejectsIdentityMismatch(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -922,7 +922,7 @@ func TestAccountActionCandidateWorkerAutoDisableRejectsIdentityMismatch(t *testi
 }
 
 func TestAccountActionCandidateWorkerAutoDisableRejectsWeakIdentity(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -959,7 +959,7 @@ func TestAccountActionCandidateWorkerAutoDisableRejectsWeakIdentity(t *testing.T
 }
 
 func TestAccountActionCandidateWorkerAutoDisableRecordsVerificationTransportError(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1006,7 +1006,7 @@ func TestAccountActionCandidateWorkerAutoDisableRecordsVerificationTransportErro
 }
 
 func TestAccountActionCandidateWorkerAutoDisablesReauth(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1061,7 +1061,7 @@ func TestAccountActionCandidateWorkerAutoDisablesReauth(t *testing.T) {
 }
 
 func TestAccountActionCandidateWorkerAutoDisablesEligibleXAIReviewWithProviderAlias(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1125,7 +1125,7 @@ func TestAccountActionCandidateWorkerAutoDisablesEligibleXAIReviewWithProviderAl
 }
 
 func TestAccountActionCandidateWorkerAutoDisableSkipsAlreadyDisabled(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1180,7 +1180,7 @@ func TestAccountActionCandidateWorkerAutoDisableSkipsAlreadyDisabled(t *testing.
 }
 
 func TestAccountActionCandidateWorkerAutoDisableRecordsMissingRuntimeConfig(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1208,7 +1208,7 @@ func TestAccountActionCandidateWorkerAutoDisableRecordsMissingRuntimeConfig(t *t
 }
 
 func TestAccountActionCandidateWorkerAutoDisableSkipsReview(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

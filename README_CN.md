@@ -91,7 +91,7 @@ CPA / CLIProxyAPI 可以在 `:8317` 直接托管官方 Management Center，也�
 
 ### 请求监控与失败诊断
 
-- 将 CPA usage queue 中的请求持久化到本地 SQLite，并按账号、调用方 API Key 查看实时请求。
+- 将 CPA usage queue 中的请求持久化到 SQLite 或 MySQL 8.4，并按账号、调用方 API Key 查看实时请求。
 - 查看状态、延迟、Token、缓存、Trace 和脱敏失败证据，不暴露原始失败体。
 - 使用 JSONL 导入或导出请求历史。
 - 打开 [请求监控演示](https://seakee.github.io/CPA-Manager-Plus/#/demo/monitoring)。
@@ -115,6 +115,8 @@ CPA / CLIProxyAPI 可以在 `:8317` 直接托管官方 Management Center，也�
 - 使用单 Docker 容器，或 Linux、macOS、Windows 的 amd64/arm64 原生包运行；完整栈可以与 CPA 一起部署。
 - 请求历史、Manager 配置、账号自动化和模型价格都保存在本地文件，不需要注册账号，也不包含遥测 SDK。
 - 备份 SQLite 时同时保存 `data.key`，才能恢复加密后的 CPA Management Key。
+- MySQL 配置、Docker Compose、SQLite 迁移及备份方式见 [MySQL 存储说明](docs/mysql.md)。
+- 包含 MySQL 的 k3s 部署文件及自动 GHCR 镜像构建见 [k3s 部署说明](deploy/k3s/README.md)。
 - 如果用只读根文件系统或非 root 用户加固运行环境，需要给 SQLite 提供可写的临时目录和可写的数据库文件；参见[只读根文件系统](https://seakee.github.io/CPA-Manager-Plus/docs/deployment/docker.html)。
 
 想先了解界面？可以打开[在线演示](https://seakee.github.io/CPA-Manager-Plus/)。演示站只使用虚构数据，不是部署或运行模式，不能连接、管理或监控真实 CPA。
@@ -206,7 +208,7 @@ docker run -d \
 - CPAMP 不会回传遥测，不包含分析 SDK，也不要求注册账号。
 - 外部请求只限于 CPA Gateway 及你明确配置或主动触发的 OAuth、Provider 检查、插件 Release 和模型价格同步。
 - 请求历史、配置、模型价格、巡检历史和自动化状态都保存在本地文件。
-- CPA Management Key 入库前会加密；备份需要同时保存 SQLite 文件和 `data.key`。
+- CPA Management Key 入库前会加密；备份需要同时保存数据库和 `data.key`。
 - 普通 API 和 JSONL 导出只暴露脱敏失败摘要，不返回原始失败体或保存的原始 JSON。
 - CPAMP 只应用于你有权管理的流量和凭证。
 

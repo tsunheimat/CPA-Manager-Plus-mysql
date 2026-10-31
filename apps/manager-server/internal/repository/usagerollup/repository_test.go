@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -184,7 +184,7 @@ func TestCatchUpAccountHistoryDistinguishesRebuildFromIncrementalCatchUp(t *test
 
 func TestAccountHistoryRowsRemainCompleteDuringRebuildAndRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "account-history-rebuild.sqlite")
-	db, err := sqliterepo.Open(dbPath)
+	db, err := testdb.Open(t, dbPath)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestAccountHistoryRowsRemainCompleteDuringRebuildAndRestart(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close interrupted database: %v", err)
 	}
-	db, err = sqliterepo.Open(dbPath)
+	db, err = testdb.Open(t, dbPath)
 	if err != nil {
 		t.Fatalf("reopen interrupted database: %v", err)
 	}
@@ -692,7 +692,7 @@ func TestCatchUpAccountHistoryRebuildSeparatesCodexWorkspaceMembers(t *testing.T
 
 func newRollupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

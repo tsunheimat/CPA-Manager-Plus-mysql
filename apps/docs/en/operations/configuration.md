@@ -1,6 +1,12 @@
 # Configuration And Data Directory
 
-CPAMP stores its core data locally. During deployment, identify three things first: where SQLite lives, how `data.key` is stored, and where the admin key comes from.
+CPAMP stores core data in SQLite by default, or in MySQL 8.4 when configured. Keep the local data directory for `data.key`, import sessions, and archives in either mode.
+
+## MySQL
+
+Set `USAGE_DB_DRIVER=mysql` and supply `USAGE_DB_DSN` or `USAGE_DB_DSN_FILE`. JSON configuration supports `dbDriver`, `dbDsn`, and `dbDsnFile`. MySQL startup creates its schema in an existing database. Stop Manager Server and run `migrate-to-mysql --sqlite-path /path/to/usage.sqlite` against an empty MySQL database to migrate existing data. Keep the original `data.key` and archive directory. See the [complete MySQL guide](https://github.com/seakee/CPA-Manager-Plus/blob/main/docs/mysql.md).
+
+The files below describe the default SQLite mode.
 
 ## Key Files
 

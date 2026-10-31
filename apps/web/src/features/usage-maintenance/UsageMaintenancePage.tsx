@@ -297,7 +297,7 @@ const isUsageMaintenanceStatus = (value: unknown): value is UsageMaintenanceStat
     hasNumber(storage, 'wal_bytes') &&
     hasNumber(storage, 'shm_bytes') &&
     hasNumber(storage, 'total_bytes') &&
-    value.compact_requires_stopped_server === true
+    typeof value.compact_requires_stopped_server === 'boolean'
   );
 };
 
@@ -1971,16 +1971,18 @@ export function UsageMaintenancePage() {
                   defaultValue:
                     'Cleanup succeeded. Current storage statistics are unavailable; refresh to read them again.',
                 })
-              : maintenance.storage.reclaimable_bytes > 0
-                ? t('usage_maintenance.cleanup_complete_reclaimable', {
-                    size: formatFileSize(maintenance.storage.reclaimable_bytes),
-                    defaultValue:
-                      'The SQLite file does not shrink immediately. About {{size}} can be reclaimed by offline compaction.',
-                  })
-                : t('usage_maintenance.cleanup_complete_no_reclaimable', {
-                    defaultValue:
-                      'No significant reclaimable free pages were detected. Physical compaction is not immediately necessary.',
-                  })}
+              : maintenance.storage.driver === 'mysql'
+                ? t('usage_maintenance.storage_mysql_note')
+                : maintenance.storage.reclaimable_bytes > 0
+                  ? t('usage_maintenance.cleanup_complete_reclaimable', {
+                      size: formatFileSize(maintenance.storage.reclaimable_bytes),
+                      defaultValue:
+                        'The SQLite file does not shrink immediately. About {{size}} can be reclaimed by offline compaction.',
+                    })
+                  : t('usage_maintenance.cleanup_complete_no_reclaimable', {
+                      defaultValue:
+                        'No significant reclaimable free pages were detected. Physical compaction is not immediately necessary.',
+                    })}
           </p>
           <div className={styles.actions}>
             {postDeleteRefreshFailed ? (

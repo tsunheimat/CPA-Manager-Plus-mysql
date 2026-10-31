@@ -50,7 +50,10 @@ const triggersFrontend = (filePath) =>
   startsWithPath(filePath, 'bin/release');
 
 const triggersManagerServer = (filePath) =>
-  startsWithPath(filePath, 'apps/manager-server') || filePath === 'bin/release/package-native.sh';
+  startsWithPath(filePath, 'apps/manager-server') ||
+  filePath === 'bin/release/package-native.sh' ||
+  filePath === 'bin/ci/test-mysql.sh' ||
+  filePath === 'bin/ci/test-mysql-recovery.sh';
 
 const triggersNativeControl = (filePath) =>
   startsWithPath(filePath, 'bin/native') ||
@@ -60,10 +63,13 @@ const triggersNativeControl = (filePath) =>
   filePath === 'package-lock.json';
 
 const triggersDocker = (filePath) =>
+  startsWithPath(filePath, 'deploy/k3s') ||
+  filePath === 'bin/ci/smoke-manager-image.sh' ||
   startsWithPath(filePath, 'apps/web') ||
   startsWithPath(filePath, 'apps/manager-server') ||
   filePath === 'Dockerfile.manager-server' ||
   filePath === 'docker-compose.manager.yml' ||
+  filePath === 'docker-compose.mysql.yml' ||
   filePath === '.dockerignore' ||
   filePath === 'package.json' ||
   filePath === 'package-lock.json';

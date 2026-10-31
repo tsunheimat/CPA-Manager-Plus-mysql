@@ -87,9 +87,16 @@ func InspectPersistedCPAConnectionStorage(ctx context.Context, databasePath stri
 		return inspection, nil
 	}
 
-	rows, err := db.QueryContext(ctx, `select key, value from settings where key in ('bootstrap_state_v1', 'setup', 'manager_config_v1')`)
+	return InspectCPAConnectionStorage(ctx, db)
+}
+
+// InspectCPAConnectionStorage validates settings in an already-open database.
+// The caller must establish that the settings table exists before calling it.
+func InspectCPAConnectionStorage(ctx context.Context, db *sql.DB) (PersistedCPAConnectionStorageInspection, error) {
+	inspection := PersistedCPAConnectionStorageInspection{}
+	rows, err := db.QueryContext(ctx, "select `key`, value from settings where `key` in ('bootstrap_state_v1', 'setup', 'manager_config_v1')")
 	if err != nil {
-		return inspection, fmt.Errorf("inspect encrypted CPA connection in %s: %w", databasePath, err)
+		return inspection, fmt.Errorf("inspect encrypted CPA connection: %w", err)
 	}
 	defer rows.Close()
 	type persistedSetting struct {
@@ -101,7 +108,7 @@ func InspectPersistedCPAConnectionStorage(ctx context.Context, databasePath stri
 		var key string
 		var raw string
 		if err := rows.Scan(&key, &raw); err != nil {
-			return inspection, fmt.Errorf("scan encrypted CPA connection in %s: %w", databasePath, err)
+			return inspection, fmt.Errorf("scan encrypted CPA connection: %w", err)
 		}
 		if key == "bootstrap_state_v1" {
 			var state struct {
@@ -120,7 +127,7 @@ func InspectPersistedCPAConnectionStorage(ctx context.Context, databasePath stri
 		settings = append(settings, persistedSetting{key: key, managementKey: managementKey})
 	}
 	if err := rows.Err(); err != nil {
-		return inspection, fmt.Errorf("read encrypted CPA connection in %s: %w", databasePath, err)
+		return inspection, fmt.Errorf("read encrypted CPA connection: %w", err)
 	}
 	if inspection.MigrationVersion >= persistedConnectionStorageMigrationVersion {
 		for _, setting := range settings {

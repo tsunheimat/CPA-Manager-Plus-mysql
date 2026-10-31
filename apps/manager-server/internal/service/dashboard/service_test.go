@@ -14,6 +14,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -682,7 +683,7 @@ func catchUpDashboardHourlyForTest(t *testing.T, ctx context.Context, db *store.
 
 func newDashboardTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

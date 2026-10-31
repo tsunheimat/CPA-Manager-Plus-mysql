@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 func TestLatencyPercentilesUseNearestRankAcrossSummaryAndBuckets(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestLatencyPercentilesUseNearestRankAcrossSummaryAndBuckets(t *testing.T) {
 }
 
 func TestLatencySummaryReturnsInvalidPercentilesWithoutSamples(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestLatencySummaryReturnsInvalidPercentilesWithoutSamples(t *testing.T) {
 }
 
 func TestLatencyPercentilesMatchRawAcrossTimeZonesAndDST(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestLatencyPercentilesMatchRawAcrossTimeZonesAndDST(t *testing.T) {
 }
 
 func TestLatencyPercentilesApplyFiltersAndIgnoreMissingValues(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestLatencyPercentilesApplyFiltersAndIgnoreMissingValues(t *testing.T) {
 func BenchmarkLatencyPercentilesWithFilter(b *testing.B) {
 	for _, count := range []int{10_000, 100_000} {
 		b.Run(fmt.Sprintf("events_%dk", count/1_000), func(b *testing.B) {
-			db, err := sqliterepo.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+			db, err := testdb.Open(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 			if err != nil {
 				b.Fatalf("open database: %v", err)
 			}

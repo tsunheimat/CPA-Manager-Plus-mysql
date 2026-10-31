@@ -18,6 +18,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	managerconfigsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
 
 type accountActionRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -56,7 +57,7 @@ func accountActionResponse(
 
 func TestEnableValidatesCurrentAuthFileBeforePatch(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestExternalActionPersistsStatusAfterRequestCancellation(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			st, err := store.Open(t.TempDir() + "/usage.sqlite")
+			st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 			if err != nil {
 				t.Fatalf("open store: %v", err)
 			}
@@ -216,7 +217,7 @@ func TestExternalActionPersistsStatusAfterRequestCancellation(t *testing.T) {
 
 func TestEnableRestoresDisabledStateWhenResultPersistenceFails(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -281,7 +282,7 @@ func TestEnableRestoresDisabledStateWhenResultPersistenceFails(t *testing.T) {
 
 func TestDeleteReportsExternalSuccessWhenResultPersistenceFails(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -338,7 +339,7 @@ func TestDeleteReportsExternalSuccessWhenResultPersistenceFails(t *testing.T) {
 
 func TestEnableRejectsAmbiguousStatusMutationScope(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -412,7 +413,7 @@ func TestEnableRejectsAmbiguousStatusMutationScope(t *testing.T) {
 
 func TestDeleteRejectsMismatchedCurrentAuthFile(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -473,7 +474,7 @@ func TestDeleteRejectsMismatchedCurrentAuthFile(t *testing.T) {
 
 func TestDeleteAcceptsCurrentAuthFileProjectID(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -531,7 +532,7 @@ func TestDeleteAcceptsCurrentAuthFileProjectID(t *testing.T) {
 
 func TestDeleteRejectsSharedPhysicalAuthFile(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -598,7 +599,7 @@ func TestAccountActionsRejectCandidateWithoutStableIdentity(t *testing.T) {
 	for _, action := range []string{"enable", "delete"} {
 		t.Run(action, func(t *testing.T) {
 			ctx := context.Background()
-			st, err := store.Open(t.TempDir() + "/usage.sqlite")
+			st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 			if err != nil {
 				t.Fatalf("open store: %v", err)
 			}
@@ -650,7 +651,7 @@ func TestAccountActionsRejectCandidateWithoutStableIdentity(t *testing.T) {
 
 func TestDeleteSerializesSameCandidateStatusChanges(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -19,14 +19,15 @@ var (
 )
 
 type PageStats struct {
-	PageSize         int64 `json:"page_size"`
-	PageCount        int64 `json:"page_count"`
-	FreelistCount    int64 `json:"freelist_count"`
-	ReclaimableBytes int64 `json:"reclaimable_bytes"`
-	DatabaseBytes    int64 `json:"database_bytes"`
-	WALBytes         int64 `json:"wal_bytes"`
-	SHMBytes         int64 `json:"shm_bytes"`
-	TotalBytes       int64 `json:"total_bytes"`
+	Driver           string `json:"driver,omitempty"`
+	PageSize         int64  `json:"page_size"`
+	PageCount        int64  `json:"page_count"`
+	FreelistCount    int64  `json:"freelist_count"`
+	ReclaimableBytes int64  `json:"reclaimable_bytes"`
+	DatabaseBytes    int64  `json:"database_bytes"`
+	WALBytes         int64  `json:"wal_bytes"`
+	SHMBytes         int64  `json:"shm_bytes"`
+	TotalBytes       int64  `json:"total_bytes"`
 }
 
 type DataSummary struct {

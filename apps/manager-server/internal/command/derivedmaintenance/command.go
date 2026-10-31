@@ -11,7 +11,9 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/database"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
+	mysqlrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	_ "modernc.org/sqlite"
 )
@@ -23,6 +25,43 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 			return nil
 		}
 		return err
+	}
+	if strings.TrimSpace(opts.DBPath) == "" {
+		cfg, err := config.LoadWithoutCreatingDefault()
+		if err != nil {
+			return err
+		}
+		if cfg.DBDriver == "mysql" {
+			lock, err := database.Acquire(ctx, &cfg)
+			if err != nil {
+				return err
+			}
+			defer lock.Close()
+			if err := database.RequireExistingMySQL(ctx, cfg); err != nil {
+				return err
+			}
+			db, err := database.Open(ctx, cfg)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			var total int64
+			for {
+				if err := lock.Check(ctx); err != nil {
+					return err
+				}
+				n, err := mysqlrepo.CleanupDerivedBatch(ctx, db, 1000)
+				if err != nil {
+					return err
+				}
+				total += n
+				if n == 0 {
+					break
+				}
+			}
+			_, err = fmt.Fprintf(stdout, "MySQL derived cleanup completed: processed_rows=%d\n", total)
+			return err
+		}
 	}
 	dbPath, err := resolveDBPath(opts.DBPath)
 	if err != nil {
@@ -88,6 +127,9 @@ func resolveDBPath(override string) (string, error) {
 	cfg, err := config.LoadWithoutCreatingDefault()
 	if err != nil {
 		return "", fmt.Errorf("load config: %w", err)
+	}
+	if cfg.DBDriver == "mysql" {
+		return "", errors.New("cleanup-derived applies to SQLite only; MySQL creates its indexes during schema migration")
 	}
 	if strings.TrimSpace(cfg.DBPath) == "" {
 		return "", errors.New("SQLite database path is empty; pass --db-path")

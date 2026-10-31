@@ -17,11 +17,14 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/codexquota"
+	mysqlrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	monitoringrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	usageservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usagehourly"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -3721,7 +3724,7 @@ func TestAnalyticsHourlyDeletedEdgeRouting(t *testing.T) {
 func TestAnalyticsHourlyCoreMatchesAfterArchiveDeleteAndCompact(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	db, err := store.Open(dbPath)
+	db, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3758,10 +3761,21 @@ func TestAnalyticsHourlyCoreMatchesAfterArchiveDeleteAndCompact(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sqliterepo.CompactUsage(ctx, dbPath); err != nil {
-		t.Fatalf("offline compact: %v", err)
+	if testdb.MySQL() {
+		raw, err := mysqlrepo.OpenNative(ctx, testdb.DSN(t, dbPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = mysqlrepo.Compact(ctx, raw, func(string) error { return nil })
+		raw.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else if _, err := sqliterepo.CompactUsage(ctx, dbPath); err != nil {
+		t.Fatal(err)
 	}
-	db, err = store.Open(dbPath)
+
+	db, err = testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3795,7 +3809,7 @@ func TestAnalyticsHourlyCoreMatchesAfterArchiveDeleteAndCompact(t *testing.T) {
 func BenchmarkAnalyticsArchived100kLongRange(b *testing.B) {
 	ctx := context.Background()
 	dbPath := filepath.Join(b.TempDir(), "archived-analytics.sqlite")
-	sqlDB, err := sqliterepo.Open(dbPath)
+	sqlDB, err := testdb.Open(b, dbPath)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -3884,7 +3898,7 @@ func BenchmarkAnalyticsArchived100kLongRange(b *testing.B) {
 	if _, err := sqliterepo.CompactUsage(ctx, dbPath); err != nil {
 		b.Fatalf("compact archived fixture: %v", err)
 	}
-	db, err = store.Open(dbPath)
+	db, err = testutil.OpenStore(b, dbPath)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -3954,7 +3968,7 @@ func TestAnalyticsReportsComparisonCoverageSeparately(t *testing.T) {
 }
 
 func TestAnalyticsReportsIndependentRollingAndDrilldownCoverage(t *testing.T) {
-	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	sqlDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open auxiliary coverage store: %v", err)
 	}
@@ -4058,7 +4072,7 @@ func TestAnalyticsReportsIndependentRollingAndDrilldownCoverage(t *testing.T) {
 }
 
 func TestAnalyticsReportsActualDerivedReaderFallbacksAfterArchivedDeletion(t *testing.T) {
-	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	sqlDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open fallback store: %v", err)
 	}
@@ -4115,7 +4129,7 @@ func TestAnalyticsReportsActualDerivedReaderFallbacksAfterArchivedDeletion(t *te
 }
 
 func TestAnalyticsPartialArchivedEdgeRepairsMissingProjectionBeforeDelete(t *testing.T) {
-	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	sqlDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open partial-edge store: %v", err)
 	}
@@ -4617,7 +4631,7 @@ func catchUpMonitoringHourlyRollup(t *testing.T, ctx context.Context, db *store.
 
 func newMonitoringTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

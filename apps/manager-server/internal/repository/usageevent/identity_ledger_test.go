@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 func TestInsertBatchUsesIdentityLedgerAfterRawDeletion(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestInsertBatchUsesIdentityLedgerAfterRawDeletion(t *testing.T) {
 }
 
 func TestInsertBatchBackfillsLedgerForLegacyDuplicate(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestInsertBatchBackfillsLedgerForLegacyDuplicate(t *testing.T) {
 }
 
 func TestInsertBatchRollsBackIdentityClaimWhenRawInsertFails(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -132,8 +132,8 @@ func TestInsertBatchRollsBackIdentityClaimWhenRawInsertFails(t *testing.T) {
 		Model:       "gpt-test",
 		CreatedAtMS: timestampMS + 1,
 	}
-	if _, err := db.Exec(`create trigger reject_usage_event_insert before insert on usage_events
-		begin select raise(abort, 'blocked'); end`); err != nil {
+	if _, err := db.Exec(testdb.SQL(db, `create trigger reject_usage_event_insert before insert on usage_events
+		begin select raise(abort, 'blocked'); end`, `create trigger reject_usage_event_insert before insert on usage_events for each row signal sqlstate '45000' set message_text='blocked'`)); err != nil {
 		t.Fatalf("create failure trigger: %v", err)
 	}
 	if _, err := repo.InsertBatch(ctx, []usage.Event{event}); err == nil {

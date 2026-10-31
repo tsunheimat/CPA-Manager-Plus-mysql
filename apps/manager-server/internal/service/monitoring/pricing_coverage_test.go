@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -31,7 +31,7 @@ func TestAnalyticsRecoversIncompletePricingFromRetainedEvents(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			db, sqlDB, request, want := pricingCoverageFixture(t)
 			ctx := context.Background()
-			if _, err := sqlDB.ExecContext(ctx, test.sql); err != nil {
+			if _, err := testdb.ExecScript(ctx, sqlDB, test.sql); err != nil {
 				t.Fatalf("damage isolated pricing cache: %v", err)
 			}
 			before := pricingCoverageCounts(t, sqlDB)
@@ -55,7 +55,7 @@ func TestAnalyticsRecoversIncompletePricingFromRetainedEvents(t *testing.T) {
 func TestAnalyticsRecoversOnlineProjectionGapWithArchivedHistory(t *testing.T) {
 	db, sqlDB, request, want := pricingCoverageFixture(t)
 	ctx := context.Background()
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_monitoring_event_projection_v1
+	if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_monitoring_event_projection_v1
 		where event_id in (select id from usage_events);
 		delete from usage_pricing_hourly_rollups_v1`); err != nil {
 		t.Fatal(err)
@@ -83,7 +83,7 @@ func TestAnalyticsComparisonRecoversOnlineProjectionGap(t *testing.T) {
 	if err != nil || want.Summary == nil || want.SummaryComparison == nil {
 		t.Fatalf("baseline comparison: summary=%#v comparison=%#v error=%v", want.Summary, want.SummaryComparison, err)
 	}
-	deleted, err := sqlDB.ExecContext(ctx, `delete from usage_monitoring_event_projection_v1
+	deleted, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_monitoring_event_projection_v1
 		where event_id in (select id from usage_events where timestamp_ms = ?)`, onlineMS)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestAnalyticsComparisonRecoversOnlineProjectionGap(t *testing.T) {
 	if affected, err := deleted.RowsAffected(); err != nil || affected != 1 {
 		t.Fatalf("fixture did not remove exactly one projection row: affected=%d error=%v", affected, err)
 	}
-	rollups, err := sqlDB.ExecContext(ctx, `delete from usage_pricing_hourly_rollups_v1
+	rollups, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_pricing_hourly_rollups_v1
 		where bucket_ms >= ? and bucket_ms < ?`, comparisonFromMS, request.FromMS)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestAccountHistoryRecoversOnlineProjectionGap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("baseline account history: %v", err)
 	}
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_monitoring_event_projection_v1
+	if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_monitoring_event_projection_v1
 		where event_id in (select id from usage_events);
 		delete from usage_pricing_account_rollups_v1`); err != nil {
 		t.Fatal(err)
@@ -144,10 +144,10 @@ func TestAnalyticsIncompletePricingFailsClosedWithoutCompatibleEvents(t *testing
 		t.Run(test.name, func(t *testing.T) {
 			db, sqlDB, request, _ := pricingCoverageFixture(t)
 			ctx := context.Background()
-			if _, err := sqlDB.ExecContext(ctx, `delete from usage_pricing_hourly_rollups_v1`); err != nil {
+			if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_pricing_hourly_rollups_v1`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := sqlDB.ExecContext(ctx, test.sql); err != nil {
+			if _, err := testdb.ExecScript(ctx, sqlDB, test.sql); err != nil {
 				t.Fatal(err)
 			}
 			got, err := New(db, true).Analytics(ctx, request)
@@ -161,10 +161,10 @@ func TestAnalyticsIncompletePricingFailsClosedWithoutCompatibleEvents(t *testing
 func TestAnalyticsPrimaryPeriodRecoveryQueryErrorFailsFatal(t *testing.T) {
 	db, sqlDB, request, _ := pricingCoverageFixture(t)
 	ctx := context.Background()
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_pricing_hourly_rollups_v1`); err != nil {
+	if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_pricing_hourly_rollups_v1`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sqlDB.ExecContext(ctx, `alter table usage_monitoring_event_projection_v1 rename column normalized_total_input_tokens to unavailable_tokens`); err != nil {
+	if _, err := testdb.ExecScript(ctx, sqlDB, `alter table usage_monitoring_event_projection_v1 rename column normalized_total_input_tokens to unavailable_tokens`); err != nil {
 		t.Fatal(err)
 	}
 	got, err := New(db, true).Analytics(ctx, request)
@@ -181,7 +181,7 @@ func TestAnalyticsPricingCoverageChecksComparisonPeriod(t *testing.T) {
 	ctx := context.Background()
 	request.FromMS += 2 * time.Hour.Milliseconds()
 	request.ToMS = request.FromMS + time.Hour.Milliseconds()
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_pricing_hourly_rollups_v1 where bucket_ms < ?;
+	if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_pricing_hourly_rollups_v1 where bucket_ms < ?;
 		delete from usage_monitoring_event_projection_v1 where timestamp_ms < ?`, request.FromMS, request.FromMS); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestAnalyticsComparisonPeriodRecoveryQueryErrorFailsFatal(t *testing.T) {
 	ctx := context.Background()
 	request.FromMS += 2 * time.Hour.Milliseconds()
 	request.ToMS = request.FromMS + time.Hour.Milliseconds()
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_pricing_hourly_rollups_v1 where bucket_ms < ?;
+	if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_pricing_hourly_rollups_v1 where bucket_ms < ?;
 		alter table usage_monitoring_event_projection_v1 rename column normalized_total_input_tokens to unavailable_tokens`, request.FromMS); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestAnalyticsPricingRecoveryPreservesFiltersAndCollapsedBuckets(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := sqlDB.ExecContext(ctx, `delete from usage_pricing_hourly_rollups_v1`); err != nil {
+			if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_pricing_hourly_rollups_v1`); err != nil {
 				t.Fatal(err)
 			}
 			got, err := New(db, true).Analytics(ctx, request)
@@ -284,7 +284,7 @@ func TestPricingCatchUpRebuildsArchivedHistoryFromRetainedProjection(t *testing.
 			db, sqlDB, _, _ := pricingCoverageFixture(t)
 			ctx := context.Background()
 			before := pricingCoverageCounts(t, sqlDB)
-			if _, err := sqlDB.ExecContext(ctx, test.sql); err != nil {
+			if _, err := testdb.ExecScript(ctx, sqlDB, test.sql); err != nil {
 				t.Fatal(err)
 			}
 			result, err := db.CatchUpUsagePricing(ctx, 100, time.Now().UnixMilli())
@@ -337,7 +337,7 @@ func TestAccountHistoryRecoversIncompleteArchivedPricing(t *testing.T) {
 			if delta := *want.Items[0].TotalCost + *want.Items[1].TotalCost - wantCost; delta < -0.000001 || delta > 0.000001 {
 				t.Fatalf("baseline account costs differ from hourly costs: %v", delta)
 			}
-			if _, err := sqlDB.ExecContext(ctx, test.sql); err != nil {
+			if _, err := testdb.ExecScript(ctx, sqlDB, test.sql); err != nil {
 				t.Fatal(err)
 			}
 			before := pricingCoverageCounts(t, sqlDB)
@@ -372,7 +372,7 @@ func TestAccountHistoryDegradesWhenArchivedPricingCannotBeRecovered(t *testing.T
 			if err != nil || len(want.Items) != 2 {
 				t.Fatalf("baseline account history = %#v, %v", want, err)
 			}
-			if _, err := sqlDB.ExecContext(ctx, test.sql); err != nil {
+			if _, err := testdb.ExecScript(ctx, sqlDB, test.sql); err != nil {
 				t.Fatal(err)
 			}
 			request.CatchUp = test.catchUp
@@ -410,7 +410,7 @@ func TestAccountHistoryIsolatesUnrecoverablePricingByAccount(t *testing.T) {
 		t.Fatalf("baseline account history = %#v, %v", want.Items, err)
 	}
 
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_pricing_account_rollups_v1 where auth_index = 'a';
+	if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_pricing_account_rollups_v1 where auth_index = 'a';
 		delete from usage_monitoring_event_projection_v1
 		where auth_index = 'a' and event_id not in (select id from usage_events)`); err != nil {
 		t.Fatal(err)
@@ -433,7 +433,7 @@ func TestAccountHistoryIsolatesUnrecoverablePricingByAccount(t *testing.T) {
 func TestAccountHistoryDoesNotHidePricingRecoveryQueryErrors(t *testing.T) {
 	db, sqlDB, _, _ := pricingCoverageFixture(t)
 	ctx := context.Background()
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_pricing_account_rollups_v1 where auth_index = 'a';
+	if _, err := testdb.ExecScript(ctx, sqlDB, `delete from usage_pricing_account_rollups_v1 where auth_index = 'a';
 		alter table usage_monitoring_event_projection_v1
 		rename column normalized_total_input_tokens to unavailable_tokens`); err != nil {
 		t.Fatal(err)
@@ -447,7 +447,7 @@ func TestAccountHistoryDoesNotHidePricingRecoveryQueryErrors(t *testing.T) {
 func TestAccountHistoryDoesNotHideCoreHistoryReadErrors(t *testing.T) {
 	db, sqlDB, _, _ := pricingCoverageFixture(t)
 	ctx := context.Background()
-	if _, err := sqlDB.ExecContext(ctx, `alter table usage_account_model_rollups rename column total_tokens to unavailable_tokens`); err != nil {
+	if _, err := testdb.ExecScript(ctx, sqlDB, `alter table usage_account_model_rollups rename column total_tokens to unavailable_tokens`); err != nil {
 		t.Fatal(err)
 	}
 	_, err := New(db).AccountHistory(ctx, pricingCoverageAccountRequest())
@@ -465,7 +465,7 @@ func pricingCoverageAccountRequest() AccountHistoryRequest {
 
 func pricingCoverageFixture(t *testing.T) (*store.Store, *sql.DB, Request, Response) {
 	t.Helper()
-	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	sqlDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

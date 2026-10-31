@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 func BenchmarkPrepareUsageEvent(b *testing.B) {
-	db, err := sqliterepo.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open database: %v", err)
 	}
@@ -44,7 +44,7 @@ func BenchmarkPrepareUsageEvent(b *testing.B) {
 }
 
 func BenchmarkPrepareUsageEvent_LargePayload(b *testing.B) {
-	db, err := sqliterepo.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open database: %v", err)
 	}
@@ -113,7 +113,7 @@ func BenchmarkInsertBatch(b *testing.B) {
 		for _, scenario := range scenarios {
 			benchName := fmt.Sprintf("Size%d_%s", size, scenario)
 			b.Run(benchName, func(b *testing.B) {
-				db, err := sqliterepo.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+				db, err := testdb.Open(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 				if err != nil {
 					b.Fatalf("open database: %v", err)
 				}

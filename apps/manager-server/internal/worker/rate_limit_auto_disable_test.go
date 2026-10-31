@@ -24,6 +24,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	managerconfigsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -472,7 +473,7 @@ func TestQuotaAutoDisableCandidateRejectsUnrelatedXAIErrors(t *testing.T) {
 }
 
 func TestExtendExistingCooldownKeepsEvidenceForLaterRecovery(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -517,7 +518,7 @@ func TestExtendExistingCooldownKeepsEvidenceForLaterRecovery(t *testing.T) {
 }
 
 func TestExtendExistingCooldownKeepsWinningRecoveryMetadata(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -576,7 +577,7 @@ func TestExtendExistingCooldownKeepsWinningRecoveryMetadata(t *testing.T) {
 }
 
 func TestExtendExistingCooldownUsesAuthIndexWhenDisplayAccountChanges(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -630,7 +631,7 @@ func TestExtendExistingCooldownUsesAuthIndexWhenDisplayAccountChanges(t *testing
 }
 
 func TestExtendExistingCooldownRejectsDifferentFallbackIdentity(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -677,7 +678,7 @@ func TestExtendExistingCooldownRejectsDifferentFallbackIdentity(t *testing.T) {
 }
 
 func TestExtendExistingCooldownSelectsMatchingSharedFileIdentity(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -751,7 +752,7 @@ func TestExtendExistingCooldownSelectsMatchingSharedFileIdentity(t *testing.T) {
 }
 
 func TestRateLimitAutoDisableWorkerSkipsOwnershipWithoutStableIdentity(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -799,7 +800,7 @@ func TestRateLimitAutoDisableWorkerSkipsOwnershipWithoutStableIdentity(t *testin
 }
 
 func TestRateLimitAutoDisableWorkerPersistsVerifiedFallbackSnapshot(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -844,7 +845,7 @@ func TestRateLimitAutoDisableWorkerPersistsVerifiedFallbackSnapshot(t *testing.T
 }
 
 func TestRateLimitAutoDisableWorkerRejectsFallbackIdentityWithoutProvider(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1086,7 +1087,7 @@ func TestQuotaAutoDisableCandidateIgnoresGenericRetryAfterHeader(t *testing.T) {
 }
 
 func TestRateLimitAutoDisableWorkerRejectsAmbiguousStatusMutationScope(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1138,7 +1139,7 @@ func TestRateLimitAutoDisableWorkerRejectsAmbiguousStatusMutationScope(t *testin
 }
 
 func TestRateLimitAutoDisableWorkerRejectsSamePathReplacementIdentity(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1191,7 +1192,7 @@ func TestRateLimitAutoDisableWorkerRejectsSamePathReplacementIdentity(t *testing
 }
 
 func TestRateLimitAutoDisableWorkerDoesNotRollbackSamePathReplacementAfterPersistenceFailure(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1258,7 +1259,7 @@ func TestRateLimitAutoDisableWorkerDoesNotRollbackSamePathReplacementAfterPersis
 }
 
 func TestRateLimitAutoDisableWorkerCompensatesAfterParentCancellation(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1322,7 +1323,7 @@ func TestRateLimitAutoDisableWorkerCompensatesAfterParentCancellation(t *testing
 }
 
 func TestRateLimitAutoDisableWorkerCompensationHasTotalTimeout(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1378,7 +1379,7 @@ func TestRateLimitAutoDisableWorkerCompensationHasTotalTimeout(t *testing.T) {
 }
 
 func TestSharedMutationCoordinatorSerializesAccountActionAndQuotaWorker(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1513,7 +1514,7 @@ func TestSharedMutationCoordinatorSerializesAccountActionAndQuotaWorker(t *testi
 }
 
 func TestRateLimitAutoDisableWorkerDoesNotRecoverAmbiguousStatusMutationScope(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1572,7 +1573,7 @@ func TestRateLimitAutoDisableWorkerDoesNotRecoverAmbiguousStatusMutationScope(t 
 }
 
 func TestRateLimitAutoDisableWorkerRejectsDuplicateCodexCredentialLocator(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1652,7 +1653,7 @@ func TestRateLimitAutoDisableWorkerRejectsDuplicateCodexCredentialLocator(t *tes
 }
 
 func TestRateLimitAutoDisableWorkerRejectsDuplicateCodexRecoveryLocator(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1739,7 +1740,7 @@ func TestRateLimitAutoDisableWorkerRejectsDuplicateCodexRecoveryLocator(t *testi
 }
 
 func TestRateLimitAutoDisableWorkerEarlyRecoveryIsEventDriven(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1821,7 +1822,7 @@ func TestRateLimitAutoDisableWorkerEarlyRecoveryIsEventDriven(t *testing.T) {
 }
 
 func TestRateLimitAutoDisableWorkerEarlyRecoveryRequiresEnabledPostCondition(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1890,7 +1891,7 @@ func TestRateLimitAutoDisableWorkerEarlyRecoveryRequiresEnabledPostCondition(t *
 }
 
 func TestRateLimitAutoDisableWorkerEarlyRecoveryDoesNotEnablePreDisabledCredential(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1947,7 +1948,7 @@ func TestRateLimitAutoDisableWorkerEarlyRecoveryDoesNotEnablePreDisabledCredenti
 }
 
 func TestRateLimitAutoDisableWorkerRecoversLegacyCodexCooldownWithoutIdentityEvidence(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -2020,7 +2021,7 @@ func TestRateLimitAutoDisableWorkerRecoversLegacyCodexCooldownWithoutIdentityEvi
 }
 
 func TestRateLimitAutoDisableWorkerSkipsRecoveryAfterCredentialIdentityChanges(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -2083,7 +2084,7 @@ func TestRateLimitAutoDisableWorkerSkipsRecoveryAfterCredentialIdentityChanges(t
 }
 
 func TestRateLimitAutoDisableWorkerSkipsRecoveryWithoutStableIdentity(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -2128,7 +2129,7 @@ func TestRateLimitAutoDisableWorkerSkipsRecoveryWithoutStableIdentity(t *testing
 }
 
 func TestRateLimitAutoDisableWorkerSerializesRecoveryAndCooldownExtension(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -2250,7 +2251,7 @@ func TestRateLimitAutoDisableWorkerSerializesRecoveryAndCooldownExtension(t *tes
 }
 
 func TestRateLimitAutoDisableWorkerRecoversDueCooldownFromManagerRuntimeConfigAfterRestart(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -2377,7 +2378,7 @@ func TestRateLimitAutoDisableWorkerRecoversDueCooldownFromManagerRuntimeConfigAf
 }
 
 func TestRateLimitAutoDisableWorkerXAIEventDisablesAndRecoversEndToEnd(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -2470,7 +2471,7 @@ func TestRateLimitAutoDisableWorkerXAIEventDisablesAndRecoversEndToEnd(t *testin
 }
 
 func TestRateLimitAutoDisableWorkerRecoversXAICooldownWithoutTouchingManualDisable(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -2538,7 +2539,7 @@ func TestRateLimitAutoDisableWorkerRecoversXAICooldownWithoutTouchingManualDisab
 }
 
 func TestRateLimitAutoDisableWorkerRollsBackEnableWhenRecoveryPersistenceFails(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -2618,7 +2619,7 @@ func TestRateLimitAutoDisableWorkerRollsBackEnableWhenRecoveryPersistenceFails(t
 }
 
 func TestRateLimitAutoDisableWorkerPersistsAndRecoversAfterRestart(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -2721,7 +2722,7 @@ func TestRateLimitAutoDisableWorkerPersistsAndRecoversAfterRestart(t *testing.T)
 }
 
 func TestRateLimitAutoDisableWorkerStartsNewCycleAfterExternalEnable(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -2856,7 +2857,7 @@ func TestRateLimitAutoDisableWorkerStartsNewCycleAfterExternalEnable(t *testing.
 }
 
 func TestRateLimitAutoDisableWorkerSkipsSameNameCredentialWithoutAuthIndex(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

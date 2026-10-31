@@ -257,6 +257,13 @@
     "usage_maintenance_short": "维护"
   },
   "usage_maintenance": {
+    "storage_mysql_operations": "备份或优化表之前请停止 Manager Server。优化会重建表，可能需要额外磁盘空间。维护完成后重新启动 Manager Server。",
+    "storage_mysql_copy_backup": "复制备份命令",
+    "storage_mysql_copy_compact": "复制优化命令",
+    "storage_mysql_title": "MySQL 存储",
+    "storage_mysql_hint": "MySQL 报告的表和索引估算大小。",
+    "storage_mysql_note": "删除后由 MySQL 管理存储空间复用，不适用 SQLite 离线压缩命令。",
+    "storage_mysql_backup": "请同时备份 MySQL、data.key 和 usage-archives 目录。迁移服务器时必须保留原数据密钥。",
     "archive_management": "归档管理",
     "archive_records": "归档记录",
     "archive_retained": "归档仍保留",

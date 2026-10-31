@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
@@ -360,8 +361,7 @@ func (r *repository) UpsertSynced(ctx context.Context, prices map[string]model.M
 		source_model_id = excluded.source_model_id,
 		raw_json = excluded.raw_json,
 		updated_at_ms = excluded.updated_at_ms,
-		synced_at_ms = excluded.synced_at_ms
-	where lower(trim(coalesce(model_prices.source, ''))) <> 'manual'`)
+		synced_at_ms = excluded.synced_at_ms`)
 	if err != nil {
 		return model.ModelPriceSyncResult{}, err
 	}
@@ -412,6 +412,13 @@ func (r *repository) UpsertSynced(ctx context.Context, prices map[string]model.M
 		}
 		price.UpdatedAtMS = now
 		price.SyncedAtMS = &now
+		// The writer transaction protects this decision on both backends.
+		// Skip before the upsert so MySQL's matched-row counts cannot turn a
+		// protected manual price into a successful sync or rewrite its tiers.
+		if existing, ok := beforePrices[modelID]; ok && strings.EqualFold(strings.TrimSpace(existing.Source), "manual") {
+			result.Preserved = append(result.Preserved, modelID)
+			continue
+		}
 		execResult, err := stmt.ExecContext(
 			ctx,
 			modelID,

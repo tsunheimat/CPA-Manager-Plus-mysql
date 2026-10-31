@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/database"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
@@ -47,6 +48,9 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		ManagementKey: managementKey,
 	}); err != nil {
 		return err
+	}
+	if strings.TrimSpace(opts.DBPath) == "" && database.Driver(cfg) == "mysql" {
+		return runMySQL(ctx, cfg, opts, baseURL, managementKey, stdout)
 	}
 	dbPath := strings.TrimSpace(opts.DBPath)
 	if dbPath == "" {
@@ -341,4 +345,39 @@ func validateConnection(source string, rawBaseURL string, rawManagementKey strin
 
 func connectionsEqual(left connection, right connection) bool {
 	return managerconfig.LegacyConnectionsEqual(left, right)
+}
+
+func runMySQL(ctx context.Context, cfg config.Config, opts options, baseURL, managementKey string, stdout io.Writer) error {
+	if strings.TrimSpace(opts.DataKeyPath) != "" {
+		cfg.DataKeyPath = strings.TrimSpace(opts.DataKeyPath)
+	}
+	lock, err := database.Acquire(ctx, &cfg)
+	if err != nil {
+		return fmt.Errorf("acquire CPA connection import lock; stop Manager Server and retry: %w", err)
+	}
+	defer lock.Close()
+	if err := database.RequireExistingMySQL(ctx, cfg); err != nil {
+		return err
+	}
+	if err := database.RequireDataKey(ctx, cfg); err != nil {
+		return err
+	}
+	key, _, err := security.LoadOrCreateDataKey(cfg.DataKey, cfg.DataKeyPath)
+	if err != nil {
+		return err
+	}
+	protector, err := security.NewProtector(key)
+	if err != nil {
+		return err
+	}
+	st, err := store.OpenConfigured(ctx, cfg, protector)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := storeConnection(ctx, cfg, st, baseURL, managementKey, opts.RepairConflict); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(stdout, "CPA connection stored in encrypted Manager Server configuration.")
+	return nil
 }

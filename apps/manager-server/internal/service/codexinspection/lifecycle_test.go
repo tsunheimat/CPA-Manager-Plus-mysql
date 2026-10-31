@@ -13,6 +13,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	codexinspectionrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/codexinspection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
 
 type busyOnceFinalizeRepository struct {
@@ -270,12 +271,12 @@ func TestServiceSingleInstanceStartIsSingleFlight(t *testing.T) {
 func TestServicesSharingDatabaseCannotAcquireSameLease(t *testing.T) {
 	upstream, started := newBlockingInspectionServer(t)
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	firstStore, err := store.Open(dbPath)
+	firstStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open first store: %v", err)
 	}
 	t.Cleanup(func() { _ = firstStore.Close() })
-	secondStore, err := store.Open(dbPath)
+	secondStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open second store: %v", err)
 	}
@@ -950,12 +951,12 @@ func TestHeartbeatFailureFencesRunBeforeLeaseExpiry(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
-	firstStore, err := store.Open(dbPath)
+	firstStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open first store: %v", err)
 	}
 	t.Cleanup(func() { _ = firstStore.Close() })
-	secondStore, err := store.Open(dbPath)
+	secondStore, err := testutil.OpenStore(t, dbPath)
 	if err != nil {
 		t.Fatalf("open second store: %v", err)
 	}

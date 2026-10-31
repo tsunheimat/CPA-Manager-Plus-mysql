@@ -9,6 +9,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
 
 type stubSettingsStore struct {
@@ -101,7 +102,7 @@ func TestStatusAutoDisableReportsEffectiveValue(t *testing.T) {
 }
 
 func TestStatusUsesDBSettingsUnlessEnvLocked(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestStatusUsesDBSettingsUnlessEnvLocked(t *testing.T) {
 }
 
 func TestUpdateRejectsEnvLockedFields(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestRuntimeSettingsKeepsLastKnownOnLoadError(t *testing.T) {
 // fields must all be persisted. Without the updateMu lock, later saves would
 // overwrite earlier ones based on a stale snapshot and drop fields.
 func TestUpdateSerializesConcurrentPatches(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

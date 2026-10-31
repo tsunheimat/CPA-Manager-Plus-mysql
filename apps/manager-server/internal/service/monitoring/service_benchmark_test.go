@@ -12,11 +12,12 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usagehourly"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 func BenchmarkUsageAnalyticsIncludeProfiles(b *testing.B) {
-	db, err := store.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open store: %v", err)
 	}
@@ -348,7 +349,7 @@ func BenchmarkUsageAnalyticsIncludeProfiles(b *testing.B) {
 }
 
 func BenchmarkAccountWindowUsageProjection(b *testing.B) {
-	db, err := store.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open store: %v", err)
 	}
@@ -401,7 +402,7 @@ func BenchmarkAccountWindowUsageProjection(b *testing.B) {
 }
 
 func BenchmarkUsageMonitoringHeaderSnapshots(b *testing.B) {
-	db, err := store.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open store: %v", err)
 	}
@@ -437,7 +438,7 @@ func BenchmarkUsageMonitoringHeaderSnapshots(b *testing.B) {
 func BenchmarkUsageMonitoringDerivedReaders(b *testing.B) {
 	path := filepath.Join(b.TempDir(), "usage.sqlite")
 	openStore := func() *store.Store {
-		db, err := store.Open(path)
+		db, err := testutil.OpenStore(b, path)
 		if err != nil {
 			b.Fatalf("open store: %v", err)
 		}
@@ -729,7 +730,7 @@ func BenchmarkUsageMonitoringDerivedReaders(b *testing.B) {
 }
 
 func BenchmarkUsageAnalyticsHourlyCorePaths(b *testing.B) {
-	db, err := store.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open store: %v", err)
 	}

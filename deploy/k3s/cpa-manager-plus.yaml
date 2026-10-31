@@ -1,0 +1,269 @@
+# Apply secrets.yaml first; see README.md in this directory.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cpamp
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpamp-mysql-config
+  namespace: cpamp
+data:
+  MYSQL_HOST: cpamp-mysql
+  MYSQL_PORT: '3306'
+  MYSQL_DATABASE: cpamp
+  MYSQL_USER: cpamp
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpamp-mysql
+  namespace: cpamp
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: cpamp-mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cpamp-mysql
+  namespace: cpamp
+spec:
+  serviceName: cpamp-mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cpamp-mysql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cpamp-mysql
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: mysql
+          image: mysql:8.4
+          args:
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_0900_bin
+          envFrom:
+            - configMapRef:
+                name: cpamp-mysql-config
+          env:
+            - name: MYSQL_ROOT_PASSWORD_FILE
+              value: /run/secrets/mysql-root-password
+            - name: MYSQL_PASSWORD_FILE
+              value: /run/secrets/mysql-password
+          ports:
+            - name: mysql
+              containerPort: 3306
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -ec
+                - 'MYSQL_PWD="$(cat /run/secrets/mysql-password)" mysql --protocol=TCP -h 127.0.0.1 -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT 1"'
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -ec
+                - 'MYSQL_PWD="$(cat /run/secrets/mysql-password)" mysql --protocol=TCP -h 127.0.0.1 -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT 1"'
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: mysql
+            periodSeconds: 20
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+            - name: credentials
+              mountPath: /run/secrets
+              readOnly: true
+      volumes:
+        - name: credentials
+          secret:
+            secretName: cpamp-credentials
+            defaultMode: 0400
+            items:
+              - key: mysql-root-password
+                path: mysql-root-password
+              - key: mysql-password
+                path: mysql-password
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cpamp-data
+  namespace: cpamp
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpa-manager-plus
+  namespace: cpamp
+spec:
+  replicas: 1
+  # The database lock and local archive volume require one active Manager.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cpa-manager-plus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cpa-manager-plus
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # Add imagePullSecrets here if your GHCR package is private.
+      initContainers:
+        - name: wait-for-mysql
+          image: ghcr.io/tsunheimat/cpa-manager-plus-mysql:main
+          imagePullPolicy: Always
+          command: [sh, -ec]
+          args:
+            - 'until nc -z "$MYSQL_HOST" "$MYSQL_PORT"; do echo "Waiting for MySQL"; sleep 3; done'
+          envFrom:
+            - configMapRef:
+                name: cpamp-mysql-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      containers:
+        - name: manager
+          image: ghcr.io/tsunheimat/cpa-manager-plus-mysql:main
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: cpamp-mysql-config
+          env:
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cpamp-credentials
+                  key: mysql-password
+            - name: USAGE_DB_DRIVER
+              value: mysql
+            - name: USAGE_DB_DSN
+              value: '$(MYSQL_USER):$(MYSQL_PASSWORD)@tcp($(MYSQL_HOST):$(MYSQL_PORT))/$(MYSQL_DATABASE)'
+            - name: USAGE_DATA_DIR
+              value: /data
+            - name: CPA_MANAGER_CONFIG
+              value: /data/config.json
+            - name: CPA_MANAGER_DATA_KEY_PATH
+              value: /data/data.key
+            - name: CPA_MANAGER_ADMIN_KEY_FILE
+              value: /run/secrets/admin-key
+            - name: HTTP_ADDR
+              value: 0.0.0.0:18317
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: http
+              containerPort: 18317
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: temporary
+              mountPath: /tmp
+            - name: credentials
+              mountPath: /run/secrets
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: cpamp-data
+        - name: temporary
+          emptyDir: {}
+        - name: credentials
+          secret:
+            secretName: cpamp-credentials
+            defaultMode: 0440
+            items:
+              - key: admin-key
+                path: admin-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpa-manager-plus
+  namespace: cpamp
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: cpa-manager-plus
+  ports:
+    - name: http
+      port: 18317
+      targetPort: http

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -194,25 +194,28 @@ func TestStoredCodexLegacyEvidenceBoundsRawTailAndUsesRowID(t *testing.T) {
 			if spy.fullHistoryReads == 0 && count > codexLegacyIdentityTailLimit {
 				t.Fatal("oversized tail did not fall back to complete evidence")
 			}
-			for _, statement := range spy.tailQueries {
-				rows, err := tx.QueryContext(ctx, "explain query plan "+statement.query, statement.args...)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var details []string
-				for rows.Next() {
-					var id, parent, unused int
-					var detail string
-					if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			// SQLite opcode plans are engine-specific; the bounded-read contract above runs on both engines.
+			if !testdb.MySQL() {
+				for _, statement := range spy.tailQueries {
+					rows, err := tx.QueryContext(ctx, "explain query plan "+statement.query, statement.args...)
+					if err != nil {
 						t.Fatal(err)
 					}
-					details = append(details, detail)
-				}
-				if err := rows.Close(); err != nil {
-					t.Fatal(err)
-				}
-				if !strings.Contains(strings.Join(details, "\n"), "SEARCH e USING INTEGER PRIMARY KEY") {
-					t.Fatalf("tail is not bounded by rowid: %v", details)
+					var details []string
+					for rows.Next() {
+						var id, parent, unused int
+						var detail string
+						if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+							t.Fatal(err)
+						}
+						details = append(details, detail)
+					}
+					if err := rows.Close(); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(strings.Join(details, "\n"), "SEARCH e USING INTEGER PRIMARY KEY") {
+						t.Fatalf("tail is not bounded by rowid: %v", details)
+					}
 				}
 			}
 		})
@@ -272,7 +275,7 @@ func (s *identityEvidenceQuerySpy) QueryContext(ctx context.Context, query strin
 
 func openIdentityEvidenceTestDB(t testing.TB) *sql.DB {
 	t.Helper()
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

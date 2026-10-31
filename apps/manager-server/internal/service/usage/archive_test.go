@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagearchive"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	usageparser "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -285,9 +285,13 @@ func TestUsageArchiveServiceTelemetryWriteFailureDoesNotFailSafeArchive(t *testi
 	service.archive.testHook = func(point string) error {
 		if point == "segment_published" && !installed {
 			installed = true
-			_, err := rawDB.ExecContext(ctx, `create trigger fail_archive_progress before update on usage_archive_runs
+			query := `create trigger fail_archive_progress before update on usage_archive_runs
 				when new.progress_phase in ('archive_finalizing', 'archive_publishing')
-				begin select raise(abort, 'telemetry unavailable'); end`)
+				begin select raise(abort, 'telemetry unavailable'); end`
+			if testdb.MySQL() {
+				query = `create trigger fail_archive_progress before update on usage_archive_runs for each row begin if new.progress_phase in ('archive_finalizing', 'archive_publishing') then signal sqlstate '45000' set message_text = 'telemetry unavailable'; end if; end`
+			}
+			_, err := rawDB.ExecContext(ctx, query)
 			return err
 		}
 		return nil
@@ -1860,7 +1864,7 @@ func newArchiveTestService(t *testing.T, segmentLimit, deleteBatchSize int, even
 func newRawArchiveTestService(t *testing.T, segmentLimit, deleteBatchSize int) (*Service, *store.Store, *sql.DB, string) {
 	t.Helper()
 	cfg := testutil.NewConfig(t)
-	rawDB, err := sqliterepo.Open(cfg.DBPath)
+	rawDB, err := testdb.Open(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open raw archive store: %v", err)
 	}
@@ -2199,7 +2203,7 @@ func TestUsageArchiveRoundTripPreservesAuthAccountIDSnapshot(t *testing.T) {
 	}
 
 	targetCfg := testutil.NewConfig(t)
-	targetDB, err := sqliterepo.Open(targetCfg.DBPath)
+	targetDB, err := testdb.Open(t, targetCfg.DBPath)
 	if err != nil {
 		t.Fatalf("open target db: %v", err)
 	}
@@ -2339,7 +2343,7 @@ func TestUsageArchiveRoundTripPreservesCodexMemberIdentity(t *testing.T) {
 	}
 
 	targetCfg := testutil.NewConfig(t)
-	targetDB, err := sqliterepo.Open(targetCfg.DBPath)
+	targetDB, err := testdb.Open(t, targetCfg.DBPath)
 	if err != nil {
 		t.Fatalf("open target db: %v", err)
 	}

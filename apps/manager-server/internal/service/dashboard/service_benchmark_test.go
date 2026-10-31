@@ -9,11 +9,12 @@ import (
 
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 func BenchmarkDashboardTodayMetrics(b *testing.B) {
-	db, err := store.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open store: %v", err)
 	}
@@ -102,7 +103,7 @@ func insertDashboardBenchmarkEvents(b *testing.B, ctx context.Context, db *store
 func BenchmarkDashboardMonitoringRefreshPaths(b *testing.B) {
 	for _, count := range []int{10_000, 100_000, 1_000_000} {
 		b.Run(fmt.Sprintf("events_%dk", count/1_000), func(b *testing.B) {
-			db, err := store.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+			db, err := testutil.OpenStore(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 			if err != nil {
 				b.Fatalf("open store: %v", err)
 			}

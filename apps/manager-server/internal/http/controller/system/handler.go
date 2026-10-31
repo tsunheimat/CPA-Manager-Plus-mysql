@@ -75,6 +75,7 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
 		"service":     h.App.ServiceID,
 		"dbPath":      h.App.Config.DBPath,
+		"dbDriver":    h.App.Store.DatabaseDriver(),
 		"events":      events,
 		"deadLetters": deadLetters,
 		"collector":   status,
@@ -94,6 +95,9 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.App.DatabaseMaintenance != nil {
 		payload["database"] = h.App.DatabaseMaintenance.Snapshot()
+	}
+	if h.App.Store.DatabaseDriver() == "mysql" {
+		delete(payload, "dbPath")
 	}
 	response.JSON(w, http.StatusOK, payload)
 }

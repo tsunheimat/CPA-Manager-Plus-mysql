@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -83,7 +84,7 @@ func BenchmarkAccountHistoryServiceCatchUp(b *testing.B) {
 
 func openAccountHistoryBenchmarkStore(b *testing.B) (*store.Store, func()) {
 	b.Helper()
-	st, err := store.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(b, filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {
 		b.Fatalf("open store: %v", err)
 	}

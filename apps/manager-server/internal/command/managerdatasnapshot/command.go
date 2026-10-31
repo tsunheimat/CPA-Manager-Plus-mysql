@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
 )
 
@@ -34,6 +35,7 @@ type snapshotFile struct {
 
 type manifest struct {
 	Version int                      `json:"version"`
+	Driver  string                   `json:"driver,omitempty"`
 	Files   map[string]manifestEntry `json:"files"`
 }
 
@@ -49,6 +51,7 @@ type options struct {
 	DBPath      string
 	DataKeyPath string
 	SnapshotDir string
+	ArchiveDir  string
 }
 
 func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) error {
@@ -58,6 +61,19 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 			return nil
 		}
 		return err
+	}
+	if opts.Action != "delete" && opts.DBPath == "" {
+		cfg, err := config.LoadWithoutCreatingDefault()
+		if err != nil {
+			return err
+		}
+		if cfg.DBDriver == "mysql" {
+			return runMySQL(ctx, opts, cfg, stdout)
+		}
+		opts.DBPath = cfg.DBPath
+		if opts.DataKeyPath == "" {
+			opts.DataKeyPath = cfg.DataKeyPath
+		}
 	}
 
 	switch opts.Action {
@@ -102,6 +118,7 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&opts.DBPath, "db-path", "", "SQLite database path")
 	fs.StringVar(&opts.DataKeyPath, "data-key-path", "", "data.key path")
 	fs.StringVar(&opts.SnapshotDir, "snapshot-dir", "", "private snapshot directory")
+	fs.StringVar(&opts.ArchiveDir, "archive-dir", "", "archive directory; defaults to Manager configuration")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintln(stderr, "Usage: cpa-manager-plus manager-data-snapshot <create|restore|delete> --snapshot-dir PATH [--db-path PATH --data-key-path PATH]")
 		fs.PrintDefaults()
@@ -115,13 +132,10 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	opts.DBPath = strings.TrimSpace(opts.DBPath)
 	opts.DataKeyPath = strings.TrimSpace(opts.DataKeyPath)
 	opts.SnapshotDir = strings.TrimSpace(opts.SnapshotDir)
-	if opts.SnapshotDir == "" {
+	if opts.SnapshotDir == "" && opts.Action != "recover" {
 		return options{}, errors.New("--snapshot-dir is required")
 	}
-	if opts.Action == "create" || opts.Action == "restore" {
-		if opts.DBPath == "" {
-			return options{}, errors.New("--db-path is required")
-		}
+	if (opts.Action == "create" || opts.Action == "restore") && opts.DBPath != "" {
 		if opts.DataKeyPath == "" {
 			return options{}, errors.New("--data-key-path is required")
 		}
@@ -256,6 +270,9 @@ func restoreWithWarnings(ctx context.Context, dbPath string, dataKeyPath string,
 	absSnapshotDir, m, err := loadManifest(snapshotDir)
 	if err != nil {
 		return outcome, err
+	}
+	if m.Driver == "mysql" {
+		return outcome, errors.New("MySQL snapshots require the configured MySQL backend; omit --db-path")
 	}
 
 	type restoreItem struct {
@@ -478,6 +495,18 @@ func loadManifest(snapshotDir string) (string, manifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return "", manifest{}, fmt.Errorf("decode snapshot manifest: %w", err)
 	}
+	if m.Version == 2 && m.Driver == "mysql" {
+		if len(m.Files) != len(mysqlSnapshotFiles) || !m.Files["mysql-data"].Existed {
+			return "", manifest{}, errors.New("incomplete MySQL snapshot manifest")
+		}
+		for _, name := range mysqlSnapshotFiles {
+			entry, ok := m.Files[name]
+			if !ok || (entry.Existed && (len(entry.SHA256) != 64 || entry.Size < 0 || entry.Mode > 0o777)) {
+				return "", manifest{}, fmt.Errorf("invalid MySQL snapshot entry %s", name)
+			}
+		}
+		return absSnapshotDir, m, nil
+	}
 	if m.Version != manifestVersion || len(m.Files) != len(snapshotFiles) {
 		return "", manifest{}, errors.New("unsupported or incomplete snapshot manifest")
 	}
@@ -494,7 +523,7 @@ func loadManifest(snapshotDir string) (string, manifest, error) {
 }
 
 func deleteSnapshot(snapshotDir string) error {
-	absSnapshotDir, _, err := loadManifest(snapshotDir)
+	absSnapshotDir, m, err := loadManifest(snapshotDir)
 	if err != nil {
 		// A missing manifest with the directory still present usually means an
 		// earlier delete removed files but failed before the final rmdir.
@@ -504,8 +533,8 @@ func deleteSnapshot(snapshotDir string) error {
 		return err
 	}
 	allowed := map[string]bool{"manifest.json": true}
-	for _, item := range snapshotFiles {
-		allowed[item.Name] = true
+	for name := range m.Files {
+		allowed[name] = true
 	}
 	entries, err := os.ReadDir(absSnapshotDir)
 	if err != nil {
@@ -516,9 +545,9 @@ func deleteSnapshot(snapshotDir string) error {
 			return fmt.Errorf("snapshot directory contains unexpected entry %s", entry.Name())
 		}
 	}
-	for _, item := range snapshotFiles {
-		if err := os.Remove(filepath.Join(absSnapshotDir, item.Name)); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("delete snapshot file %s: %w", item.Name, err)
+	for name := range m.Files {
+		if err := os.Remove(filepath.Join(absSnapshotDir, name)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("delete snapshot file %s: %w", name, err)
 		}
 	}
 	if err := os.Remove(filepath.Join(absSnapshotDir, "manifest.json")); err != nil {

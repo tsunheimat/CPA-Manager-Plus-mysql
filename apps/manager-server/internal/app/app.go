@@ -8,7 +8,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/database"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	bootstrapsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/bootstrap"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
@@ -24,15 +24,13 @@ type Options struct {
 }
 
 func New(ctx context.Context, cfg config.Config, options Options) (*Context, error) {
-	if cfg.DataKey == "" && cfg.DataKeyPath == "" {
+	if database.Driver(cfg) == "sqlite" && cfg.DataKey == "" && cfg.DataKeyPath == "" {
 		cfg.DataKeyPath = filepath.Join(filepath.Dir(cfg.DBPath), "data.key")
 	}
-	if err := sqliterepo.RequireExistingDataKeyForEncryptedCPAConnection(
-		ctx,
-		cfg.DBPath,
-		cfg.DataKey,
-		cfg.DataKeyPath,
-	); err != nil {
+	if database.Driver(cfg) == "mysql" && cfg.DataKeyPath == "" {
+		cfg.DataKeyPath = filepath.Join(cfg.DataDir, "data.key")
+	}
+	if err := database.RequireDataKey(ctx, cfg); err != nil {
 		return nil, err
 	}
 	dataKey, dataKeyCreated, err := security.LoadOrCreateDataKey(cfg.DataKey, cfg.DataKeyPath)
@@ -43,7 +41,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (*Context, err
 	if err != nil {
 		return nil, err
 	}
-	st, err := store.Open(cfg.DBPath, protector)
+	st, err := store.OpenConfigured(ctx, cfg, protector)
 	if err != nil {
 		return nil, err
 	}

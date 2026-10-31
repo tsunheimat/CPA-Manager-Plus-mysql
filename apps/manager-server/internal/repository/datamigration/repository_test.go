@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	usageaggregaterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagerollup"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 func TestDiscoverUsageCacheAccountingCompletesEmptyDatabaseWithoutResettingRollups(t *testing.T) {
@@ -406,8 +406,8 @@ func TestUsageCacheAccountingFailurePreservesCheckpointAndResumes(t *testing.T) 
 	}
 	assertNormalizedTotalNull(t, db, "legacy-1")
 	assertCount(t, db, "usage_cache_accounting_v2_changes", 1)
-	if _, err := db.Exec(`create trigger reject_second_usage_stage before insert on usage_cache_accounting_v2_changes
-		when new.event_id = 2 begin select raise(abort, 'blocked'); end`); err != nil {
+	if _, err := db.Exec(testdb.SQL(db, `create trigger reject_second_usage_stage before insert on usage_cache_accounting_v2_changes
+		when new.event_id = 2 begin select raise(abort, 'blocked'); end`, `create trigger reject_second_usage_stage before insert on usage_cache_accounting_v2_changes for each row begin if new.event_id=2 then signal sqlstate '45000' set message_text='blocked'; end if; end`)); err != nil {
 		t.Fatalf("create failure trigger: %v", err)
 	}
 
@@ -577,8 +577,8 @@ func TestUsageCacheAccountingClearingFailurePreservesAppliedRowsAndResumes(t *te
 	if secondApply.State.Status != StatusClearing || secondApply.State.AppliedRows != 2 {
 		t.Fatalf("second apply batch = %#v", secondApply)
 	}
-	if _, err := db.Exec(`create trigger reject_rollup_delete before delete on usage_account_model_rollups
-		begin select raise(abort, 'blocked'); end`); err != nil {
+	if _, err := db.Exec(testdb.SQL(db, `create trigger reject_rollup_delete before delete on usage_account_model_rollups
+		begin select raise(abort, 'blocked'); end`, `create trigger reject_rollup_delete before delete on usage_account_model_rollups for each row signal sqlstate '45000' set message_text='blocked'`)); err != nil {
 		t.Fatalf("create clearing failure trigger: %v", err)
 	}
 
@@ -671,7 +671,7 @@ type accountingFixture struct {
 
 func openMigrationTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -1719,4 +1719,3 @@ func TestUsageCacheAccountingSemanticsRevision3RejectsCanonicalTokenMismatch(t *
 	assertAccounting(t, db, "canonical-token-mismatch", "separate_from_input", 233705, 466281, 232576, 0, 234854)
 	assertRevision(t, db, "3")
 }
-

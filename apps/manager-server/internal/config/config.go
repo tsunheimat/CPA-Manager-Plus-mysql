@@ -33,6 +33,8 @@ type Config struct {
 	HTTPAddr                     string
 	DataDir                      string
 	DBPath                       string
+	DBDriver                     string
+	DBDSN                        string `json:"-"`
 	CPAUpstreamURL               string
 	ManagementKey                string
 	AdminKey                     string
@@ -72,6 +74,9 @@ type fileConfig struct {
 	HTTPAddr                     string   `json:"httpAddr,omitempty"`
 	DataDir                      string   `json:"dataDir,omitempty"`
 	DBPath                       string   `json:"dbPath,omitempty"`
+	DBDriver                     string   `json:"dbDriver,omitempty"`
+	DBDSN                        string   `json:"dbDsn,omitempty"`
+	DBDSNFile                    string   `json:"dbDsnFile,omitempty"`
 	CPAUpstreamURL               string   `json:"cpaUpstreamUrl,omitempty"`
 	ManagementKeyFile            string   `json:"managementKeyFile,omitempty"`
 	AdminKeyFile                 string   `json:"adminKeyFile,omitempty"`
@@ -126,8 +131,24 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		dbPathFallback = resolveConfigPath(cfgFile.DBPath, cfgDir)
 	}
 	dbPath := env("USAGE_DB_PATH", dbPathFallback)
+	dbDriver := strings.ToLower(env("USAGE_DB_DRIVER", stringFallback(cfgFile.DBDriver, "sqlite")))
+	if dbDriver != "sqlite" && dbDriver != "mysql" {
+		return Config{}, fmt.Errorf("USAGE_DB_DRIVER / dbDriver must be sqlite or mysql")
+	}
+	dbDSN := env("USAGE_DB_DSN", cfgFile.DBDSN)
+	dbDSNFile := env("USAGE_DB_DSN_FILE", resolveConfigPath(cfgFile.DBDSNFile, cfgDir))
+	if dbDriver == "mysql" && !hasEnv("USAGE_DB_DSN") && dbDSNFile != "" {
+		data, err := os.ReadFile(dbDSNFile)
+		if err != nil {
+			return Config{}, fmt.Errorf("read database DSN file: %w", err)
+		}
+		dbDSN = strings.TrimSpace(string(data))
+	}
+	if dbDriver == "mysql" && dbDSN == "" {
+		return Config{}, fmt.Errorf("MySQL requires USAGE_DB_DSN, USAGE_DB_DSN_FILE, dbDsn or dbDsnFile")
+	}
 	usageArchiveBaseDir := dataDir
-	if !dataDirExplicit && (hasEnv("USAGE_DB_PATH") || strings.TrimSpace(cfgFile.DBPath) != "") {
+	if dbDriver == "sqlite" && !dataDirExplicit && (hasEnv("USAGE_DB_PATH") || strings.TrimSpace(cfgFile.DBPath) != "") {
 		usageArchiveBaseDir = filepath.Dir(dbPath)
 	}
 	usageArchiveRetentionDays, err := resolveUsageArchiveRetentionDays(cfgFile.UsageArchiveRetentionDays)
@@ -158,6 +179,8 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		HTTPAddr:                     env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
 		DataDir:                      dataDir,
 		DBPath:                       dbPath,
+		DBDriver:                     dbDriver,
+		DBDSN:                        dbDSN,
 		CPAUpstreamURL:               env("CPA_UPSTREAM_URL", cfgFile.CPAUpstreamURL),
 		ManagementKey:                readSecret("CPA_MANAGEMENT_KEY", "CPA_MANAGEMENT_KEY_FILE", managementKeyFile),
 		AdminKey:                     readSecret("CPA_MANAGER_ADMIN_KEY", "CPA_MANAGER_ADMIN_KEY_FILE", adminKeyFile),
@@ -225,7 +248,7 @@ func loadFileConfig(options LoadOptions) (fileConfig, string, error) {
 	if err != nil || ok {
 		return cfg, cfgDir, err
 	}
-	if hasEnv("USAGE_DATA_DIR") || hasEnv("USAGE_DB_PATH") {
+	if hasEnv("USAGE_DATA_DIR") || hasEnv("USAGE_DB_PATH") || hasEnv("USAGE_DB_DRIVER") {
 		return fileConfig{}, "", nil
 	}
 	if !options.CreateDefaultConfig {

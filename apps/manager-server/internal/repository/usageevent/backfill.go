@@ -41,9 +41,9 @@ const responseMetadataBackfillSelect = `with candidates as (
 select id, timestamp_ms, raw_json, response_metadata_json
 from candidates
 where
-	(response_metadata_missing and (raw_json like '%response_headers%' or raw_json like '%responseHeaders%'))
+	(response_metadata_missing and (lower(raw_json) like '%response_headers%' or lower(raw_json) like '%responseheaders%'))
 	or (
-		raw_json like '%subscription:free-usage-exhausted%'
+		lower(raw_json) like '%subscription:free-usage-exhausted%'
 		and (
 			provider_identity in ('xai', 'x-ai')
 			or auth_provider_identity in ('xai', 'x-ai')
@@ -65,7 +65,7 @@ where
 			or json_type(metadata_json, '$.provider_usage.recover_at_ms') is null
 			or json_type(metadata_json, '$.provider_usage.source') is null
 			or (
-				raw_json like '%actual/limit%'
+				lower(raw_json) like '%actual/limit%'
 				and (
 					json_type(metadata_json, '$.provider_usage.actual') is null
 					or json_type(metadata_json, '$.provider_usage.limit') is null
@@ -75,13 +75,13 @@ where
 			)
 		)
 	)
-	or (raw_json like '%X-Ratelimit-Limit-Requests%' and json_type(metadata_json, '$.rate_limit.requests.limit') is null)
-	or (raw_json like '%X-Ratelimit-Remaining-Requests%' and json_type(metadata_json, '$.rate_limit.requests.remaining') is null)
-	or (raw_json like '%X-Ratelimit-Limit-Tokens%' and json_type(metadata_json, '$.rate_limit.tokens.limit') is null)
-	or (raw_json like '%X-Ratelimit-Remaining-Tokens%' and json_type(metadata_json, '$.rate_limit.tokens.remaining') is null)
-	or (raw_json like '%X-Data-Retention%' and json_type(metadata_json, '$.data_policy.retention_mode') is null)
+	or (lower(raw_json) like '%x-ratelimit-limit-requests%' and json_type(metadata_json, '$.rate_limit.requests.limit') is null)
+	or (lower(raw_json) like '%x-ratelimit-remaining-requests%' and json_type(metadata_json, '$.rate_limit.requests.remaining') is null)
+	or (lower(raw_json) like '%x-ratelimit-limit-tokens%' and json_type(metadata_json, '$.rate_limit.tokens.limit') is null)
+	or (lower(raw_json) like '%x-ratelimit-remaining-tokens%' and json_type(metadata_json, '$.rate_limit.tokens.remaining') is null)
+	or (lower(raw_json) like '%x-data-retention%' and json_type(metadata_json, '$.data_policy.retention_mode') is null)
 	or (
-		(raw_json like '%X-Zero-Retention%' or raw_json like '%X-Zero-Data-Retention%')
+		(lower(raw_json) like '%x-zero-retention%' or lower(raw_json) like '%x-zero-data-retention%')
 		and json_type(metadata_json, '$.data_policy.zero_retention') is null
 	)
 order by id

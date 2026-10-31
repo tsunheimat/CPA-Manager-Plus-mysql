@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -104,7 +104,7 @@ func TestCatchUpDashboardHourlyAggregatesByCheckpoint(t *testing.T) {
 
 func TestDashboardRowsRemainCompleteDuringRebuildAndRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "dashboard-rebuild.sqlite")
-	db, err := sqliterepo.Open(dbPath)
+	db, err := testdb.Open(t, dbPath)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestDashboardRowsRemainCompleteDuringRebuildAndRestart(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatalf("close interrupted database: %v", err)
 	}
-	db, err = sqliterepo.Open(dbPath)
+	db, err = testdb.Open(t, dbPath)
 	if err != nil {
 		t.Fatalf("reopen interrupted database: %v", err)
 	}

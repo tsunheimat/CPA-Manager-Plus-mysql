@@ -259,6 +259,13 @@
     "usage_maintenance_short": "Maintenance"
   },
   "usage_maintenance": {
+    "storage_mysql_operations": "Stop Manager Server before backing up or optimizing tables. Optimization rebuilds tables and may need extra disk space. Restart Manager Server when maintenance is complete.",
+    "storage_mysql_copy_backup": "Copy backup command",
+    "storage_mysql_copy_compact": "Copy optimization command",
+    "storage_mysql_title": "MySQL storage",
+    "storage_mysql_hint": "Estimated table and index size reported by MySQL.",
+    "storage_mysql_note": "MySQL manages storage reuse after deletion. SQLite compaction commands do not apply.",
+    "storage_mysql_backup": "Back up MySQL together with data.key and the usage-archives directory. Keep the original data key when moving to another server.",
     "archive_management": "Archive management",
     "archive_records": "Archive records",
     "archive_retained": "Archive retained",

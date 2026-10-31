@@ -8,14 +8,24 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 const AdminKey = "cpamp_test_key_0123456789abcdef"
 
+func OpenStore(t testing.TB, path string, protector ...*security.Protector) (*store.Store, error) {
+	t.Helper()
+	db, err := testdb.Open(t, path)
+	if err != nil {
+		return nil, err
+	}
+	return store.New(db, protector...), nil
+}
+
 func NewConfig(t testing.TB) config.Config {
 	t.Helper()
 	dir := t.TempDir()
-	return config.Config{
+	cfg := config.Config{
 		DataDir:                   dir,
 		DBPath:                    filepath.Join(dir, "usage.sqlite"),
 		Queue:                     "usage",
@@ -30,6 +40,11 @@ func NewConfig(t testing.TB) config.Config {
 		UsageImportSessionTTL:     config.DefaultUsageImportSessionTTL,
 		UsageArchiveDir:           filepath.Join(dir, "usage-archives"),
 	}
+	if testdb.MySQL() {
+		cfg.DBDriver = "mysql"
+		cfg.DBDSN = testdb.DSN(t, cfg.DBPath)
+	}
+	return cfg
 }
 
 func NewStore(t testing.TB, cfg config.Config) *store.Store {
@@ -37,7 +52,11 @@ func NewStore(t testing.TB, cfg config.Config) *store.Store {
 	if cfg.DBPath == "" {
 		cfg.DBPath = filepath.Join(t.TempDir(), "usage.sqlite")
 	}
-	db, err := store.Open(cfg.DBPath)
+	if testdb.MySQL() && cfg.DBDriver == "" {
+		cfg.DBDriver = "mysql"
+		cfg.DBDSN = testdb.DSN(t, cfg.DBPath)
+	}
+	db, err := store.OpenConfigured(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

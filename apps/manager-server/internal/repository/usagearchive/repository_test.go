@@ -17,12 +17,12 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/datamigration"
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagerollup"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -782,7 +782,10 @@ func TestUsageArchiveSchemaContractCoversAllUsageEventColumns(t *testing.T) {
 	db := openArchiveTestDB(t)
 	ctx := context.Background()
 
-	rows, err := db.QueryContext(ctx, `pragma table_info(usage_events)`)
+	rows, err := db.QueryContext(ctx, testdb.SQL(db, `pragma table_info(usage_events)`,
+		`select ordinal_position-1, column_name, data_type, is_nullable='NO', column_default, column_key='PRI'
+		from information_schema.columns where table_schema=database() and table_name='usage_events'
+		and generation_expression='' order by ordinal_position`))
 	if err != nil {
 		t.Fatalf("query table_info: %v", err)
 	}
@@ -1408,10 +1411,10 @@ func TestRepositoryDeleteRollsBackWhenRetainedProjectionHandoffFails(t *testing.
 	if _, err := db.Exec(`delete from usage_monitoring_event_projection_v1 where event_id = 1`); err != nil {
 		t.Fatalf("remove retained projection fixture: %v", err)
 	}
-	if _, err := db.Exec(`create trigger reject_retained_projection_handoff
+	if _, err := db.Exec(testdb.SQL(db, `create trigger reject_retained_projection_handoff
 		before insert on usage_monitoring_event_projection_v1
 		when new.event_id = 1
-		begin select raise(abort, 'blocked retained projection handoff'); end`); err != nil {
+		begin select raise(abort, 'blocked retained projection handoff'); end`, `create trigger reject_retained_projection_handoff before insert on usage_monitoring_event_projection_v1 for each row begin if new.event_id = 1 then signal sqlstate '45000' set message_text='blocked retained projection handoff'; end if; end`)); err != nil {
 		t.Fatalf("create retained projection failure trigger: %v", err)
 	}
 	if _, err := repository.BeginDelete(ctx, run.ID, 71_000); err != nil {
@@ -2066,7 +2069,7 @@ func catchUpDeleteReadiness(t *testing.T, ctx context.Context, db *sql.DB, nowMS
 
 func openArchiveTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

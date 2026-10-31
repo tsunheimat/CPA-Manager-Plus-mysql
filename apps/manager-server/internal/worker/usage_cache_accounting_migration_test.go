@@ -7,12 +7,13 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 func TestUsageCacheAccountingMigrationWorkerRunsBatchesBeforeCompletion(t *testing.T) {
-	rawDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	rawDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestUsageCacheAccountingMigrationWorkerRunsBatchesBeforeCompletion(t *testi
 }
 
 func TestUsageCacheAccountingMigrationWorkerCompletesOnce(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -95,7 +96,7 @@ func TestUsageCacheAccountingMigrationWorkerCompletesOnce(t *testing.T) {
 }
 
 func TestUsageCacheAccountingMigrationWorkerRediscoverSemanticsRevision(t *testing.T) {
-	rawDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	rawDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

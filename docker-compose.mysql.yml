@@ -1,0 +1,48 @@
+# Fresh MySQL deployment: set MYSQL_ROOT_PASSWORD and MYSQL_PASSWORD first.
+# For an existing SQLite installation, see docs/mysql.md before starting Manager.
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: cpamp
+      MYSQL_USER: cpamp
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}
+    volumes:
+      - cpa-manager-plus-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  cpa-manager-plus:
+    build:
+      context: .
+      dockerfile: Dockerfile.manager-server
+    image: seakee/cpa-manager-plus:latest
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "18317:18317"
+    environment:
+      HTTP_ADDR: "0.0.0.0:18317"
+      USAGE_DB_DRIVER: mysql
+      USAGE_DB_DSN: cpamp:${MYSQL_PASSWORD:?Set MYSQL_PASSWORD}@tcp(mysql:3306)/cpamp
+      USAGE_DATA_DIR: /data
+      CPA_MANAGER_DATA_KEY_PATH: /data/data.key
+    volumes:
+      - cpa-manager-plus-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:18317/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  cpa-manager-plus-mysql:
+  cpa-manager-plus-data:

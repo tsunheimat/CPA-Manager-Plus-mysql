@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 func TestEventHashPersistenceBoundary(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestEventHashPersistenceBoundary(t *testing.T) {
 }
 
 func TestSensitiveSourcePseudonymizationRoundTrip(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestSensitiveSourcePseudonymizationRoundTrip(t *testing.T) {
 }
 
 func TestInsertBatchDuplicatePreflightOptimization(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestInsertBatchDuplicatePreflightOptimization(t *testing.T) {
 }
 
 func TestInsertedEventHashesContract(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestInsertedEventHashesContract(t *testing.T) {
 }
 
 func TestTransactionAtomicityOnFailure(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestTransactionAtomicityOnFailure(t *testing.T) {
 }
 
 func TestUppercaseAPIKeyHashCorrelationRoundTrip(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestUppercaseAPIKeyHashCorrelationRoundTrip(t *testing.T) {
 }
 
 func TestResponseMetadataAuthorizationErrorPersistence(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -466,7 +466,7 @@ func makeBaseTestEvent(hash string, timestampMS int64) usage.Event {
 }
 
 func TestInsertBatchArchiveRestoreSecurityWithDerivedFieldPreservation(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestInsertBatchArchiveRestoreSecurityWithDerivedFieldPreservation(t *testin
 }
 
 func TestInsertBatchArchiveRestoreDoesNotBypassCanonicalEventHash(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}

@@ -483,7 +483,7 @@ func (r *repository) recentAccountRequestsBatched(
 		row_number() over (
 			partition by request_index
 			order by timestamp_ms desc, id desc
-		) as row_number
+		) as request_rank
 	from candidates
 )
 select
@@ -496,8 +496,8 @@ select
 	header_error_code,
 	header_trace_id
 from ranked
-where row_number <= ?
-order by request_index, row_number`, args...)
+where request_rank <= ?
+order by request_index, request_rank`, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -272,7 +272,8 @@ select
 from banded_usage_events
 where timestamp_ms >= ? and timestamp_ms < ?
 group by analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
-order by calls desc`, usage.LongContextInputTokenThreshold)
+order by calls desc, analytics_model_value, billing_model, pricing_model_value,
+coalesce(service_tier, ''), context_threshold_tokens_value`, usage.LongContextInputTokenThreshold)
 
 // ModelStatsBetween returns per-model totals for all models in a window.
 func (r *repository) ModelStatsBetween(ctx context.Context, fromMs, toMs int64) ([]ModelStat, error) {

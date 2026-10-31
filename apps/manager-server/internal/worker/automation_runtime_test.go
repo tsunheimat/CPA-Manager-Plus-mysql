@@ -7,12 +7,12 @@ import (
 	collectorpkg "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	automationsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/automation"
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
 func TestAutomationUsageHandlerGatesNewEvents(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestAutomationUsageHandlerGatesNewEvents(t *testing.T) {
 }
 
 func TestAutomationRuntimeReloadUpdatesAutoDisable(t *testing.T) {
-	st, err := store.Open(t.TempDir() + "/usage.sqlite")
+	st, err := testutil.OpenStore(t, t.TempDir()+"/usage.sqlite")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

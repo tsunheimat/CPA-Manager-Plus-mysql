@@ -9,13 +9,13 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/modelprice"
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 func openTestDB(t *testing.T) (*sql.DB, modelprice.Repository) {
 	t.Helper()
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "modelprice.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "modelprice.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -25,7 +25,7 @@ func openTestDB(t *testing.T) (*sql.DB, modelprice.Repository) {
 
 func insertArchiveRef(t *testing.T, db *sql.DB, rawDeletedAt any) {
 	t.Helper()
-	if _, err := db.Exec(`pragma foreign_keys = off`); err != nil {
+	if _, err := db.Exec(testdb.SQL(db, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
 		t.Fatalf("disable foreign keys: %v", err)
 	}
 	hash := "hash-1"
@@ -61,7 +61,7 @@ func markRawDeletedWithRetainedProjection(t *testing.T, db *sql.DB) {
 	if result.CoverageEventID != 1 || result.Pending {
 		t.Fatalf("unexpected retained projection result: %#v", result)
 	}
-	if _, err := db.Exec(`pragma foreign_keys = off`); err != nil {
+	if _, err := db.Exec(testdb.SQL(db, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
 		t.Fatalf("disable foreign keys: %v", err)
 	}
 	if _, err := db.Exec(`insert into usage_archive_event_refs(
@@ -546,7 +546,6 @@ func TestModelPriceUpsertSyncedManualPriceAndNewModelRejectedWithRawDeletion(t *
 	}
 }
 
-
 func TestModelPriceStructureChangeAllowedAfterRawDeletionWithRetainedProjection(t *testing.T) {
 	ctx := context.Background()
 	db, repo := openTestDB(t)
@@ -602,7 +601,6 @@ func TestModelPriceUpsertSyncedStructureChangeAllowedAfterRawDeletionWithRetaine
 		t.Fatalf("expected model-b to be persisted")
 	}
 }
-
 
 func TestModelPriceStructureChangePreservesRetainedVerifierSystemError(t *testing.T) {
 	ctx := context.Background()

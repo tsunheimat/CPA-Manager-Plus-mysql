@@ -10,11 +10,11 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	modelpricesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/modelprice"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -73,7 +73,7 @@ func TestHandleModelPricesPutStructureChangeAfterRawDeletionReturns409(t *testin
 		t.Fatalf("initial ReplaceAll: %v", err)
 	}
 
-	rawDB, err := sqliterepo.Open(cfg.DBPath)
+	rawDB, err := testdb.Open(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestHandleModelPricesPutStructureChangeAfterRawDeletionReturns409(t *testin
 		t.Fatalf("open sqlite conn: %v", err)
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `pragma foreign_keys = off`); err != nil {
+	if _, err := conn.ExecContext(ctx, testdb.SQL(rawDB, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
 		t.Fatalf("disable foreign keys: %v", err)
 	}
 	if _, err := conn.ExecContext(ctx, `insert into usage_archive_event_refs(
@@ -129,7 +129,7 @@ func TestHandleModelPricesSyncStructureChangeAfterRawDeletionReturns409(t *testi
 		t.Fatalf("initial ReplaceAll: %v", err)
 	}
 
-	rawDB, err := sqliterepo.Open(cfg.DBPath)
+	rawDB, err := testdb.Open(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestHandleModelPricesSyncStructureChangeAfterRawDeletionReturns409(t *testi
 		t.Fatalf("open sqlite conn: %v", err)
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `pragma foreign_keys = off`); err != nil {
+	if _, err := conn.ExecContext(ctx, testdb.SQL(rawDB, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
 		t.Fatalf("disable foreign keys: %v", err)
 	}
 	if _, err := conn.ExecContext(ctx, `insert into usage_archive_event_refs(

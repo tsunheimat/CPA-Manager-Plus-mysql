@@ -14,6 +14,12 @@ export const COMPACT_BINARY_COMMAND =
 
 export const COMPACT_USAGE_COMMAND = COMPACT_BINARY_COMMAND;
 
+export const MYSQL_BACKUP_COMMAND =
+  'docker compose stop cpa-manager-plus && \\\n  docker compose run --rm --no-deps cpa-manager-plus manager-data-snapshot create --snapshot-dir /data/backups/before-maintenance && \\\n  docker compose start cpa-manager-plus';
+
+export const MYSQL_COMPACT_COMMAND =
+  'docker compose stop cpa-manager-plus && \\\n  docker compose run --rm --no-deps cpa-manager-plus compact-usage && \\\n  docker compose start cpa-manager-plus';
+
 export const COMPACT_DOCKER_COMPOSE_COMMAND =
   'docker compose stop cpa-manager-plus && \\\n  docker compose run --rm --no-deps cpa-manager-plus compact-usage --db-path /data/usage.sqlite && \\\n  docker compose start cpa-manager-plus';
 
@@ -81,6 +87,71 @@ export function UsageMaintenanceAdvancedView({
       // ignore
     }
   };
+
+  if (storage.driver === 'mysql') {
+    return (
+      <div className={styles.view}>
+        {stale ? (
+          <p className={styles.warningNote}>
+            {t('usage_maintenance.workspace_cleanup_refresh_failed')}
+          </p>
+        ) : null}
+        <section className={styles.section}>
+          <div className={styles.storageTotal}>
+            <span>{t('usage_maintenance.storage_mysql_title')}</span>
+            <strong>{size(storage.total_bytes)}</strong>
+            <small>{t('usage_maintenance.storage_mysql_hint')}</small>
+          </div>
+          <p>{t('usage_maintenance.storage_mysql_note')}</p>
+          <p>{t('usage_maintenance.storage_mysql_backup')}</p>
+          <p>{t('usage_maintenance.storage_mysql_operations')}</p>
+          <SegmentedTabs
+            idBase="mysql-maintenance-deployment"
+            items={[
+              { id: 'docker-compose', label: 'Docker Compose' },
+              { id: 'binary', label: t('usage_maintenance.advanced_tab_binary') },
+            ]}
+            activeTab={deploymentType}
+            onChange={setDeploymentType}
+            ariaLabel={t('usage_maintenance.advanced_deployment_type')}
+          />
+          <pre>
+            {deploymentType === 'binary'
+              ? 'cpa-manager-plus manager-data-snapshot create --snapshot-dir /path/to/backup'
+              : MYSQL_BACKUP_COMMAND}
+          </pre>
+          <Button
+            variant="secondary"
+            onClick={() =>
+              onCopyCommand(
+                deploymentType === 'binary'
+                  ? 'cpa-manager-plus manager-data-snapshot create --snapshot-dir /path/to/backup'
+                  : MYSQL_BACKUP_COMMAND
+              )
+            }
+          >
+            {t('usage_maintenance.storage_mysql_copy_backup')}
+          </Button>
+          <h2>{t('usage_maintenance.advanced_compact_title')}</h2>
+          <pre>
+            {deploymentType === 'binary' ? 'cpa-manager-plus compact-usage' : MYSQL_COMPACT_COMMAND}
+          </pre>
+          <Button
+            variant="secondary"
+            onClick={() =>
+              onCopyCommand(
+                deploymentType === 'binary'
+                  ? 'cpa-manager-plus compact-usage'
+                  : MYSQL_COMPACT_COMMAND
+              )
+            }
+          >
+            {t('usage_maintenance.storage_mysql_copy_compact')}
+          </Button>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.view}>

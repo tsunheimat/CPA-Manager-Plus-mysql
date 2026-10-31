@@ -9,10 +9,11 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 func TestResultRoundTripPreservesAccountSnapshot(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestResultRoundTripPreservesAccountSnapshot(t *testing.T) {
 }
 
 func TestResultRoundTripPreservesExplicitEmptyQuotaInventory(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestResultRoundTripPreservesExplicitEmptyQuotaInventory(t *testing.T) {
 }
 
 func TestResultRoundTripRejectsMalformedQuotaInventoryAndPreservesValidUpsertEvidence(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestResultRoundTripRejectsMalformedQuotaInventoryAndPreservesValidUpsertEvi
 }
 
 func TestDisableOwnershipCRUD(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -317,16 +318,16 @@ func TestDisableOwnershipCRUD(t *testing.T) {
 }
 
 func TestUpsertDisableOwnershipsIsAtomic(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`create trigger fail_second_ownership before insert on codex_inspection_disable_ownership
+	if _, err := db.Exec(testdb.SQL(db, `create trigger fail_second_ownership before insert on codex_inspection_disable_ownership
 		when new.auth_index = 'auth-2'
 		begin
 			select raise(abort, 'forced batch ownership failure');
-		end`); err != nil {
+		end`, `create trigger fail_second_ownership before insert on codex_inspection_disable_ownership for each row begin if new.auth_index='auth-2' then signal sqlstate '45000' set message_text='forced batch ownership failure'; end if; end`)); err != nil {
 		t.Fatalf("create failure trigger: %v", err)
 	}
 	repository := New(db)
@@ -347,7 +348,7 @@ func TestUpsertDisableOwnershipsIsAtomic(t *testing.T) {
 }
 
 func TestDisableOwnershipTargetRevokesCompatibleLegacyWildcard(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -390,7 +391,7 @@ func TestDisableOwnershipTargetRevokesCompatibleLegacyWildcard(t *testing.T) {
 }
 
 func TestDisableOwnershipSeparatesAccountSnapshotFallbackIdentities(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -442,7 +443,7 @@ func TestDisableOwnershipSeparatesAccountSnapshotFallbackIdentities(t *testing.T
 }
 
 func TestDisableOwnershipStableAccountIDDoesNotRevokeDifferentSnapshotIdentity(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -485,7 +486,7 @@ func TestDisableOwnershipStableAccountIDDoesNotRevokeDifferentSnapshotIdentity(t
 }
 
 func TestDisableOwnershipEmptyAccountIDWithoutSnapshotDoesNotRevokeSnapshotIdentity(t *testing.T) {
-	db, err := sqlite.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/database"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/accountaction"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/apikeyalias"
@@ -17,6 +19,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/datamigration"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/deadletter"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/modelprice"
+	mysqlrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotacooldown"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/setting"
@@ -170,6 +173,21 @@ func Open(path string, protector ...*security.Protector) (*Store, error) {
 	return New(db, protector...), nil
 }
 
+func OpenConfigured(ctx context.Context, cfg config.Config, protector ...*security.Protector) (*Store, error) {
+	db, err := database.Open(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return New(db, protector...), nil
+}
+
+func (s *Store) DatabaseDriver() string {
+	if mysqlrepo.IsMySQL(s.db) {
+		return "mysql"
+	}
+	return "sqlite"
+}
+
 func New(db *sql.DB, protector ...*security.Protector) *Store {
 	return &Store{
 		db:               db,
@@ -202,18 +220,22 @@ func (s *Store) StartDerivedMaintenance(ctx context.Context) {
 	if s == nil {
 		return
 	}
+	if mysqlrepo.IsMySQL(s.db) {
+		mysqlrepo.StartDerivedMaintenance(ctx, s.db)
+		return
+	}
 	sqliterepo.StartDerivedMaintenance(ctx, s.db)
 }
 
 func (s *Store) RunDerivedStartupMaintenance(ctx context.Context) error {
-	if s == nil {
+	if s == nil || mysqlrepo.IsMySQL(s.db) {
 		return nil
 	}
 	return sqliterepo.RunDerivedStartupMaintenance(ctx, s.db)
 }
 
 func (s *Store) DerivedMaintenanceStatus(ctx context.Context) (sqliterepo.DerivedMaintenanceStatus, error) {
-	if s == nil {
+	if s == nil || mysqlrepo.IsMySQL(s.db) {
 		return sqliterepo.DerivedMaintenanceStatus{Reasons: []string{}}, nil
 	}
 	return sqliterepo.ReadDerivedMaintenanceStatus(ctx, s.db)
@@ -539,6 +561,13 @@ func (s *Store) UsageMaintenanceCounts(ctx context.Context) (UsageMaintenanceCou
 }
 
 func (s *Store) SQLitePageStats(ctx context.Context) (SQLitePageStats, error) {
+	if mysqlrepo.IsMySQL(s.db) {
+		stats := SQLitePageStats{Driver: "mysql"}
+		err := s.db.QueryRowContext(ctx, `select coalesce(sum(data_length + index_length), 0)
+			from information_schema.tables where table_schema = database()`).Scan(&stats.DatabaseBytes)
+		stats.TotalBytes = stats.DatabaseBytes
+		return stats, err
+	}
 	return sqliterepo.ReadPageStats(ctx, s.db)
 }
 

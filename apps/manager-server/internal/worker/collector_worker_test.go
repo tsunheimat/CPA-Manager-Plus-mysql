@@ -12,11 +12,12 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	collectorservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
 
 func TestCollectorWorkerDoesNotStartWhenMonitoringDisabled(t *testing.T) {
 	cfg := workerTestConfig(t)
-	db, err := store.Open(cfg.DBPath)
+	db, err := testutil.OpenStore(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestCollectorWorkerStartsFromEnvironmentConfig(t *testing.T) {
 	cfg.ManagementKey = "management-key"
 	cfg.CollectorMode = "http"
 	cfg.PollInterval = time.Hour
-	db, err := store.Open(cfg.DBPath)
+	db, err := testutil.OpenStore(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestCollectorWorkerStartsFromEnvironmentConfig(t *testing.T) {
 
 func TestCollectorServiceRestartAndStop(t *testing.T) {
 	cfg := workerTestConfig(t)
-	db, err := store.Open(cfg.DBPath)
+	db, err := testutil.OpenStore(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

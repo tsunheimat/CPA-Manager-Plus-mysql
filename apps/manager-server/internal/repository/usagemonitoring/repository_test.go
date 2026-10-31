@@ -18,6 +18,7 @@ import (
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	monitoringrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -25,7 +26,7 @@ import (
 const testDayMS = int64(24 * time.Hour / time.Millisecond)
 
 func TestMigrationCreatesUsageMonitoringRollupSchema(t *testing.T) {
-	sqlDB, db := newMonitoringRepositoryStore(t)
+	sqlDB, db := newSQLiteMonitoringRepositoryStore(t)
 	for _, table := range []string{
 		"usage_monitoring_account_daily_rollups_v1",
 		"usage_monitoring_api_key_daily_rollups_v1",
@@ -139,7 +140,7 @@ func TestMigrationCreatesUsageMonitoringRollupSchema(t *testing.T) {
 }
 
 func TestRequestMonitoringProjectionTimestampIndexAvoidsTemporaryOrderBy(t *testing.T) {
-	sqlDB, db := newMonitoringRepositoryStore(t)
+	sqlDB, db := newSQLiteMonitoringRepositoryStore(t)
 	if err := db.RunDerivedStartupMaintenance(context.Background()); err != nil {
 		t.Fatalf("prepare monitoring projection indexes: %v", err)
 	}
@@ -1132,7 +1133,7 @@ func TestSuccessfulResponseHeadersDoNotEnterFailureSearchStorage(t *testing.T) {
 }
 
 func TestMigrationBackfillsSearchIndexForExistingProjection(t *testing.T) {
-	sqlDB, db := newMonitoringRepositoryStore(t)
+	sqlDB, db := newSQLiteMonitoringRepositoryStore(t)
 	ctx := context.Background()
 	fromMS := int64(1_800_057_600_000)
 	event := monitoringRepositoryEvent(
@@ -1176,7 +1177,7 @@ func TestMigrationBackfillsSearchIndexForExistingProjection(t *testing.T) {
 }
 
 func TestMigrationRebuildsSearchIndexWhenReadyStateSurvivesMissingIndex(t *testing.T) {
-	sqlDB, db := newMonitoringRepositoryStore(t)
+	sqlDB, db := newSQLiteMonitoringRepositoryStore(t)
 	ctx := context.Background()
 	fromMS := int64(1_800_057_600_000)
 	event := monitoringRepositoryEvent(
@@ -1225,7 +1226,7 @@ func TestMigrationRebuildsSearchIndexWhenReadyStateSurvivesMissingIndex(t *testi
 
 func TestMigrationRecoversMissingStatsTableAfterRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
-	sqlDB, db := openMonitoringRepositoryStore(t, path)
+	sqlDB, db := openSQLiteMonitoringRepositoryStore(t, path)
 	ctx := context.Background()
 	baseMS := int64(1_800_057_600_000)
 	if _, err := db.InsertEvents(ctx, []usage.Event{
@@ -1244,7 +1245,7 @@ func TestMigrationRecoversMissingStatsTableAfterRestart(t *testing.T) {
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("close damaged stats database: %v", err)
 	}
-	sqlDB, db = openMonitoringRepositoryStore(t, path)
+	sqlDB, db = openSQLiteMonitoringRepositoryStore(t, path)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	state, err := db.UsageMonitoringState(ctx, monitoringrepo.StatsRollupName)
@@ -1268,7 +1269,7 @@ func TestMigrationRecoversMissingStatsTableAfterRestart(t *testing.T) {
 
 func TestMigrationRecoversMissingMetadataTableAfterRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
-	sqlDB, db := openMonitoringRepositoryStore(t, path)
+	sqlDB, db := openSQLiteMonitoringRepositoryStore(t, path)
 	ctx := context.Background()
 	baseMS := int64(1_800_057_600_000)
 	if _, err := db.InsertEvents(ctx, []usage.Event{
@@ -1284,7 +1285,7 @@ func TestMigrationRecoversMissingMetadataTableAfterRestart(t *testing.T) {
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("close damaged metadata database: %v", err)
 	}
-	sqlDB, db = openMonitoringRepositoryStore(t, path)
+	sqlDB, db = openSQLiteMonitoringRepositoryStore(t, path)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	state, err := db.UsageMonitoringState(ctx, monitoringrepo.MetadataRollupName)
@@ -1310,7 +1311,7 @@ func TestMigrationRecoversMissingMetadataTableAfterRestart(t *testing.T) {
 
 func TestMigrationRecoversMissingProjectionAndClearsStaleSearchIndexAfterRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
-	sqlDB, db := openMonitoringRepositoryStore(t, path)
+	sqlDB, db := openSQLiteMonitoringRepositoryStore(t, path)
 	ctx := context.Background()
 	baseMS := int64(1_800_057_600_000)
 	event := monitoringRepositoryEvent("projection-recovery", baseMS+1_000, "gpt-a", "key-a", "alice@example.com", "auth-a", "source-a", false, 10, 5, 10)
@@ -1330,7 +1331,7 @@ func TestMigrationRecoversMissingProjectionAndClearsStaleSearchIndexAfterRestart
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("close damaged projection database: %v", err)
 	}
-	sqlDB, db = openMonitoringRepositoryStore(t, path)
+	sqlDB, db = openSQLiteMonitoringRepositoryStore(t, path)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	state, err := db.UsageMonitoringState(ctx, monitoringrepo.ProjectionRollupName)
@@ -1350,7 +1351,7 @@ func TestMigrationRecoversMissingProjectionAndClearsStaleSearchIndexAfterRestart
 
 func TestMigrationRecoversMissingStatsStateWithoutDoubleCounting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
-	sqlDB, db := openMonitoringRepositoryStore(t, path)
+	sqlDB, db := openSQLiteMonitoringRepositoryStore(t, path)
 	ctx := context.Background()
 	baseMS := int64(1_800_057_600_000)
 	if _, err := db.InsertEvents(ctx, []usage.Event{
@@ -1365,7 +1366,7 @@ func TestMigrationRecoversMissingStatsStateWithoutDoubleCounting(t *testing.T) {
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("close missing-state database: %v", err)
 	}
-	sqlDB, db = openMonitoringRepositoryStore(t, path)
+	sqlDB, db = openSQLiteMonitoringRepositoryStore(t, path)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	catchUpMonitoringRepository(t, ctx, db)
@@ -2119,7 +2120,7 @@ func TestUsageMonitoringMetadataBackfillRollsBackEventWhenProjectionRefreshFails
 }
 
 func TestUsageMonitoringMetadataBackfillOlderEventDoesNotReplaceLatestHeader(t *testing.T) {
-	sqlDB, db := newMonitoringRepositoryStore(t)
+	sqlDB, db := newSQLiteMonitoringRepositoryStore(t)
 	ctx := context.Background()
 	baseMS := int64(1_800_057_600_000)
 	olderMS := baseMS + testDayMS
@@ -2451,16 +2452,16 @@ func monitoringRepositoryEvent(
 	return event
 }
 
-func newMonitoringRepositoryStore(t *testing.T) (*sql.DB, *store.Store) {
+func newSQLiteMonitoringRepositoryStore(t *testing.T) (*sql.DB, *store.Store) {
 	t.Helper()
-	sqlDB, db := openMonitoringRepositoryStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
+	sqlDB, db := openSQLiteMonitoringRepositoryStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return sqlDB, db
 }
 
 func openMonitoringRepositoryStore(t *testing.T, path string) (*sql.DB, *store.Store) {
 	t.Helper()
-	sqlDB, err := sqliterepo.Open(path)
+	sqlDB, err := testdb.Open(t, path)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -2496,4 +2497,23 @@ func TestUsageMonitoringUnknownFailureName(t *testing.T) {
 	if err == nil {
 		t.Fatal("unknown rollup name unexpectedly accepted")
 	}
+}
+
+func newMonitoringRepositoryStore(t *testing.T) (*sql.DB, *store.Store) {
+	t.Helper()
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db, store.New(db)
+}
+
+func openSQLiteMonitoringRepositoryStore(t *testing.T, path string) (*sql.DB, *store.Store) {
+	t.Helper()
+	db, err := sqliterepo.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db, store.New(db)
 }

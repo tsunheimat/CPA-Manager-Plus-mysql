@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -91,7 +92,7 @@ func TestUsageHourlyAggregateWorkerContinuesPendingBacklog(t *testing.T) {
 }
 
 func TestUsageHourlyAggregateWorkerLogsOnlyRebuildBackfill(t *testing.T) {
-	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	sqlDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestUsageHourlyAggregateWorkerLogsOnlyRebuildBackfill(t *testing.T) {
 }
 
 func TestUsageHourlyAggregateWorkerRecordsFailure(t *testing.T) {
-	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	sqlDB, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestUsageHourlyAggregateWorkerRecordsFailure(t *testing.T) {
 
 func newUsageHourlyAggregateWorkerStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

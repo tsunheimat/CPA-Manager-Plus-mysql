@@ -6019,7 +6019,7 @@ func newCodexInspectionManagerConfig(upstreamURL string) store.ManagerConfig {
 
 func newCodexInspectionTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

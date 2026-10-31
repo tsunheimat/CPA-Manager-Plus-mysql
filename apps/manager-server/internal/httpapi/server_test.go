@@ -33,7 +33,7 @@ func newTestHandler(t *testing.T, upstreamURL string, saveSetup bool) http.Handl
 		PopSide:     "right",
 		CORSOrigins: []string{"*"},
 	}
-	db, err := store.Open(cfg.DBPath)
+	db, err := testutil.OpenStore(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -67,7 +67,7 @@ func newTestHandlerWithConfig(t *testing.T, cfg config.Config) http.Handler {
 	if len(cfg.CORSOrigins) == 0 {
 		cfg.CORSOrigins = []string{"*"}
 	}
-	db, err := store.Open(cfg.DBPath)
+	db, err := testutil.OpenStore(t, cfg.DBPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -15,6 +15,7 @@ import (
 
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -43,7 +44,7 @@ func TestIsCurrentStructureRevision(t *testing.T) {
 }
 
 func TestCatchUpAndLoadRowsMergeCoverageDeltaAndLateEvents(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -129,7 +130,7 @@ func TestCatchUpAndLoadRowsMergeCoverageDeltaAndLateEvents(t *testing.T) {
 }
 
 func TestCatchUpBackfillsLegacyIdentityLedger(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -171,7 +172,7 @@ func TestCatchUpBackfillsLegacyIdentityLedger(t *testing.T) {
 }
 
 func TestCatchUpIsIdempotentWhenCheckpointIsReplayed(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -229,7 +230,7 @@ func TestCatchUpIsIdempotentWhenCheckpointIsReplayed(t *testing.T) {
 // aggregate table and recreates an empty one, so rebuilding must produce one
 // call, update the ledger revision, and remain idempotent on replay.
 func TestCatchUpReaggregatesAcrossRevisionWithoutDoubleCount(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -314,7 +315,7 @@ func TestCatchUpReaggregatesAcrossRevisionWithoutDoubleCount(t *testing.T) {
 }
 
 func TestRecordFailureSQLiteBusyDoesNotPoisonAggregateState(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -340,7 +341,7 @@ func TestRecordFailureSQLiteBusyDoesNotPoisonAggregateState(t *testing.T) {
 }
 
 func TestCatchUpPreservesRebuildStateAcrossRecordedFailure(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -416,7 +417,7 @@ func TestCatchUpPreservesRebuildStateAcrossRecordedFailure(t *testing.T) {
 }
 
 func TestCatchUpWaitsForExternalClearingAndPreservesFallbackOnFailure(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -501,7 +502,7 @@ func assertAggregateCallsAndLedgerRevision(db *sql.DB, wantCalls int64, wantRevi
 }
 
 func TestCatchUpSerializesConcurrentCalls(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -583,7 +584,7 @@ func TestRawDeltaStatementUsesEventIDScanWhenCoverageIsCurrent(t *testing.T) {
 }
 
 func TestCatchUpFailureDoesNotAdvanceCoverage(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -620,7 +621,7 @@ func TestCatchUpFailureDoesNotAdvanceCoverage(t *testing.T) {
 }
 
 func TestUnsupportedSchemaPreservesRowsAndFallsBack(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -651,7 +652,7 @@ func TestUnsupportedSchemaPreservesRowsAndFallsBack(t *testing.T) {
 }
 
 func TestCatchUpRollsBackAggregateWhenLedgerCoverageFails(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -664,10 +665,10 @@ func TestCatchUpRollsBackAggregateWhenLedgerCoverageFails(t *testing.T) {
 	if _, err := events.InsertBatch(ctx, []usage.Event{event}); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
-	if _, err := db.Exec(`create trigger reject_aggregate_ledger_coverage
+	if _, err := db.Exec(testdb.SQL(db, `create trigger reject_aggregate_ledger_coverage
 		before update of aggregate_schema_version on usage_event_identity_ledger
 		when new.aggregate_schema_version = 3
-		begin select raise(abort, 'blocked'); end`); err != nil {
+		begin select raise(abort, 'blocked'); end`, `create trigger reject_aggregate_ledger_coverage before update on usage_event_identity_ledger for each row begin if new.aggregate_schema_version=3 then signal sqlstate '45000' set message_text='blocked'; end if; end`)); err != nil {
 		t.Fatalf("create failure trigger: %v", err)
 	}
 	if _, err := repo.CatchUp(ctx, 10, baseMS+hourMS); err == nil {
@@ -697,7 +698,7 @@ func TestCatchUpRollsBackAggregateWhenLedgerCoverageFails(t *testing.T) {
 }
 
 func TestRepositoryRejectsUnknownAggregateSchema(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -724,7 +725,7 @@ func TestRepositoryRejectsUnknownAggregateSchema(t *testing.T) {
 }
 
 func TestLoadRowsAppliesModelOutcomeAndRawEdgeFilters(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -767,7 +768,7 @@ func TestLoadRowsAppliesModelOutcomeAndRawEdgeFilters(t *testing.T) {
 }
 
 func TestLoadRowsCanonicalizesReasoningSuffixesAcrossStoredAndRawRows(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

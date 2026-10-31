@@ -23,6 +23,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
 
 func testAuthFileContentSHA256(content []byte) string {
@@ -1117,7 +1118,7 @@ func TestProxyVerifiedAuthFileWritesRecheckContentAfterSameFileMutation(t *testi
 	}))
 	t.Cleanup(upstream.Close)
 
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1385,7 +1386,7 @@ func TestSuccessfulAuthFileOwnershipMutationKeepsOwnershipRevokedForEncodedRespo
 }
 
 func TestRevokeAndRestoreInspectionOwnership(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -1443,7 +1444,7 @@ func TestRevokeAndRestoreInspectionOwnership(t *testing.T) {
 }
 
 func TestStatusMutationRemovesExactAndCompatibleLegacyInspectionOwnership(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	st, err := testutil.OpenStore(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

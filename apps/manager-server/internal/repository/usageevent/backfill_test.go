@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
 func TestResponseMetadataBackfillCandidateNoOpDoesNotBlockReadiness(t *testing.T) {
-	db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -59,5 +59,28 @@ func TestResponseMetadataBackfillCandidateNoOpDoesNotBlockReadiness(t *testing.T
 	}
 	if pending {
 		t.Fatalf("expected pending = false for no-op candidate, got true")
+	}
+}
+
+func TestResponseMetadataBackfillMatchesHeaderNamesIgnoringCase(t *testing.T) {
+	db, err := testdb.Open(t, filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	for _, header := range []string{"x-ratelimit-limit-requests", "X-RaTeLiMiT-LiMiT-ReQuEsTs"} {
+		raw := `{"response_headers":{"` + header + `":"123"}}`
+		if _, err := db.ExecContext(ctx, `insert into usage_events(event_hash,timestamp_ms,timestamp,model,raw_json,response_metadata_json,created_at_ms) values(?,0,'time','model',?,'{}',0)`, header, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	updated, err := New(db).BackfillResponseMetadata(ctx, 10)
+	if err != nil || updated != 2 {
+		t.Fatalf("updated=%d err=%v", updated, err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `select count(*) from usage_events where json_extract(response_metadata_json,'$.rate_limit.requests.limit')=123`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("backfilled header count=%d err=%v", count, err)
 	}
 }
