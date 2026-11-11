@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -27,7 +28,7 @@ func TestStorePausesRollupsUntilUsageCacheAccountingMigrationCompletes(t *testin
 	}}); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
-	if _, err := db.db.Exec(`update usage_data_migrations set status = 'running' where name = 'usage_cache_accounting_v2'`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `update usage_data_migrations set status = 'running' where name = 'usage_cache_accounting_v2'`); err != nil {
 		t.Fatalf("mark migration running: %v", err)
 	}
 
@@ -43,7 +44,7 @@ func TestStorePausesRollupsUntilUsageCacheAccountingMigrationCompletes(t *testin
 		t.Fatalf("rollups were not paused: account=%#v dashboard=%#v", accountResult, dashboardResult)
 	}
 
-	if _, err := db.db.Exec(`update usage_data_migrations set status = 'completed' where name = 'usage_cache_accounting_v2'`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `update usage_data_migrations set status = 'completed' where name = 'usage_cache_accounting_v2'`); err != nil {
 		t.Fatalf("mark migration completed: %v", err)
 	}
 	accountResult, err = db.CatchUpAccountHistoryRollups(context.Background(), 100, 1_778_000_001_000)
@@ -153,7 +154,7 @@ func TestStoreBackfillsUsageResponseMetadata(t *testing.T) {
 	})
 
 	rawJSON := `{"response_headers":{"Retry-After":["45"],"X-Codex-Plan-Type":["plus"],"X-OAI-Request-ID":["req-backfill"],"Set-Cookie":["session=secret"]}}`
-	if _, err := db.db.ExecContext(context.Background(), `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, failed, fail_status_code, raw_json, created_at_ms
 	) values (?, ?, ?, ?, ?, ?, ?, ?)`,
 		"event-backfill",
@@ -215,7 +216,7 @@ func TestStoreBackfillsCamelCaseUsageResponseMetadata(t *testing.T) {
 	})
 
 	rawJSON := `{"responseHeaders":{"Retry-After":["30"],"X-Codex-Plan-Type":["team"],"X-OAI-Request-ID":["req-camel-backfill"]}}`
-	if _, err := db.db.ExecContext(context.Background(), `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, failed, fail_status_code, raw_json, created_at_ms
 	) values (?, ?, ?, ?, ?, ?, ?, ?)`,
 		"event-camel-backfill",
@@ -267,7 +268,7 @@ func TestStoreEnrichesExistingXAIResponseMetadata(t *testing.T) {
 	})
 
 	rawJSON := `{"provider":"xai","executor_type":"XAIExecutor","fail":{"status_code":429,"body":"{\"code\":\"subscription:free-usage-exhausted\",\"error\":\"You've used all the included free usage for model grok-4.5-build-free for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 1024413/1000000.\"}"},"response_headers":{"X-Request-Id":["req-xai"],"X-Should-Retry":["true"],"X-Data-Retention":["zdr"],"X-Zero-Retention":["true"]}}`
-	if _, err := db.db.ExecContext(context.Background(), `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, executor_type, model, failed, fail_status_code,
 		raw_json, response_metadata_json, created_at_ms
 	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -328,7 +329,7 @@ func TestStoreCompletesPartialXAIProviderUsageMetadata(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	rawJSON := `{"provider":"xai","executor_type":"XAIExecutor","fail":{"status_code":429,"body":"{\"code\":\"subscription:free-usage-exhausted\",\"error\":\"tokens (actual/limit): 1024413/1000000\"}"}}`
-	if _, err := db.db.ExecContext(context.Background(), `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, model, failed, fail_status_code, raw_json, response_metadata_json, created_at_ms
 	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"event-xai-partial",
@@ -374,7 +375,7 @@ func TestStoreBackfillSkipsUnsupportedRateLimitHeadersWithoutStarvingLaterRows(t
 		_ = db.Close()
 	})
 
-	if _, err := db.db.ExecContext(context.Background(), `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, failed, raw_json, response_metadata_json, created_at_ms
 	) values (?, ?, ?, ?, ?, ?, ?, ?)`,
 		"event-unsupported-rate-limit",
@@ -390,7 +391,7 @@ func TestStoreBackfillSkipsUnsupportedRateLimitHeadersWithoutStarvingLaterRows(t
 	}
 
 	xaiRawJSON := `{"provider":"xai","fail":{"status_code":429,"body":"{\"code\":\"subscription:free-usage-exhausted\",\"error\":\"tokens (actual/limit): 1024413/1000000\"}"}}`
-	if _, err := db.db.ExecContext(context.Background(), `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, model, failed, fail_status_code, raw_json, created_at_ms
 	) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"event-actionable-xai",
@@ -437,7 +438,7 @@ func TestStoreBackfillMarksUnsupportedOnlyHeaderRowsProcessed(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	if _, err := db.db.ExecContext(context.Background(), `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, failed, raw_json, created_at_ms
 	) values (?, ?, ?, ?, ?, ?, ?)`,
 		"event-unsupported-only-header",

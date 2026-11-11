@@ -15,6 +15,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/codexquota"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	quotasnapshotrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
@@ -209,7 +210,7 @@ func TestCodexQuotaSnapshotsStayMemberScopedAndIgnoreLegacyWorkspaceKey(t *testi
 	// This is the v3 workspace-only key emitted before Codex member identity
 	// was introduced. It is intentionally left orphaned rather than fanned out.
 	legacyWorkspaceKey := "usage-account-history:3:codex-account:636F646578:776F726B73706163652D31"
-	if _, err := db.Exec(`insert into account_quota_snapshots (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_snapshots (
 		account_key, provider, provider_window_id, window_kind, window_mode,
 		model_scope_kind, source, source_observation_id, observed_at_ms,
 		boundary_accuracy, used_percent, created_at_ms
@@ -3356,7 +3357,7 @@ func TestQuotaLifecycleDoesNotReexposeCollapsedFragmentAsPrevious(t *testing.T) 
 	fragmentStartMS := firstEndMS + 5*quotaLifecycleHourMS
 	currentStartMS := fragmentStartMS + 30*1000
 	invalidEndMS := fragmentStartMS + 2*60*1000
-	if _, err := db.Exec(`update account_quota_cycles set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update account_quota_cycles set
 		state = 'closed', actual_end_ms = ?, end_reason = 'scheduled' where id = ?`,
 		firstEndMS, originalCycleID); err != nil {
 		t.Fatalf("close initial collapsed-fragment cycle: %v", err)
@@ -3364,7 +3365,7 @@ func TestQuotaLifecycleDoesNotReexposeCollapsedFragmentAsPrevious(t *testing.T) 
 
 	insertCycle := func(key, state string, startMS int64, endMS *int64, endReason string) int64 {
 		t.Helper()
-		result, insertErr := db.Exec(`insert into account_quota_cycles (
+		result, insertErr := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_cycles (
 			activation_id, provider_cycle_key, state, scheduled_start_ms, scheduled_end_ms,
 			actual_start_ms, actual_end_ms, duration_seconds, boundary_accuracy, end_reason,
 			created_at_ms, updated_at_ms
@@ -3388,7 +3389,7 @@ func TestQuotaLifecycleDoesNotReexposeCollapsedFragmentAsPrevious(t *testing.T) 
 
 	insertSnapshot := func(cycleID int64, sourceID string, observedAtMS, startMS int64, usedPercent float64) {
 		t.Helper()
-		_, insertErr := db.Exec(`insert into account_quota_snapshots (
+		_, insertErr := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_snapshots (
 			observation_id, logical_window_id, activation_id, cycle_id, account_key, provider,
 			provider_window_id, window_kind, window_mode, model_scope_kind, model_scope_key,
 			model_ids_json, scope_fingerprint, content_hash, source, source_observation_id,
@@ -3691,11 +3692,11 @@ func TestQuotaLifecycleNormalizesStoredEarlyResetBoundaryToFirstConfirmedObserva
 		t.Fatalf("open lifecycle database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(`update account_quota_cycles set actual_end_ms = ?
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update account_quota_cycles set actual_end_ms = ?
 		where end_reason = 'early_reset'`, providerStartMS); err != nil {
 		t.Fatalf("restore legacy previous boundary: %v", err)
 	}
-	if _, err := db.Exec(`update account_quota_cycles set actual_start_ms = ?
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update account_quota_cycles set actual_start_ms = ?
 		where actual_end_ms is null`, providerStartMS); err != nil {
 		t.Fatalf("restore legacy current boundary: %v", err)
 	}
@@ -3734,10 +3735,10 @@ func TestQuotaLifecycleDoesNotCollapseEarlyResetFragmentAcrossObservationGap(t *
 		where actual_end_ms is null limit 1`).Scan(&currentCycleID); err != nil {
 		t.Fatalf("read active cycle: %v", err)
 	}
-	if _, err := db.Exec(`update account_quota_cycles set actual_end_ms = ? where id = ?`, providerStartMS, oldCycleID); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update account_quota_cycles set actual_end_ms = ? where id = ?`, providerStartMS, oldCycleID); err != nil {
 		t.Fatalf("restore early-reset fragment end: %v", err)
 	}
-	if _, err := db.Exec(`update account_quota_cycles set actual_start_ms = ? where id = ?`, currentStartMS, currentCycleID); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update account_quota_cycles set actual_start_ms = ? where id = ?`, currentStartMS, currentCycleID); err != nil {
 		t.Fatalf("introduce early-reset observation gap: %v", err)
 	}
 
@@ -4065,14 +4066,14 @@ func TestQuotaLifecycleNormalizesStoredProvisionalDriftChainWithoutDeletingRows(
 		where actual_end_ms is null limit 1`).Scan(&activationID, &oldCycleID); err != nil {
 		t.Fatalf("read active lifecycle IDs: %v", err)
 	}
-	if _, err := db.Exec(`update account_quota_cycles set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update account_quota_cycles set
 		state = 'closed', actual_end_ms = ?, end_reason = 'early_reset' where id = ?`,
 		provisionalStartMS, oldCycleID); err != nil {
 		t.Fatalf("close original legacy cycle: %v", err)
 	}
 	insertCycle := func(key, state string, startMS int64, endMS *int64, endReason string) int64 {
 		t.Helper()
-		result, insertErr := db.Exec(`insert into account_quota_cycles (
+		result, insertErr := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_cycles (
 			activation_id, provider_cycle_key, state, scheduled_start_ms, scheduled_end_ms,
 			actual_start_ms, actual_end_ms, duration_seconds, boundary_accuracy, end_reason,
 			created_at_ms, updated_at_ms
@@ -4095,7 +4096,7 @@ func TestQuotaLifecycleNormalizesStoredProvisionalDriftChainWithoutDeletingRows(
 
 	insertSnapshot := func(cycleID int64, source, sourceID string, observedAtMS, startMS int64, usedPercent float64) {
 		t.Helper()
-		_, insertErr := db.Exec(`insert into account_quota_snapshots (
+		_, insertErr := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_snapshots (
 			logical_window_id, activation_id, cycle_id, account_key, provider,
 			provider_window_id, window_kind, window_mode, model_scope_kind,
 			scope_fingerprint, content_hash, source, source_observation_id,
@@ -4222,7 +4223,7 @@ func TestQueryPrefersNewerLegacySnapshotDuringPartialLifecycleMigration(t *testi
 	}
 	newCycleStartMS := quotaLifecycleBaseMS + quotaLifecycleDayMS
 	newCycleEndMS := newCycleStartMS + 7*quotaLifecycleDayMS
-	if _, err := db.Exec(`insert into account_quota_snapshots (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_snapshots (
 		account_key, provider, provider_window_id, window_kind, window_mode,
 		model_scope_kind, model_ids_json, source, source_observation_id,
 		observed_at_ms, boundary_accuracy, cycle_start_ms, cycle_end_ms,
@@ -4266,7 +4267,7 @@ func TestQueryKeepsNewerLifecycleSnapshotAheadOfOlderLegacyEvidence(t *testing.T
 	}
 	legacyCycleStartMS := quotaLifecycleBaseMS + quotaLifecycleDayMS
 	legacyCycleEndMS := legacyCycleStartMS + 7*quotaLifecycleDayMS
-	if _, err := db.Exec(`insert into account_quota_snapshots (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_snapshots (
 		account_key, provider, provider_window_id, window_kind, window_mode,
 		model_scope_kind, model_ids_json, source, source_observation_id,
 		observed_at_ms, boundary_accuracy, cycle_start_ms, cycle_end_ms,
@@ -5562,7 +5563,7 @@ func TestQuerySuppressesUnmigratedLegacyCodexSparkAllScope(t *testing.T) {
 	if err := db.QueryRow(`select account_key from account_quota_snapshots limit 1`).Scan(&accountKey); err != nil {
 		t.Fatalf("read quota account key: %v", err)
 	}
-	if _, err := db.Exec(`insert into account_quota_snapshots (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_snapshots (
 		account_key, provider, provider_window_id, window_kind, window_mode,
 		model_scope_kind, source, source_observation_id, observed_at_ms,
 		boundary_accuracy, used_percent, remaining_percent, created_at_ms
@@ -5759,12 +5760,12 @@ func rewriteQuotaLifecycleProviderWindowID(t *testing.T, path, from, to string) 
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	legacyScopeFingerprint := quotasnapshotrepo.ScopeFingerprint("all", "", nil)
-	if _, err := db.Exec(`update account_quota_windows set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update account_quota_windows set
 		provider_window_id = ?, model_scope_kind = 'all', model_scope_key = '',
 		model_ids_json = '', scope_fingerprint = ? where provider_window_id = ?`, to, legacyScopeFingerprint, from); err != nil {
 		t.Fatalf("rewrite legacy quota window state: %v", err)
 	}
-	if _, err := db.Exec(`update account_quota_snapshots set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update account_quota_snapshots set
 		provider_window_id = ?, model_scope_kind = 'all', model_scope_key = '',
 		model_ids_json = '', scope_fingerprint = ? where provider_window_id = ?`, to, legacyScopeFingerprint, from); err != nil {
 		t.Fatalf("rewrite legacy quota snapshot: %v", err)

@@ -22,6 +22,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagerollup"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
@@ -215,7 +216,7 @@ func TestRepositoryArchiveVerifyResumeAndBoundedDelete(t *testing.T) {
 	if followup.EventCount != 1 || followup.TargetEventID != 3 {
 		t.Fatalf("follow-up after archived = %#v", followup)
 	}
-	if _, err := db.Exec(`delete from usage_archive_runs where id = ?`, followup.ID); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_archive_runs where id = ?`, followup.ID); err != nil {
 		t.Fatalf("remove archived follow-up fixture: %v", err)
 	}
 	catchUpHourlyAggregate(t, ctx, db, 10_005)
@@ -240,7 +241,7 @@ func TestRepositoryArchiveVerifyResumeAndBoundedDelete(t *testing.T) {
 	if followup.EventCount != 1 || followup.TargetEventID != 3 {
 		t.Fatalf("follow-up after verified = %#v", followup)
 	}
-	if _, err := db.Exec(`delete from usage_archive_runs where id = ?`, followup.ID); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_archive_runs where id = ?`, followup.ID); err != nil {
 		t.Fatalf("remove verified follow-up fixture: %v", err)
 	}
 	archivedCounts, err := repository.MaintenanceCounts(ctx)
@@ -367,7 +368,7 @@ func TestRepositoryCancelRunIsIdempotentAndReleasesActiveRun(t *testing.T) {
 	}
 	// The follow-up previewed run intentionally remains active, so remove it
 	// before checking that the cancelled run itself does not block retention.
-	if _, err := db.Exec(`delete from usage_archive_runs where id = ?`, "after-cancel"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_archive_runs where id = ?`, "after-cancel"); err != nil {
 		t.Fatalf("remove follow-up preview: %v", err)
 	}
 	if _, err := repository.CreateRetentionRun(ctx, "retention-after-cancel", 2_500, 30_004); err != nil {
@@ -386,7 +387,7 @@ func TestRepositoryCancelFailedRunWithoutDeletionReleasesRetentionLock(t *testin
 	if err != nil {
 		t.Fatalf("create run: %v", err)
 	}
-	if _, err := db.Exec(`update usage_archive_runs set status = ?, resume_status = ?, last_error = ? where id = ?`, StatusFailed, StatusArchiving, "temporary archive failure", run.ID); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_archive_runs set status = ?, resume_status = ?, last_error = ? where id = ?`, StatusFailed, StatusArchiving, "temporary archive failure", run.ID); err != nil {
 		t.Fatalf("prepare failed run: %v", err)
 	}
 	cancelled, err := repository.CancelRun(ctx, run.ID, 30_101)
@@ -871,13 +872,13 @@ func TestRepositoryCancelRunRejectsPartialDeletion(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create %s: %v", fixture.name, err)
 		}
-		if _, err := db.Exec(`update usage_archive_runs set status = ?, resume_status = ?, delete_started_at_ms = ?, deleted_event_count = ? where id = ?`, fixture.status, fixture.resume, 31_001, fixture.count, run.ID); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_archive_runs set status = ?, resume_status = ?, delete_started_at_ms = ?, deleted_event_count = ? where id = ?`, fixture.status, fixture.resume, 31_001, fixture.count, run.ID); err != nil {
 			t.Fatalf("prepare %s: %v", fixture.name, err)
 		}
 		if _, err := repository.CancelRun(ctx, run.ID, 31_002); !errors.Is(err, ErrCancelUnsafe) {
 			t.Fatalf("cancel %s error = %v, want ErrCancelUnsafe", fixture.name, err)
 		}
-		if _, err := db.Exec(`delete from usage_archive_runs where id = ?`, run.ID); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_archive_runs where id = ?`, run.ID); err != nil {
 			t.Fatalf("remove %s fixture: %v", fixture.name, err)
 		}
 	}
@@ -894,7 +895,7 @@ func TestRepositoryCancelRunRejectsInconsistentCancelledPartialDeletion(t *testi
 	if err != nil {
 		t.Fatalf("create run: %v", err)
 	}
-	if _, err := db.Exec(`update usage_archive_runs set status = ?, delete_started_at_ms = ?, deleted_event_count = ? where id = ?`, StatusCancelled, 31_101, 1, run.ID); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_archive_runs set status = ?, delete_started_at_ms = ?, deleted_event_count = ? where id = ?`, StatusCancelled, 31_101, 1, run.ID); err != nil {
 		t.Fatalf("prepare inconsistent cancelled run: %v", err)
 	}
 	if _, err := repository.CancelRun(ctx, run.ID, 31_102); !errors.Is(err, ErrCancelUnsafe) {
@@ -937,7 +938,7 @@ func TestRepositoryPersistsAndRecoversRequestedArchiveStages(t *testing.T) {
 	if err != nil || recovered.RequestedStage != StatusArchiving {
 		t.Fatalf("recovered run = %#v err=%v", recovered, err)
 	}
-	if _, err := db.Exec(`update usage_archive_runs set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_archive_runs set
 		status = ?, resume_status = ?, requested_stage = null
 		where id = ?`, StatusFailed, StatusDeleting, run.ID); err != nil {
 		t.Fatalf("set failed fixture: %v", err)
@@ -949,7 +950,7 @@ func TestRepositoryPersistsAndRecoversRequestedArchiveStages(t *testing.T) {
 	if err != nil || failed.RequestedStage != "" {
 		t.Fatalf("failed run was automatically requested: %#v err=%v", failed, err)
 	}
-	if _, err := db.Exec(`update usage_archive_runs set requested_stage = ? where id = ?`, StatusDeleting, run.ID); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_archive_runs set requested_stage = ? where id = ?`, StatusDeleting, run.ID); err != nil {
 		t.Fatalf("persist failed request fixture: %v", err)
 	}
 	if err := repository.RecoverRequestedStages(ctx); err != nil {
@@ -959,7 +960,7 @@ func TestRepositoryPersistsAndRecoversRequestedArchiveStages(t *testing.T) {
 	if err != nil || failedRequested.RequestedStage != StatusDeleting {
 		t.Fatalf("persisted failed request was lost: %#v err=%v", failedRequested, err)
 	}
-	if _, err := db.Exec(`update usage_archive_runs set status = ?, requested_stage = null where id = ?`, StatusArchived, run.ID); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_archive_runs set status = ?, requested_stage = null where id = ?`, StatusArchived, run.ID); err != nil {
 		t.Fatalf("set archived fixture: %v", err)
 	}
 	if err := repository.RecoverRequestedStages(ctx); err != nil {
@@ -1041,7 +1042,7 @@ func TestRepositoryListsArchiveRunsWithFiltersCountsAndKeysetCursor(t *testing.T
 		{id: fmt.Sprintf("%032x", 1), mode: RunModeManual, status: StatusCompleted, createdAt: 100},
 	}
 	for _, fixture := range fixtures {
-		if _, err := db.ExecContext(ctx, `insert into usage_archive_runs (
+		if _, err := sqlwrite.ExecContext(ctx, db, `insert into usage_archive_runs (
 			id, mode, schema_version, format, status, cutoff_timestamp_ms,
 			target_event_id, event_count, estimated_bytes, created_at_ms, updated_at_ms
 		) values (?, ?, ?, ?, ?, 1, 1, 1, 1, ?, ?)`,
@@ -1111,7 +1112,7 @@ func TestRepositoryRetentionRunRemainsActiveUntilDeleteCompletes(t *testing.T) {
 		t.Fatalf("create retention run: %v", err)
 	}
 	for _, status := range []string{StatusArchived, StatusVerified} {
-		if _, err := db.Exec(`update usage_archive_runs set status = ? where id = ?`, status, run.ID); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_archive_runs set status = ? where id = ?`, status, run.ID); err != nil {
 			t.Fatalf("set retention status %s: %v", status, err)
 		}
 		active, found, err := repository.ActiveRun(ctx)
@@ -1142,7 +1143,7 @@ func TestRepositoryRecordSegmentRollsBackPartialReferenceBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read records: %v", err)
 	}
-	if _, err := db.Exec(`update usage_event_identity_ledger set raw_event_id = 999
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_event_identity_ledger set raw_event_id = 999
 		where event_hash = ?`, records[1].EventHash); err != nil {
 		t.Fatalf("break second identity mapping: %v", err)
 	}
@@ -1182,7 +1183,7 @@ func TestRepositoryRecordsRejectsPayloadTooLargeForImporterRestore(t *testing.T)
 		t.Fatalf("insert usage event: %v", err)
 	}
 	oversizedRawJSON := "{\"payload\":\"" + strings.Repeat("x", usage.MaxJSONLRecordBytes) + "\"}"
-	if _, err := db.Exec(
+	if _, err := sqlwrite.ExecContext(context.Background(), db,
 		"update usage_events set raw_json = ? where event_hash = ?",
 		oversizedRawJSON,
 		event.EventHash,
@@ -1234,7 +1235,7 @@ func TestRepositoryRecordsRejectsUnsupportedRunContract(t *testing.T) {
 			if _, err := repository.BeginArchive(ctx, run.ID, 26_001); err != nil {
 				t.Fatalf("begin archive: %v", err)
 			}
-			if _, err := db.Exec("update usage_archive_runs set "+tt.assignment+" where id = ?", tt.value, run.ID); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db, "update usage_archive_runs set "+tt.assignment+" where id = ?", tt.value, run.ID); err != nil {
 				t.Fatalf("mutate archive contract: %v", err)
 			}
 			if _, err := repository.Records(ctx, run.ID, 0, 10, 1<<20); !errors.Is(err, ErrInvalidState) {
@@ -1266,7 +1267,7 @@ func TestRepositoryStageEntryRejectsUnsupportedRunContract(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create archive run: %v", err)
 			}
-			if _, err := db.Exec("update usage_archive_runs set "+tt.assignment+" where id = ?", tt.value, run.ID); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db, "update usage_archive_runs set "+tt.assignment+" where id = ?", tt.value, run.ID); err != nil {
 				t.Fatalf("mutate archive contract: %v", err)
 			}
 			if _, err := repository.BeginArchive(ctx, run.ID, 27_001); !errors.Is(err, ErrInvalidState) {
@@ -1296,7 +1297,7 @@ func TestRepositoryDeleteRejectsUnsupportedRunContractWithoutDeletingRawEvents(t
 		t.Run(tt.name, func(t *testing.T) {
 			db, repository, run := prepareVerifiedArchiveRun(t, "delete-unsupported-"+strings.ReplaceAll(tt.name, " ", "-"))
 			ctx := context.Background()
-			if _, err := db.Exec("update usage_archive_runs set "+tt.assignment+" where id = ?", tt.value, run.ID); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db, "update usage_archive_runs set "+tt.assignment+" where id = ?", tt.value, run.ID); err != nil {
 				t.Fatalf("mutate archive contract: %v", err)
 			}
 			if _, err := repository.BeginDelete(ctx, run.ID, 30_000); !errors.Is(err, ErrInvalidState) {
@@ -1319,7 +1320,7 @@ func TestRepositoryDeleteRejectsRawRowsRemovedOutsideMaintenance(t *testing.T) {
 	if _, err := repository.BeginDelete(ctx, run.ID, 30_000); err != nil {
 		t.Fatalf("begin delete: %v", err)
 	}
-	if _, err := db.Exec(`delete from usage_events where id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_events where id = 1`); err != nil {
 		t.Fatalf("remove archived raw event outside maintenance: %v", err)
 	}
 	if _, err := repository.DeleteBatch(ctx, run.ID, 10, 30_001); !errors.Is(err, ErrCoverageIncomplete) {
@@ -1345,7 +1346,7 @@ func TestRepositoryDeleteDoesNotRewriteHealthyRetainedProjection(t *testing.T) {
 	db, repository, run := prepareVerifiedArchiveRun(t, "healthy-retained-projection-no-rewrite")
 	ctx := context.Background()
 	const sentinelUpdatedAtMS int64 = 12_345
-	if _, err := db.Exec(`update usage_monitoring_event_projection_v1
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_monitoring_event_projection_v1
 		set updated_at_ms = ? where event_id = 1`, sentinelUpdatedAtMS); err != nil {
 		t.Fatalf("mark retained projection fixture: %v", err)
 	}
@@ -1372,7 +1373,7 @@ func TestRepositoryDeleteDoesNotRewriteHealthyRetainedProjection(t *testing.T) {
 func TestRepositoryDeleteRepairsMissingRetainedProjectionBeforeRawDelete(t *testing.T) {
 	db, repository, run := prepareVerifiedArchiveRun(t, "repair-missing-retained-projection")
 	ctx := context.Background()
-	if _, err := db.Exec(`delete from usage_monitoring_event_projection_v1 where event_id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_monitoring_event_projection_v1 where event_id = 1`); err != nil {
 		t.Fatalf("remove retained projection fixture: %v", err)
 	}
 	var status string
@@ -1408,10 +1409,10 @@ func TestRepositoryDeleteRepairsMissingRetainedProjectionBeforeRawDelete(t *test
 func TestRepositoryDeleteRollsBackWhenRetainedProjectionHandoffFails(t *testing.T) {
 	db, repository, run := prepareVerifiedArchiveRun(t, "retained-projection-handoff-failure")
 	ctx := context.Background()
-	if _, err := db.Exec(`delete from usage_monitoring_event_projection_v1 where event_id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_monitoring_event_projection_v1 where event_id = 1`); err != nil {
 		t.Fatalf("remove retained projection fixture: %v", err)
 	}
-	if _, err := db.Exec(testdb.SQL(db, `create trigger reject_retained_projection_handoff
+	if _, err := testdb.Admin(t, db).ExecContext(context.Background(), testdb.SQL(db, `create trigger reject_retained_projection_handoff
 		before insert on usage_monitoring_event_projection_v1
 		when new.event_id = 1
 		begin select raise(abort, 'blocked retained projection handoff'); end`, `create trigger reject_retained_projection_handoff before insert on usage_monitoring_event_projection_v1 for each row begin if new.event_id = 1 then signal sqlstate '45000' set message_text='blocked retained projection handoff'; end if; end`)); err != nil {
@@ -1447,7 +1448,7 @@ func TestRepositoryDeleteResumeRejectsMissingProjectionForDeletedEvent(t *testin
 	if err != nil || first.Deleted != 1 || first.Run.DeletedEventCount != 1 {
 		t.Fatalf("first delete batch = %#v err=%v", first, err)
 	}
-	if _, err := db.Exec(`delete from usage_monitoring_event_projection_v1 where event_id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_monitoring_event_projection_v1 where event_id = 1`); err != nil {
 		t.Fatalf("remove retained row after raw deletion: %v", err)
 	}
 	if _, err := repository.BeginDelete(ctx, run.ID, 72_002); !errors.Is(err, ErrCoverageIncomplete) {
@@ -2095,12 +2096,12 @@ func BenchmarkRawCoverage100k(b *testing.B) {
 				`create index idx_usage_archive_event_refs_timestamp_deleted on usage_archive_event_refs(timestamp_ms, raw_deleted_at_ms)`,
 				`create table usage_archive_deleted_coverage_daily (utc_day integer primary key, deleted_event_count integer not null, min_timestamp_ms integer not null, max_timestamp_ms integer not null)`,
 			} {
-				if _, err := db.Exec(statement); err != nil {
+				if _, err := sqlwrite.ExecContext(context.Background(), db, statement); err != nil {
 					b.Fatal(err)
 				}
 			}
 			start := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
-			tx, err := db.Begin()
+			tx, err := sqlwrite.BeginTx(context.Background(), db, nil)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -2135,16 +2136,16 @@ func BenchmarkRawCoverage100k(b *testing.B) {
 				b.Fatal(err)
 			}
 			if deleted {
-				if _, err := db.Exec(`delete from usage_events`); err != nil {
+				if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_events`); err != nil {
 					b.Fatal(err)
 				}
 			}
-			if _, err := db.Exec(`insert into usage_archive_deleted_coverage_daily
+			if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_archive_deleted_coverage_daily
 				select timestamp_ms / 86400000, count(*), min(timestamp_ms), max(timestamp_ms)
 				from usage_archive_event_refs where raw_deleted_at_ms is not null group by timestamp_ms / 86400000`); err != nil {
 				b.Fatal(err)
 			}
-			if _, err := db.Exec(`vacuum`); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db, `vacuum`); err != nil {
 				b.Fatal(err)
 			}
 			coverage := New(db)
@@ -2172,7 +2173,7 @@ func TestRawCoverageDailyAndPartialEdgesMatchExactRefs(t *testing.T) {
 		`create index idx_usage_archive_event_refs_timestamp_deleted on usage_archive_event_refs(timestamp_ms, raw_deleted_at_ms)`,
 		`create table usage_archive_deleted_coverage_daily (utc_day integer primary key, deleted_event_count integer not null, min_timestamp_ms integer not null, max_timestamp_ms integer not null)`,
 	} {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2197,7 +2198,7 @@ func TestRawCoverageDailyAndPartialEdgesMatchExactRefs(t *testing.T) {
 		})
 	}
 	assertExact("no archive", start, start+day)
-	if _, err := db.Exec(`insert into usage_archive_event_refs values ('undeleted', ?, null)`, start+10); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_archive_event_refs values ('undeleted', ?, null)`, start+10); err != nil {
 		t.Fatal(err)
 	}
 	assertExact("archive without deletion", start, start+day)
@@ -2205,11 +2206,11 @@ func TestRawCoverageDailyAndPartialEdgesMatchExactRefs(t *testing.T) {
 		start + 20, start + day/2, start + day + 20, start + 2*day + 100,
 		start + 3*day + 300, start + 3*day + day/2, start + 4*day + 50,
 	} {
-		if _, err := db.Exec(`insert into usage_archive_event_refs values (?, ?, 1)`, fmt.Sprintf("deleted-%d", i), timestamp); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_archive_event_refs values (?, ?, 1)`, fmt.Sprintf("deleted-%d", i), timestamp); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`insert into usage_archive_deleted_coverage_daily
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_archive_deleted_coverage_daily
 		select timestamp_ms / 86400000, count(*), min(timestamp_ms), max(timestamp_ms)
 		from usage_archive_event_refs where raw_deleted_at_ms is not null group by timestamp_ms / 86400000`); err != nil {
 		t.Fatal(err)
@@ -2232,7 +2233,7 @@ func TestRawCoverageDailyAndPartialEdgesMatchExactRefs(t *testing.T) {
 
 func archiveTestExec(t *testing.T, db *sql.DB, statement string, args ...any) {
 	t.Helper()
-	if _, err := db.Exec(statement, args...); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, statement, args...); err != nil {
 		t.Fatalf("execute archive test mutation: %v", err)
 	}
 }

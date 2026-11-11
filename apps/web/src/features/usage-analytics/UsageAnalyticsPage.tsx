@@ -40,6 +40,7 @@ import {
   buildModelKeyDistribution,
   buildMonitoringDetailUrl,
   buildOptionValues,
+  canDrilldownUsageBucket,
   computeRowAverageCostPerCall,
   computeRowCacheHitRate,
   summarizeAnomalies,
@@ -88,6 +89,7 @@ import {
   type UsageTrendMetricKey,
 } from './usageAnalyticsModel';
 import { useUsageAnalytics } from './useUsageAnalytics';
+import type { UsageAnalyticsSectionState } from './usageAnalyticsSections';
 import { UsageSummarySection } from './components/UsageSummaryCards';
 import {
   buildUsageEntitySummaryCards,
@@ -2341,6 +2343,49 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
+function AnalyticsSection({
+  state,
+  title,
+  children,
+}: {
+  state?: UsageAnalyticsSectionState;
+  title?: string;
+  children?: ReactNode;
+}) {
+  const { t } = useTranslation();
+  if (!state) return <>{children}</>;
+  if (!state.enabled) return children ? <>{children}</> : null;
+  const unavailable = !state.loaded && !state.loading && !state.error;
+  return (
+    <>
+      {state.error || state.loading || unavailable ? (
+        <div
+          className={styles.inlineEmpty}
+          role={state.error ? 'alert' : 'status'}
+          aria-busy={state.loading}
+        >
+          {title ? <strong>{title}</strong> : null}
+          {state.loading ? <IconRefreshCw size={18} /> : <IconShield size={18} />}
+          <span>
+            {state.loading ? t('common.loading') : t('usage_analytics.section_unavailable')}
+          </span>
+          {state.stale ? <span>{t('usage_analytics.section_stale')}</span> : null}
+          {state.error ? (
+            <span>{state.error.startsWith('usage_analytics.') ? t(state.error) : state.error}</span>
+          ) : null}
+          {!state.loading ? (
+            <Button variant="secondary" size="sm" onClick={state.retry}>
+              {t('usage_analytics.section_retry')}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      <UsageCoverageWarning coverage={state.coverage} t={t} />
+      {state.loaded ? children : null}
+    </>
+  );
+}
+
 function UsageAnalyticsPageInner() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
@@ -2561,7 +2606,23 @@ function UsageAnalyticsPageInner() {
     { value: 'hit', label: t('usage_analytics.cache_status_hit') },
     { value: 'miss', label: t('usage_analytics.cache_status_miss') },
   ];
-  const noData = !usage.loading && !usage.error && !hasUsageData(usage.summary, usage.timeline);
+  const coreReady = !usage.sections || usage.sections.core.loaded;
+  const dimensionsReady =
+    !usage.sections || !usage.sections.dimensions.enabled || usage.sections.dimensions.loaded;
+  const noData =
+    coreReady && !usage.loading && !usage.error && !hasUsageData(usage.summary, usage.timeline);
+  const exactStatus =
+    usage.sections?.exact.enabled && !usage.sections.exact.loaded
+      ? t(usage.sections.exact.loading ? 'common.loading' : 'usage_analytics.section_unavailable')
+      : '';
+  const anomalyStatus =
+    usage.sections?.anomalies.enabled && !usage.sections.anomalies.loaded
+      ? t(
+          usage.sections.anomalies.loading
+            ? 'common.loading'
+            : 'usage_analytics.section_unavailable'
+        )
+      : '';
   const rankRowLimit = 8;
   const credentialRankRowLimit = 10;
   const apiKeyRankContext =
@@ -2621,6 +2682,8 @@ function UsageAnalyticsPageInner() {
   const overviewSummaryCards = useMemo(
     () =>
       buildUsageOverviewSummaryCards({
+        exactStatus,
+        anomalyStatus,
         anomalyCount: usage.anomalyPoints.length,
         locale: i18n.language,
         reasoningTokens: overviewReasoningTokens,
@@ -2631,6 +2694,8 @@ function UsageAnalyticsPageInner() {
     [
       i18n.language,
       overviewReasoningTokens,
+      exactStatus,
+      anomalyStatus,
       t,
       usage.anomalyPoints.length,
       usage.summary,
@@ -2640,12 +2705,13 @@ function UsageAnalyticsPageInner() {
   const trendSummaryCards = useMemo(
     () =>
       buildUsageTrendSummaryCards({
+        exactStatus,
         locale: i18n.language,
         summaryDelta: usage.summaryDelta,
         timeline: usage.timeline,
         t,
       }),
-    [i18n.language, t, usage.summaryDelta, usage.timeline]
+    [exactStatus, i18n.language, t, usage.summaryDelta, usage.timeline]
   );
   const modelSummaryCards = useMemo(
     () =>
@@ -2943,6 +3009,25 @@ function UsageAnalyticsPageInner() {
       ) : null}
 
       <UsageCoverageWarning coverage={usage.coverage} t={t} />
+      <AnalyticsSection
+        state={usage.sections ? { ...usage.sections.core, coverage: undefined } : undefined}
+        title={t('usage_analytics.section_core')}
+      />
+      <AnalyticsSection
+        state={usage.sections?.selectors}
+        title={t('usage_analytics.section_selectors')}
+      />
+      <AnalyticsSection
+        state={usage.sections?.metadata}
+        title={t('usage_analytics.section_metadata')}
+      />
+      <AnalyticsSection state={usage.sections?.exact} title={t('usage_analytics.section_exact')} />
+      {usage.activeTab === 'apiKeys' || usage.activeTab === 'credentials' ? (
+        <AnalyticsSection
+          state={usage.sections?.dimensions}
+          title={t('usage_analytics.section_dimensions')}
+        />
+      ) : null}
 
       {noData ? (
         <EmptyState
@@ -2951,7 +3036,7 @@ function UsageAnalyticsPageInner() {
         />
       ) : null}
 
-      {usage.activeTab === 'overview' ? (
+      {coreReady && usage.activeTab === 'overview' ? (
         <>
           <UsageSummarySection cards={overviewSummaryCards} />
 
@@ -2971,8 +3056,12 @@ function UsageAnalyticsPageInner() {
           </section>
 
           <AnomalyPointsPanel
+            state={usage.sections?.anomalies}
             rows={overviewAnomalySummary}
-            onOpen={(row) => navigate(buildMonitoringDetailUrl(row, usage.filters))}
+            onOpen={(row) => {
+              const url = buildMonitoringDetailUrl(row, usage.filters);
+              if (url) navigate(url);
+            }}
             onViewAll={() => usage.setActiveTab('trends')}
           />
 
@@ -2982,11 +3071,16 @@ function UsageAnalyticsPageInner() {
               rows={usage.modelRows}
               onViewAll={() => usage.setActiveTab('models')}
             />
-            <OverviewCard
+            <AnalyticsSection
+              state={usage.sections?.dimensions}
               title={t('usage_analytics.api_key_overview_title')}
-              rows={usage.apiKeyRows}
-              onViewAll={() => usage.setActiveTab('apiKeys')}
-            />
+            >
+              <OverviewCard
+                title={t('usage_analytics.api_key_overview_title')}
+                rows={usage.apiKeyRows}
+                onViewAll={() => usage.setActiveTab('apiKeys')}
+              />
+            </AnalyticsSection>
           </section>
 
           <section className={styles.tablePanel}>
@@ -2996,16 +3090,23 @@ function UsageAnalyticsPageInner() {
                 <p>{t('usage_analytics.provider_overview_hint')}</p>
               </div>
             </div>
-            <ProviderOverviewPanel rows={usage.providerRows} onOpen={openProviderDetails} />
+            <AnalyticsSection state={usage.sections?.dimensions}>
+              <ProviderOverviewPanel rows={usage.providerRows} onOpen={openProviderDetails} />
+            </AnalyticsSection>
           </section>
 
           {usage.selectedBucket ? (
-            <DrilldownPreviewPanel rows={usage.drilldownPreview} locale={i18n.language} />
+            <DrilldownPreviewPanel
+              bucket={usage.selectedBucket}
+              state={usage.sections?.preview}
+              rows={usage.drilldownPreview}
+              locale={i18n.language}
+            />
           ) : null}
         </>
       ) : null}
 
-      {usage.activeTab === 'trends' ? (
+      {coreReady && usage.activeTab === 'trends' ? (
         <>
           <UsageSummarySection cards={trendSummaryCards} />
 
@@ -3077,14 +3178,27 @@ function UsageAnalyticsPageInner() {
                   ))}
                 </ul>
               </div>
-              <Button onClick={() => navigate(anomalyUrl)}>
+              <Button
+                disabled={!anomalyUrl}
+                onClick={() => {
+                  if (anomalyUrl) navigate(anomalyUrl);
+                }}
+              >
                 {t('usage_analytics.view_monitoring_details')}
               </Button>
+              {!anomalyUrl ? (
+                <p role="status">{t('usage_analytics.bucket_drilldown_unavailable')}</p>
+              ) : null}
             </section>
           ) : null}
 
           {usage.selectedBucket ? (
-            <DrilldownPreviewPanel rows={usage.drilldownPreview} locale={i18n.language} />
+            <DrilldownPreviewPanel
+              bucket={usage.selectedBucket}
+              state={usage.sections?.preview}
+              rows={usage.drilldownPreview}
+              locale={i18n.language}
+            />
           ) : null}
 
           <section className={styles.dualChartGrid}>
@@ -3136,19 +3250,27 @@ function UsageAnalyticsPageInner() {
               </div>
               <div className={styles.trendEntityChart}>
                 <h3>{t('usage_analytics.api_key_compare_title')}</h3>
-                <EntityTrendChart series={usage.apiKeyTrendSeries} metric={usage.trendMetric} />
+                <AnalyticsSection
+                  state={dimensionsReady ? usage.sections?.trends : usage.sections?.dimensions}
+                >
+                  <EntityTrendChart series={usage.apiKeyTrendSeries} metric={usage.trendMetric} />
+                </AnalyticsSection>
               </div>
             </div>
           </section>
 
           <AnomalyPointsPanel
+            state={usage.sections?.anomalies}
             rows={usage.anomalyPoints}
-            onOpen={(row) => navigate(buildMonitoringDetailUrl(row, usage.filters))}
+            onOpen={(row) => {
+              const url = buildMonitoringDetailUrl(row, usage.filters);
+              if (url) navigate(url);
+            }}
           />
         </>
       ) : null}
 
-      {usage.activeTab === 'models' ? (
+      {coreReady && usage.activeTab === 'models' ? (
         <>
           <UsageSummarySection cards={modelSummaryCards} />
           <section className={styles.tablePanel}>
@@ -3210,6 +3332,10 @@ function UsageAnalyticsPageInner() {
               <CostShareChart rows={usage.modelRows} />
             </div>
           </section>
+          <AnalyticsSection
+            state={usage.sections?.dimensions}
+            title={t('usage_analytics.model_caller_distribution')}
+          />
           {usage.selectedModel ? (
             <DetailPanel
               row={usage.selectedModel}
@@ -3240,7 +3366,7 @@ function UsageAnalyticsPageInner() {
         </>
       ) : null}
 
-      {usage.activeTab === 'apiKeys' ? (
+      {coreReady && dimensionsReady && usage.activeTab === 'apiKeys' ? (
         <>
           <UsageSummarySection cards={apiKeySummaryCards} />
           <section className={styles.apiKeyAnalysisGrid}>
@@ -3294,11 +3420,13 @@ function UsageAnalyticsPageInner() {
                   ))}
                 </div>
               </div>
-              <EntityTrendChart
-                series={usage.selectedApiKeyTrendSeries}
-                metric={usage.trendMetric}
-                highlightId={usage.selectedApiKey?.apiKeyHash || usage.selectedApiKey?.id}
-              />
+              <AnalyticsSection state={usage.sections?.apiKeyTrend}>
+                <EntityTrendChart
+                  series={usage.selectedApiKeyTrendSeries}
+                  metric={usage.trendMetric}
+                  highlightId={usage.selectedApiKey?.apiKeyHash || usage.selectedApiKey?.id}
+                />
+              </AnalyticsSection>
             </div>
             {usage.selectedApiKey ? (
               <DetailPanel
@@ -3349,7 +3477,7 @@ function UsageAnalyticsPageInner() {
         </>
       ) : null}
 
-      {usage.activeTab === 'credentials' ? (
+      {coreReady && dimensionsReady && usage.activeTab === 'credentials' ? (
         <>
           <UsageSummarySection cards={credentialSummaryCards} />
           <section className={styles.credentialAnalysisGrid}>
@@ -3394,13 +3522,15 @@ function UsageAnalyticsPageInner() {
                   ))}
                 </div>
               </div>
-              <EntityTrendChart
-                series={usage.credentialTrendSeries}
-                metric={usage.trendMetric}
-                loading={usage.credentialTrendLoading}
-                loaded={usage.credentialTrendLoaded}
-                error={usage.credentialTrendError}
-              />
+              <AnalyticsSection state={usage.sections?.credentialTrend}>
+                <EntityTrendChart
+                  series={usage.credentialTrendSeries}
+                  metric={usage.trendMetric}
+                  loading={usage.credentialTrendLoading}
+                  loaded={usage.credentialTrendLoaded}
+                  error={usage.credentialTrendError}
+                />
+              </AnalyticsSection>
             </div>
             {usage.selectedCredential ? (
               <DetailPanel
@@ -3465,7 +3595,7 @@ function UsageAnalyticsPageInner() {
         </>
       ) : null}
 
-      {usage.activeTab === 'heatmap' ? (
+      {coreReady && usage.activeTab === 'heatmap' ? (
         <>
           <UsageSummarySection cards={heatmapSummaryCards} />
           <section className={styles.chartPanel}>
@@ -3528,19 +3658,25 @@ function UsageAnalyticsPageInner() {
           </section>
           <section className={styles.heatmapWorkspace}>
             {usage.selectedHeatmapCell ? (
-              <HeatmapDetailPanel
-                dateError={usage.heatmapDateError}
-                dateLoading={usage.heatmapDateLoading}
-                dateLoaded={usage.heatmapDateLoaded}
-                dateOptions={usage.heatmapDateOptions}
-                detail={usage.heatmapDetail}
-                metric={usage.heatmapMetric}
-                selectedCell={usage.selectedHeatmapCell}
-                selectedDateKey={usage.selectedHeatmapDateKey}
-                timeZone={usage.browserTimeZone}
-                onClear={() => usage.selectHeatmapCell(null)}
-                onSelectDate={usage.selectHeatmapDate}
-              />
+              <>
+                <AnalyticsSection
+                  state={usage.sections?.heatmapDate}
+                  title={t('usage_analytics.heatmap_detail_title')}
+                />
+                <HeatmapDetailPanel
+                  dateError={usage.heatmapDateError}
+                  dateLoading={usage.heatmapDateLoading}
+                  dateLoaded={usage.heatmapDateLoaded}
+                  dateOptions={usage.heatmapDateOptions}
+                  detail={usage.heatmapDetail}
+                  metric={usage.heatmapMetric}
+                  selectedCell={usage.selectedHeatmapCell}
+                  selectedDateKey={usage.selectedHeatmapDateKey}
+                  timeZone={usage.browserTimeZone}
+                  onClear={() => usage.selectHeatmapCell(null)}
+                  onSelectDate={usage.selectHeatmapDate}
+                />
+              </>
             ) : (
               <HeatmapHighlightsPanel
                 highlights={usage.heatmapHighlights}
@@ -3580,10 +3716,12 @@ function OverviewCard({
 }
 
 function AnomalyPointsPanel({
+  state,
   rows,
   onOpen,
   onViewAll,
 }: {
+  state?: UsageAnalyticsSectionState;
   rows: UsageServerAnomaly[];
   onOpen: (row: UsageServerAnomaly) => void;
   onViewAll?: () => void;
@@ -3602,63 +3740,97 @@ function AnomalyPointsPanel({
           </button>
         ) : null}
       </div>
-      {rows.length === 0 ? (
-        <div className={styles.inlineEmpty}>
-          <IconInbox size={22} />
-          <span>{t('usage_analytics.anomaly_none')}</span>
-        </div>
-      ) : (
-        <div className={styles.tableWrap}>
-          <table className={styles.anomalyTable}>
-            <thead>
-              <tr>
-                <th>{t('usage_analytics.col_time')}</th>
-                <th>{t('usage_analytics.col_severity')}</th>
-                <th>{t('usage_analytics.metric_request_count')}</th>
-                <th>{t('usage_analytics.metric_total_tokens')}</th>
-                <th>{t('usage_analytics.metric_estimated_cost')}</th>
-                <th>{t('usage_analytics.col_anomaly_type')}</th>
-                <th>{t('usage_analytics.col_action')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.slice(0, 8).map((row) => (
-                <tr key={`${row.bucketMs}-${row.metricKeys.join('-')}`}>
-                  <td>{row.label}</td>
-                  <td>
-                    <span
-                      className={`${styles.severityBadge} ${styles[`severity${row.severity}`]}`}
-                    >
-                      {t(`usage_analytics.severity_${row.severity}`, row.severity)}
-                    </span>
-                  </td>
-                  <td>{compactNumber(row.requestCount)}</td>
-                  <td>{compactNumber(row.totalTokens)}</td>
-                  <td>{formatMetricValue('estimatedCost', row.estimatedCost)}</td>
-                  <td>
-                    <span className={styles.anomalyTypeList}>
-                      {row.metricKeys.slice(0, 3).map((key) => (
-                        <em key={key}>{t(anomalyMetricLabelKey(key))}</em>
-                      ))}
-                    </span>
-                  </td>
-                  <td>
-                    <button type="button" className={styles.linkButton} onClick={() => onOpen(row)}>
-                      {t('usage_analytics.view_monitoring_details')}
-                    </button>
-                  </td>
+      <AnalyticsSection state={state}>
+        {rows.length === 0 ? (
+          <div className={styles.inlineEmpty}>
+            <IconInbox size={22} />
+            <span>{t('usage_analytics.anomaly_none')}</span>
+          </div>
+        ) : (
+          <div className={styles.tableWrap}>
+            <table className={styles.anomalyTable}>
+              <thead>
+                <tr>
+                  <th>{t('usage_analytics.col_time')}</th>
+                  <th>{t('usage_analytics.col_severity')}</th>
+                  <th>{t('usage_analytics.metric_request_count')}</th>
+                  <th>{t('usage_analytics.metric_total_tokens')}</th>
+                  <th>{t('usage_analytics.metric_estimated_cost')}</th>
+                  <th>{t('usage_analytics.col_anomaly_type')}</th>
+                  <th>{t('usage_analytics.col_action')}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {rows.slice(0, 8).map((row) => (
+                  <tr key={`${row.bucketMs}-${row.metricKeys.join('-')}`}>
+                    <td>{row.label}</td>
+                    <td>
+                      <span
+                        className={`${styles.severityBadge} ${styles[`severity${row.severity}`]}`}
+                      >
+                        {t(`usage_analytics.severity_${row.severity}`, row.severity)}
+                      </span>
+                    </td>
+                    <td>{compactNumber(row.requestCount)}</td>
+                    <td>{compactNumber(row.totalTokens)}</td>
+                    <td>{formatMetricValue('estimatedCost', row.estimatedCost)}</td>
+                    <td>
+                      <span className={styles.anomalyTypeList}>
+                        {row.metricKeys.slice(0, 3).map((key) => (
+                          <em key={key}>{t(anomalyMetricLabelKey(key))}</em>
+                        ))}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className={styles.linkButton}
+                        disabled={!canDrilldownUsageBucket(row)}
+                        onClick={() => {
+                          if (canDrilldownUsageBucket(row)) onOpen(row);
+                        }}
+                      >
+                        {t('usage_analytics.view_monitoring_details')}
+                      </button>
+                      {!canDrilldownUsageBucket(row) ? (
+                        <p>{t('usage_analytics.bucket_drilldown_unavailable')}</p>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </AnalyticsSection>
     </div>
   );
 }
 
-function DrilldownPreviewPanel({ rows, locale }: { rows: UsageDrilldownEvent[]; locale: string }) {
+function DrilldownPreviewPanel({
+  bucket,
+  rows,
+  locale,
+  state,
+}: {
+  bucket: UsageTimelinePoint;
+  rows: UsageDrilldownEvent[];
+  locale: string;
+  state?: UsageAnalyticsSectionState;
+}) {
   const { t } = useTranslation();
+  if (!canDrilldownUsageBucket(bucket)) {
+    return (
+      <div className={styles.tablePanel}>
+        <div className={styles.panelHeader}>
+          <div>
+            <h2>{t('usage_analytics.drilldown_preview_title')}</h2>
+            <p role="status">{t('usage_analytics.bucket_drilldown_unavailable')}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={styles.tablePanel}>
       <div className={styles.panelHeader}>
@@ -3667,51 +3839,61 @@ function DrilldownPreviewPanel({ rows, locale }: { rows: UsageDrilldownEvent[]; 
           <p>{t('usage_analytics.drilldown_preview_hint')}</p>
         </div>
       </div>
-      {rows.length === 0 ? (
-        <div className={styles.inlineEmpty}>
-          <IconInbox size={22} />
-          <span>{t('usage_analytics.drilldown_preview_empty')}</span>
-        </div>
-      ) : (
-        <div className={styles.tableWrap}>
-          <table className={styles.drilldownTable}>
-            <thead>
-              <tr>
-                <th>{t('usage_analytics.col_time')}</th>
-                <th>{t('usage_analytics.filter_request_id')}</th>
-                <th>{t('usage_analytics.col_model')}</th>
-                <th>{t('usage_analytics.col_api_key')}</th>
-                <th>{t('usage_analytics.metric_total_tokens')}</th>
-                <th>{t('usage_analytics.metric_average_latency')}</th>
-                <th>{t('usage_analytics.filter_status')}</th>
-                <th>{t('usage_analytics.col_diagnostics')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.slice(0, 12).map((row) => (
-                <tr key={row.eventHash}>
-                  <td>{formatLocalDateTime(row.timestampMs, locale)}</td>
-                  <td className={styles.monoCell}>{row.requestId || row.eventHash.slice(0, 10)}</td>
-                  <td>{row.model}</td>
-                  <td>{row.apiKeyLabel || maskApiKeyHash(row.apiKeyHash)}</td>
-                  <td>{compactNumber(row.totalTokens)}</td>
-                  <td>{formatUsageDurationMs(row.latencyMs)}</td>
-                  <td>
-                    <span className={row.failed ? styles.statusFailed : styles.statusSuccess}>
-                      {row.failed
-                        ? t('usage_analytics.status_failed')
-                        : t('usage_analytics.status_success')}
-                    </span>
-                  </td>
-                  <td className={styles.monoCell}>
-                    {formatDrilldownDiagnostics(row, locale, t) || '-'}
-                  </td>
+      <AnalyticsSection state={state}>
+        {rows.length === 0 ? (
+          <div className={styles.inlineEmpty}>
+            <IconInbox size={22} />
+            <span>{t('usage_analytics.drilldown_preview_empty')}</span>
+          </div>
+        ) : (
+          <div className={styles.tableWrap}>
+            <table className={styles.drilldownTable}>
+              <thead>
+                <tr>
+                  <th>{t('usage_analytics.col_time')}</th>
+                  <th>{t('usage_analytics.filter_request_id')}</th>
+                  <th>{t('usage_analytics.col_model')}</th>
+                  <th>{t('usage_analytics.col_api_key')}</th>
+                  <th>{t('usage_analytics.metric_total_tokens')}</th>
+                  <th>{t('usage_analytics.metric_estimated_cost')}</th>
+                  <th>{t('usage_analytics.metric_average_latency')}</th>
+                  <th>{t('usage_analytics.filter_status')}</th>
+                  <th>{t('usage_analytics.col_diagnostics')}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {rows.slice(0, 12).map((row) => (
+                  <tr key={row.eventHash}>
+                    <td>{formatLocalDateTime(row.timestampMs, locale)}</td>
+                    <td className={styles.monoCell}>
+                      {row.requestId || row.eventHash.slice(0, 10)}
+                    </td>
+                    <td>{row.model}</td>
+                    <td>{row.apiKeyLabel || maskApiKeyHash(row.apiKeyHash)}</td>
+                    <td>{compactNumber(row.totalTokens)}</td>
+                    <td>
+                      {row.estimatedCost === null
+                        ? t('usage_analytics.section_unavailable')
+                        : formatMetricValue('estimatedCost', row.estimatedCost)}
+                    </td>
+                    <td>{formatUsageDurationMs(row.latencyMs)}</td>
+                    <td>
+                      <span className={row.failed ? styles.statusFailed : styles.statusSuccess}>
+                        {row.failed
+                          ? t('usage_analytics.status_failed')
+                          : t('usage_analytics.status_success')}
+                      </span>
+                    </td>
+                    <td className={styles.monoCell}>
+                      {formatDrilldownDiagnostics(row, locale, t) || '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </AnalyticsSection>
     </div>
   );
 }

@@ -589,6 +589,12 @@ describe('DemoPage', () => {
       to_ms: Date.now(),
       include: {
         events_page: { limit: 10 },
+        model_stats: true,
+        account_stats: true,
+        api_key_stats: true,
+        credential_stats: true,
+        credential_timeline: true,
+        heatmap: true,
         recent_failures: 1,
         drilldown_preview: { from_ms: 0, to_ms: Date.now(), limit: 8 },
       },
@@ -599,7 +605,7 @@ describe('DemoPage', () => {
     expect(firstPage.api_key_stats?.length).toBe(demoAuthCount);
     expect(firstPage.credential_stats?.length).toBe(demoAuthCount);
     expect(firstPage.credential_timeline?.length).toBe(
-      Math.min(firstPage.credential_stats?.length ?? 0, 10) * 7
+      Math.min(firstPage.credential_stats?.length ?? 0, 10) * 14
     );
     expect(firstPage.heatmap).toHaveLength(168);
     expect(firstPage.heatmap?.some((point) => point.calls > 0)).toBe(true);
@@ -791,6 +797,7 @@ describe('DemoPage', () => {
       include: {
         summary: true,
         account_stats: true,
+        credential_stats: true,
       },
     };
     const filtered = getDemoMonitoringAnalytics(request);
@@ -880,6 +887,7 @@ describe('DemoPage', () => {
       },
       include: {
         api_key_timeline: true,
+        timeline: true,
       },
     });
     const timeline = page.timeline;

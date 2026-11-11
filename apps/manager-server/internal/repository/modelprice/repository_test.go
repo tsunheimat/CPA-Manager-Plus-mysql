@@ -10,6 +10,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/modelprice"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
@@ -25,14 +26,14 @@ func openTestDB(t *testing.T) (*sql.DB, modelprice.Repository) {
 
 func insertArchiveRef(t *testing.T, db *sql.DB, rawDeletedAt any) {
 	t.Helper()
-	if _, err := db.Exec(testdb.SQL(db, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, testdb.SQL(db, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
 		t.Fatalf("disable foreign keys: %v", err)
 	}
 	hash := "hash-1"
 	if rawDeletedAt != nil {
 		hash = "hash-deleted"
 	}
-	if _, err := db.Exec(`insert or replace into usage_archive_event_refs(
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert or replace into usage_archive_event_refs(
 		event_hash, run_id, segment_sequence, raw_event_id, timestamp_ms, archived_at_ms, raw_deleted_at_ms
 	) values(?, 'run-1', 1, 1, 1000, 1000, ?)`, hash, rawDeletedAt); err != nil {
 		t.Fatalf("insert archive ref: %v", err)
@@ -48,7 +49,7 @@ func markRawDeletedWithRetainedProjection(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
 	const eventHash = "hash-retained"
-	if _, err := db.Exec(`insert into usage_events(
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events(
 		id, event_hash, timestamp_ms, timestamp, model, created_at_ms
 	) values(1, ?, 1000, '1970-01-01T00:00:01Z', 'model-a', 1000)`, eventHash); err != nil {
 		t.Fatalf("insert retained raw event: %v", err)
@@ -61,15 +62,15 @@ func markRawDeletedWithRetainedProjection(t *testing.T, db *sql.DB) {
 	if result.CoverageEventID != 1 || result.Pending {
 		t.Fatalf("unexpected retained projection result: %#v", result)
 	}
-	if _, err := db.Exec(testdb.SQL(db, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, testdb.SQL(db, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
 		t.Fatalf("disable foreign keys: %v", err)
 	}
-	if _, err := db.Exec(`insert into usage_archive_event_refs(
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_archive_event_refs(
 		event_hash, run_id, segment_sequence, raw_event_id, timestamp_ms, archived_at_ms, raw_deleted_at_ms
 	) values(?, 'run-retained', 1, 1, 1000, 1600, 1700)`, eventHash); err != nil {
 		t.Fatalf("insert retained archive ref: %v", err)
 	}
-	if _, err := db.Exec(`delete from usage_events where id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_events where id = 1`); err != nil {
 		t.Fatalf("delete retained raw event: %v", err)
 	}
 }
@@ -612,7 +613,7 @@ func TestModelPriceStructureChangePreservesRetainedVerifierSystemError(t *testin
 		t.Fatalf("initial ReplaceAll: %v", err)
 	}
 	markRawDeleted(t, db)
-	if _, err := db.Exec(`drop table usage_monitoring_rollup_state`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `drop table usage_monitoring_rollup_state`); err != nil {
 		t.Fatalf("drop monitoring rollup state: %v", err)
 	}
 
@@ -649,7 +650,7 @@ func TestModelPriceUpsertSyncedPreservesRetainedVerifierSystemError(t *testing.T
 		t.Fatalf("initial ReplaceAll: %v", err)
 	}
 	markRawDeleted(t, db)
-	if _, err := db.Exec(`drop table usage_monitoring_rollup_state`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `drop table usage_monitoring_rollup_state`); err != nil {
 		t.Fatalf("drop monitoring rollup state: %v", err)
 	}
 

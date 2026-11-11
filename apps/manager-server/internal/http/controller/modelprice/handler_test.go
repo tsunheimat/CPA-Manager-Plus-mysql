@@ -3,7 +3,10 @@ package modelprice
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +15,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	modelpricesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/modelprice"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -78,17 +82,21 @@ func TestHandleModelPricesPutStructureChangeAfterRawDeletionReturns409(t *testin
 		t.Fatalf("open sqlite: %v", err)
 	}
 	defer rawDB.Close()
-	conn, err := rawDB.Conn(ctx)
-	if err != nil {
-		t.Fatalf("open sqlite conn: %v", err)
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, testdb.SQL(rawDB, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
-		t.Fatalf("disable foreign keys: %v", err)
-	}
-	if _, err := conn.ExecContext(ctx, `insert into usage_archive_event_refs(
-		event_hash, run_id, segment_sequence, raw_event_id, timestamp_ms, archived_at_ms, raw_deleted_at_ms
-	) values('hash-deleted', 'run-1', 1, 1, 1000, 1000, 2000)`); err != nil {
+	if err := sqlwrite.WithConn(ctx, rawDB, func(ctx context.Context, conn *sql.Conn) (err error) {
+		if _, err := sqlwrite.ExecContext(ctx, conn, testdb.SQL(rawDB, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
+			return fmt.Errorf("disable foreign keys: %w", err)
+		}
+		defer func() {
+			// Restore connection state before WithConn releases the connection and permit.
+			if _, restoreErr := sqlwrite.ExecContext(context.WithoutCancel(ctx), conn, testdb.SQL(rawDB, `pragma foreign_keys = on`, `set foreign_key_checks=1`)); restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("restore foreign keys: %w", restoreErr))
+			}
+		}()
+		_, err = sqlwrite.ExecContext(ctx, conn, `insert into usage_archive_event_refs(
+			event_hash, run_id, segment_sequence, raw_event_id, timestamp_ms, archived_at_ms, raw_deleted_at_ms
+		) values('hash-deleted', 'run-1', 1, 1, 1000, 1000, 2000)`)
+		return err
+	}); err != nil {
 		t.Fatalf("insert archive ref: %v", err)
 	}
 
@@ -134,17 +142,21 @@ func TestHandleModelPricesSyncStructureChangeAfterRawDeletionReturns409(t *testi
 		t.Fatalf("open sqlite: %v", err)
 	}
 	defer rawDB.Close()
-	conn, err := rawDB.Conn(ctx)
-	if err != nil {
-		t.Fatalf("open sqlite conn: %v", err)
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, testdb.SQL(rawDB, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
-		t.Fatalf("disable foreign keys: %v", err)
-	}
-	if _, err := conn.ExecContext(ctx, `insert into usage_archive_event_refs(
-		event_hash, run_id, segment_sequence, raw_event_id, timestamp_ms, archived_at_ms, raw_deleted_at_ms
-	) values('hash-deleted', 'run-1', 1, 1, 1000, 1000, 2000)`); err != nil {
+	if err := sqlwrite.WithConn(ctx, rawDB, func(ctx context.Context, conn *sql.Conn) (err error) {
+		if _, err := sqlwrite.ExecContext(ctx, conn, testdb.SQL(rawDB, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
+			return fmt.Errorf("disable foreign keys: %w", err)
+		}
+		defer func() {
+			// Restore connection state before WithConn releases the connection and permit.
+			if _, restoreErr := sqlwrite.ExecContext(context.WithoutCancel(ctx), conn, testdb.SQL(rawDB, `pragma foreign_keys = on`, `set foreign_key_checks=1`)); restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("restore foreign keys: %w", restoreErr))
+			}
+		}()
+		_, err = sqlwrite.ExecContext(ctx, conn, `insert into usage_archive_event_refs(
+			event_hash, run_id, segment_sequence, raw_event_id, timestamp_ms, archived_at_ms, raw_deleted_at_ms
+		) values('hash-deleted', 'run-1', 1, 1, 1000, 1000, 2000)`)
+		return err
+	}); err != nil {
 		t.Fatalf("insert archive ref: %v", err)
 	}
 

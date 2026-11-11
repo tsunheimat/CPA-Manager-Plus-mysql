@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
@@ -60,7 +61,7 @@ func (r *repository) ResolveCodexLegacyAccountKey(
 	ctx context.Context,
 	fields usageidentity.Fields,
 ) (string, bool, error) {
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return "", false, err
 	}

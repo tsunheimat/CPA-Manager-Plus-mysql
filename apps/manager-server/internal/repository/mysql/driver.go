@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
 )
@@ -18,6 +19,11 @@ type connector struct {
 	writer       chan struct{}
 	cache        sync.Map
 	cacheEntries atomic.Int32
+	waiting      atomic.Int64
+	acquired     atomic.Uint64
+	canceled     atomic.Uint64
+	waitNanos    atomic.Int64
+	holdNanos    atomic.Int64
 }
 
 func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
@@ -28,9 +34,9 @@ func (c *connector) Connect(ctx context.Context) (driver.Conn, error) {
 	return &connection{Conn: base, owner: c}, nil
 }
 
-func (c *connector) Driver() driver.Driver { return &dialectDriver{} }
+func (c *connector) Driver() driver.Driver { return &dialectDriver{owner: c} }
 
-type dialectDriver struct{}
+type dialectDriver struct{ owner *connector }
 
 func (*dialectDriver) Open(string) (driver.Conn, error) {
 	return nil, errors.New("use MySQL connector")
@@ -41,6 +47,7 @@ type connection struct {
 	owner   *connector
 	inTx    bool
 	writeTx bool
+	invalid bool
 }
 
 func (c *connection) compile(query string) (statement, error) {
@@ -59,52 +66,74 @@ func (c *connection) compile(query string) (statement, error) {
 	return s, err
 }
 
-func (c *connection) acquire(ctx context.Context) error {
-	select {
-	case c.owner.writer <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-func (c *connection) release() { <-c.owner.writer }
-
 func (c *connection) Begin() (driver.Tx, error) {
 	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
 func (c *connection) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	// Preserve the repositories' SQLite BEGIN IMMEDIATE contract: a writer
-	// reserves its turn before any read/modify/write work. Readers still use
-	// independent repeatable-read InnoDB snapshots.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if c.invalid {
+		return nil, driver.ErrBadConn
+	}
+	if c.inTx {
+		return nil, errors.New("MySQL connection already has a transaction")
+	}
+	// Admission happened before database/sql checked out this connection.
+	// Borrow across this physical attempt; on ErrBadConn the helper retains
+	// the same permit for database/sql's retry on another connection.
+	var permit *writePermit
+	var err error
 	if !opts.ReadOnly {
-		if err := c.acquire(ctx); err != nil {
+		permit, err = c.borrowPermit(ctx)
+		if err != nil {
 			return nil, err
 		}
 	}
 	tx, err := c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
+	if permit != nil {
+		permit.finishAttempt(err == nil)
+	}
 	if err != nil {
-		if !opts.ReadOnly {
-			c.release()
-		}
 		return nil, err
 	}
 	c.inTx, c.writeTx = true, !opts.ReadOnly
-	return &transaction{Tx: tx, conn: c}, nil
+	return &transaction{Tx: tx, conn: c, permit: permit}, nil
 }
 
 type transaction struct {
 	driver.Tx
-	conn *connection
+	conn   *connection
+	permit *writePermit
+	once   sync.Once
 }
 
-func (t *transaction) done() {
-	if t.conn.writeTx {
-		t.conn.release()
-	}
-	t.conn.inTx, t.conn.writeTx = false, false
+func (t *transaction) done(err error) {
+	t.once.Do(func() {
+		// A failed finish must not return a potentially still-open transaction
+		// to the pool. Preserve its error (do not return ErrBadConn and retry a
+		// possibly committed operation), but make Validator discard the conn.
+		if err != nil {
+			t.conn.invalid = true
+			_ = t.conn.Conn.Close()
+		}
+		t.conn.inTx, t.conn.writeTx = false, false
+		if t.permit != nil {
+			t.permit.finishTransaction()
+		}
+	})
 }
-func (t *transaction) Commit() error   { defer t.done(); return t.Tx.Commit() }
-func (t *transaction) Rollback() error { defer t.done(); return t.Tx.Rollback() }
+func (t *transaction) Commit() (err error) {
+	defer func() { t.done(err) }()
+	if t.conn.invalid {
+		return errors.New("MySQL transaction connection was discarded during cleanup")
+	}
+	return t.Tx.Commit()
+}
+func (t *transaction) Rollback() (err error) {
+	defer func() { t.done(err) }()
+	return t.Tx.Rollback()
+}
 
 func (c *connection) Prepare(query string) (driver.Stmt, error) {
 	return c.PrepareContext(context.Background(), query)
@@ -127,11 +156,30 @@ func (c *connection) CheckNamedValue(v *driver.NamedValue) error {
 	}
 	return driver.ErrSkip
 }
-func (c *connection) Ping(ctx context.Context) error { return c.Conn.(driver.Pinger).Ping(ctx) }
-func (c *connection) ResetSession(ctx context.Context) error {
-	return c.Conn.(driver.SessionResetter).ResetSession(ctx)
+func (c *connection) Ping(ctx context.Context) error {
+	if pinger, ok := c.Conn.(driver.Pinger); ok {
+		return pinger.Ping(ctx)
+	}
+	return ctx.Err()
 }
-func (c *connection) IsValid() bool { return c.Conn.(driver.Validator).IsValid() }
+func (c *connection) ResetSession(ctx context.Context) error {
+	if c.invalid {
+		return driver.ErrBadConn
+	}
+	if resetter, ok := c.Conn.(driver.SessionResetter); ok {
+		return resetter.ResetSession(ctx)
+	}
+	return ctx.Err()
+}
+func (c *connection) IsValid() bool {
+	if c.invalid {
+		return false
+	}
+	if validator, ok := c.Conn.(driver.Validator); ok {
+		return validator.IsValid()
+	}
+	return true
+}
 
 func (c *connection) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	s, err := c.compile(query)
@@ -154,11 +202,14 @@ func (c *connection) QueryContext(ctx context.Context, query string, args []driv
 	if err != nil {
 		return nil, err
 	}
-	if s.returningID {
+	if s.returningID || s.ignore {
 		result, err := c.execute(ctx, s, func() (driver.Result, error) { return c.Conn.(driver.ExecerContext).ExecContext(ctx, s.sql, args) })
-		return returnedID(result, err)
+		if s.returningID {
+			return returnedID(result, err)
+		}
+		return &emptyRows{}, err
 	}
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, s.sql, args)
+	return c.query(ctx, s, func() (driver.Rows, error) { return c.Conn.(driver.QueryerContext).QueryContext(ctx, s.sql, args) })
 }
 
 func (c *connection) rawExec(ctx context.Context, query string) error {
@@ -166,13 +217,67 @@ func (c *connection) rawExec(ctx context.Context, query string) error {
 	return err
 }
 
-func (c *connection) execute(ctx context.Context, s statement, run func() (driver.Result, error)) (driver.Result, error) {
-	if !c.inTx {
-		if err := c.acquire(ctx); err != nil {
-			return nil, err
-		}
-		defer c.release()
+// enter never queues: a missing permit is a programming error, not a reason to
+// hold a pooled connection waiting behind the writer. Reads need no permit.
+func (c *connection) enter(ctx context.Context, s statement) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	if c.invalid {
+		return nil, driver.ErrBadConn
+	}
+	if s.txControl || s.ddl && c.inTx {
+		return nil, ErrTransactionControl
+	}
+	if !s.write {
+		return func() {}, nil
+	}
+	if c.inTx {
+		if !c.writeTx {
+			return nil, ErrReadOnlyTransaction
+		}
+		return func() {}, nil
+	}
+	permit, err := c.borrowPermit(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return func() { permit.finishAttempt(false) }, nil
+}
+
+func (c *connection) discard() {
+	c.invalid = true
+	_ = c.Conn.Close()
+}
+
+// cleanup must finish before returning admission, even after request cancellation.
+// A broken rollback/savepoint makes the connection unusable; never put it back.
+func (c *connection) cleanup(query string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.rawExec(ctx, query); err != nil {
+		c.discard()
+		return fmt.Errorf("MySQL %s cleanup failed: %v", query, err)
+	}
+	return nil
+}
+
+// database/sql recognizes driver.ErrSkip by identity, not errors.Is. Successful
+// cleanup must preserve it so interpolation/packet-size fallbacks can execute a
+// prepared statement under the same admission. Failed cleanup is never retried.
+func joinCleanupError(err, cleanupErr error) error {
+	if cleanupErr == nil {
+		return err
+	}
+	return errors.Join(err, cleanupErr)
+}
+
+func (c *connection) execute(ctx context.Context, s statement, run func() (driver.Result, error)) (driver.Result, error) {
+	finish, err := c.enter(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	if s.bulkIgnore {
 		if !c.inTx {
 			if err := c.rawExec(ctx, "START TRANSACTION"); err != nil {
@@ -181,7 +286,7 @@ func (c *connection) execute(ctx context.Context, s statement, run func() (drive
 		}
 		if err := c.rawExec(ctx, "SAVEPOINT manager_ignore"); err != nil {
 			if !c.inTx {
-				_ = c.rawExec(context.Background(), "ROLLBACK")
+				err = joinCleanupError(err, c.cleanup("ROLLBACK"))
 			}
 			return nil, err
 		}
@@ -198,21 +303,77 @@ func (c *connection) execute(ctx context.Context, s statement, run func() (drive
 			err = c.checkIgnoredWarnings(ctx)
 		}
 		if err != nil {
-			// Do not use a cancelled request context for rollback.
 			if !c.inTx {
-				_ = c.rawExec(context.Background(), "ROLLBACK")
+				err = joinCleanupError(err, c.cleanup("ROLLBACK"))
 			} else {
-				_ = c.rawExec(context.Background(), "ROLLBACK TO SAVEPOINT manager_ignore")
+				err = joinCleanupError(err, c.cleanup("ROLLBACK TO SAVEPOINT manager_ignore"))
 			}
 		} else if !c.inTx {
-			err = c.rawExec(ctx, "COMMIT")
+			if commitErr := c.rawExec(ctx, "COMMIT"); commitErr != nil {
+				c.discard()
+				// An ambiguous commit must never trigger an ErrBadConn retry.
+				err = fmt.Errorf("MySQL bulk insert commit failed: %v", commitErr)
+			}
 		}
-		if c.inTx {
-			_ = c.rawExec(context.Background(), "RELEASE SAVEPOINT manager_ignore")
+		if c.inTx && !c.invalid {
+			err = joinCleanupError(err, c.cleanup("RELEASE SAVEPOINT manager_ignore"))
 		}
 	}
 	return result, err
 }
+
+func (c *connection) query(ctx context.Context, s statement, run func() (driver.Rows, error)) (driver.Rows, error) {
+	finish, err := c.enter(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := run()
+	if err != nil {
+		finish()
+		return nil, err
+	}
+	if !s.write || c.inTx {
+		finish()
+		return rows, nil
+	}
+	return &permitRows{Rows: rows, finish: finish, discard: c.discard}, nil
+}
+
+type permitRows struct {
+	driver.Rows
+	finish  func()
+	discard func()
+	once    sync.Once
+	err     error
+}
+
+func (r *permitRows) Close() error {
+	r.once.Do(func() {
+		r.err = r.Rows.Close()
+		if r.err != nil {
+			r.discard()
+		}
+		r.finish()
+	})
+	return r.err
+}
+
+func (r *permitRows) HasNextResultSet() bool {
+	rows, ok := r.Rows.(driver.RowsNextResultSet)
+	return ok && rows.HasNextResultSet()
+}
+func (r *permitRows) NextResultSet() error {
+	if rows, ok := r.Rows.(driver.RowsNextResultSet); ok {
+		return rows.NextResultSet()
+	}
+	return io.EOF
+}
+
+type emptyRows struct{}
+
+func (*emptyRows) Columns() []string         { return nil }
+func (*emptyRows) Close() error              { return nil }
+func (*emptyRows) Next([]driver.Value) error { return io.EOF }
 
 func (c *connection) checkIgnoredWarnings(ctx context.Context) error {
 	countRows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, "SHOW COUNT(*) WARNINGS", nil)
@@ -255,7 +416,7 @@ func (c *connection) checkIgnoredWarnings(ctx context.Context) error {
 			if seen != count {
 				return fmt.Errorf("MySQL truncated bulk insert warnings (%d of %d); reduce the batch size or raise the server's max_error_count", seen, count)
 			}
-			return nil
+			return rows.Close()
 		}
 		if err != nil {
 			return err
@@ -316,15 +477,20 @@ func (s *preparedStatement) ExecContext(ctx context.Context, args []driver.Named
 	return s.conn.execute(ctx, s.statement, func() (driver.Result, error) { return s.Stmt.(driver.StmtExecContext).ExecContext(ctx, args) })
 }
 func (s *preparedStatement) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
-	if s.statement.returningID {
+	if s.statement.returningID || s.statement.ignore {
 		result, err := s.ExecContext(ctx, args)
-		return returnedID(result, err)
+		if s.statement.returningID {
+			return returnedID(result, err)
+		}
+		return &emptyRows{}, err
 	}
 	args, err := s.statement.bind(args)
 	if err != nil {
 		return nil, err
 	}
-	return s.Stmt.(driver.StmtQueryContext).QueryContext(ctx, args)
+	return s.conn.query(ctx, s.statement, func() (driver.Rows, error) {
+		return s.Stmt.(driver.StmtQueryContext).QueryContext(ctx, args)
+	})
 }
 
 type idRows struct {

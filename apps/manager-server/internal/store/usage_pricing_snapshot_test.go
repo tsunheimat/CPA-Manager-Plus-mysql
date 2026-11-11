@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -268,7 +269,7 @@ func TestLoadUsageHourlyPricingSnapshotEdgeErrorClassification(t *testing.T) {
 	pricingFilter := UsagePricingHourlyFilter{FromMS: fromMS, ToMS: toMS}
 
 	// 1. Missing projection state: delete rollup_state row, should return ErrUsagePricingCoverageIncomplete
-	if _, err := db.db.Exec(`delete from usage_monitoring_rollup_state where rollup_name = 'projection_v1'`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `delete from usage_monitoring_rollup_state where rollup_name = 'projection_v1'`); err != nil {
 		t.Fatal(err)
 	}
 	_, err = db.LoadUsageHourlyPricingSnapshot(ctx, aggregateFilter, pricingFilter)
@@ -277,7 +278,7 @@ func TestLoadUsageHourlyPricingSnapshotEdgeErrorClassification(t *testing.T) {
 	}
 
 	// 2. Query failure on usage_monitoring_rollup_state: should return real SQL error, NOT ErrUsagePricingCoverageIncomplete
-	if _, err := db.db.Exec(`drop table usage_monitoring_rollup_state`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `drop table usage_monitoring_rollup_state`); err != nil {
 		t.Fatal(err)
 	}
 	_, err = db.LoadUsageHourlyPricingSnapshot(ctx, aggregateFilter, pricingFilter)

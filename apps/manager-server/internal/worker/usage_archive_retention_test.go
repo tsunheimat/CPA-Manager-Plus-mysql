@@ -13,6 +13,7 @@ import (
 
 	usagearchive "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagearchive"
 	usageservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -785,7 +786,7 @@ func TestUsageArchiveRetentionWorkerDoesNotDeadlockOnNoncanonicalHash(t *testing
 
 	// Insert legacy noncanonical event directly into raw DB
 	legacyHash := "legacy-noncanonical-retention-hash"
-	if _, err := rawDB.ExecContext(ctx, `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, total_tokens, created_at_ms
 	) values (?, ?, ?, ?, ?, ?)`,
 		legacyHash, 1_000, "1970-01-01T00:00:01Z", "gpt-test", 100, 1_000,

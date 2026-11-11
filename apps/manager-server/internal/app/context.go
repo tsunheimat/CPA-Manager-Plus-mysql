@@ -182,7 +182,7 @@ func fromExisting(
 			managerConfigService,
 			codexinspectionsvc.ServiceOptions{AuthFileMutationCoordinator: authFileMutationCoordinator},
 		),
-		MonitoringService:    monitoringsvc.New(st, cfg.DashboardHourlyRollupEnabled),
+		MonitoringService:    monitoringsvc.NewWithOptions(st, monitoringsvc.OptionsFromConfig(cfg)),
 		QuotaSnapshotService: quotasnapshotsvc.New(st),
 		ModelPriceService:    modelpricesvc.NewMultiSourceWithModelsDev(st, modelsDevModelPriceSyncURL, modelPriceSyncURL, openRouterModelPriceSyncURL, managerConfigService),
 		APIKeyAliasService:   apikeyaliassvc.New(st),

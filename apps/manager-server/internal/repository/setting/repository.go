@@ -10,6 +10,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 const managerConfigKey = "manager_config_v1"
@@ -51,8 +52,8 @@ func (r *repository) SaveSetup(ctx context.Context, setup model.Setup) error {
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(
-		ctx,
+	_, err = sqlwrite.ExecContext(
+		ctx, r.db,
 		`insert into settings(key, value, updated_at_ms)
 		 values('setup', ?, ?)
 		 on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
@@ -73,7 +74,7 @@ func (r *repository) SaveManagerConfigAndSetup(ctx context.Context, cfg model.Ma
 		return err
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return err
 	}
@@ -133,7 +134,7 @@ func (r *repository) NormalizeLegacyConnectionStorage(
 		}
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return err
 	}
@@ -185,8 +186,8 @@ type settingWriter interface {
 }
 
 func upsertSetting(ctx context.Context, writer settingWriter, key string, data []byte, updatedAtMS int64) error {
-	_, err := writer.ExecContext(
-		ctx,
+	_, err := sqlwrite.ExecContext(
+		ctx, writer,
 		`insert into settings(key, value, updated_at_ms)
 		 values(?, ?, ?)
 		 on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
@@ -250,8 +251,8 @@ func (r *repository) SaveAutomationSettings(ctx context.Context, settings model.
 	if err != nil {
 		return model.AutomationSettings{}, err
 	}
-	_, err = r.db.ExecContext(
-		ctx,
+	_, err = sqlwrite.ExecContext(
+		ctx, r.db,
 		`insert into settings(key, value, updated_at_ms)
 		 values(?, ?, ?)
 		 on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
@@ -289,8 +290,8 @@ func (r *repository) SaveAdminCredential(ctx context.Context, credential model.A
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(
-		ctx,
+	_, err = sqlwrite.ExecContext(
+		ctx, r.db,
 		`insert into settings(key, value, updated_at_ms)
 		 values(?, ?, ?)
 		 on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
@@ -323,8 +324,8 @@ func (r *repository) SaveBootstrapState(ctx context.Context, state model.Bootstr
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(
-		ctx,
+	_, err = sqlwrite.ExecContext(
+		ctx, r.db,
 		`insert into settings(key, value, updated_at_ms)
 		 values(?, ?, ?)
 		 on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 var ErrStructureChangeAfterRawDeletion = errors.New("model price structure cannot change after archived raw usage has been deleted")
@@ -220,7 +221,7 @@ func (r *repository) LoadAllTx(ctx context.Context, tx *sql.Tx) (map[string]mode
 }
 
 func (r *repository) ReplaceAll(ctx context.Context, prices map[string]model.ModelPrice) error {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return err
 	}
@@ -329,7 +330,7 @@ func (r *repository) UpsertSynced(ctx context.Context, prices map[string]model.M
 	if len(prices) == 0 {
 		return model.ModelPriceSyncResult{}, nil
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return model.ModelPriceSyncResult{}, err
 	}

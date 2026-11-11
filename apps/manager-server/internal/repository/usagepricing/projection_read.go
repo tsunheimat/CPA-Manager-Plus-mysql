@@ -74,87 +74,14 @@ func VerifyRetainedPricingRebuildSourceTx(ctx context.Context, tx *sql.Tx) error
 	return err
 }
 
-// retainedPricingRebuildSourceTx returns the exact event source and target ID
-// used only for full pricing rebuilds. Live raw rows are authoritative when
-// present; the projection contributes only events whose raw rows were deleted.
-// This keeps the rebuild source duplicate-free while preserving original event
-// IDs for the existing checkpoint state machine.
+// retainedPricingRebuildSourceTx preserves the public pricing error contract
+// while sharing the same proof/source as monitoring rebuilds.
 func retainedPricingRebuildSourceTx(ctx context.Context, tx *sql.Tx) (string, int64, error) {
-	var hasDeletedRaw bool
-	if err := tx.QueryRowContext(ctx, `select exists (
-		select 1 from usage_archive_event_refs where raw_deleted_at_ms is not null
-	)`).Scan(&hasDeletedRaw); err != nil {
-		return "", 0, err
+	source, targetID, err := usageprojection.VerifiedRetainedEventSourceTx(ctx, tx)
+	if errors.Is(err, usageprojection.ErrRetainedCoverageIncomplete) {
+		return "", 0, fmt.Errorf("%w: %w", ErrRetainedPricingHistoryIncomplete, err)
 	}
-	if !hasDeletedRaw {
-		latestID, err := latestEventID(ctx, tx)
-		return "usage_events", latestID, err
-	}
-
-	var schemaVersion int
-	var revision, status string
-	var coverageID int64
-	if err := tx.QueryRowContext(ctx, `select schema_version, structure_revision, status, coverage_event_id
-		from usage_monitoring_rollup_state where rollup_name = 'projection_v1'`).Scan(
-		&schemaVersion, &revision, &status, &coverageID,
-	); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", 0, fmt.Errorf("%w: retained usage projection state is unavailable", ErrRetainedPricingHistoryIncomplete)
-		}
-		return "", 0, err
-	}
-	if schemaVersion != 1 ||
-		revision != usageidentity.MonitoringProjectionStructureRevision() ||
-		status == "clearing" {
-		return "", 0, fmt.Errorf("%w: retained usage projection is incompatible or rebuilding", ErrRetainedPricingHistoryIncomplete)
-	}
-
-	var incomplete bool
-	if err := tx.QueryRowContext(ctx, `select exists (
-		select 1
-		from usage_archive_event_refs archived
-		left join usage_monitoring_event_projection_v1 p
-			on p.event_id = archived.raw_event_id
-		where archived.raw_deleted_at_ms is not null
-			and not exists (
-				select 1 from usage_events live where live.event_hash = archived.event_hash
-			)
-			and (archived.raw_event_id > ? or p.event_id is null)
-	)`, coverageID).Scan(&incomplete); err != nil {
-		return "", 0, err
-	}
-	if incomplete {
-		return "", 0, fmt.Errorf("%w: retained usage projection is missing a deleted pricing event", ErrRetainedPricingHistoryIncomplete)
-	}
-
-	var latestID int64
-	if err := tx.QueryRowContext(ctx, `select coalesce(max(event_id), 0) from (
-		select id as event_id from usage_events
-		union all
-		select archived.raw_event_id as event_id
-		from usage_archive_event_refs archived
-		where archived.raw_deleted_at_ms is not null
-			and not exists (
-				select 1 from usage_events live where live.event_hash = archived.event_hash
-			)
-	)`).Scan(&latestID); err != nil {
-		return "", 0, err
-	}
-
-	source := fmt.Sprintf(`(select e.id, e.%s from usage_events e
-		union all
-		select p.event_id as id, p.%s
-		from usage_archive_event_refs archived
-		join %s p on p.event_id = archived.raw_event_id
-		where archived.raw_deleted_at_ms is not null
-			and not exists (
-				select 1 from usage_events live where live.event_hash = archived.event_hash
-			))`,
-		strings.Join(retainedPricingColumns, ", e."),
-		strings.Join(retainedPricingColumns, ", p."),
-		usageprojection.EventTable,
-	)
-	return source, latestID, nil
+	return source, targetID, err
 }
 
 // retainedEventSourceTx prefers the original raw event whenever it still exists.

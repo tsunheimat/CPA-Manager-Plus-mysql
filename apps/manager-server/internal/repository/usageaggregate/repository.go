@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	sqliteutil "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqliteutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
+	sqliteutil "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqliteutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -25,24 +26,6 @@ const (
 var analyticsModelExpression = usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")
 
 var ErrUnsupportedSchema = errors.New("unsupported usage hourly aggregate schema")
-
-func IsCurrentStructureRevision(revision string) bool {
-	if revision == StructureRevision {
-		return true
-	}
-	suffix, ok := strings.CutPrefix(revision, StructureRevision+":rebuild-")
-	if !ok || len(suffix) != 32 {
-		return false
-	}
-	for _, value := range suffix {
-		if (value < '0' || value > '9') &&
-			(value < 'a' || value > 'f') &&
-			(value < 'A' || value > 'F') {
-			return false
-		}
-	}
-	return true
-}
 
 type Repository interface {
 	CatchUp(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error)
@@ -141,7 +124,7 @@ func (r *repository) CatchUp(ctx context.Context, limit int, nowMS int64) (Catch
 	}
 	defer r.releaseCatchUp()
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return CatchUpResult{}, err
 	}
@@ -311,7 +294,7 @@ func (r *repository) RecordFailure(ctx context.Context, aggregateErr error, nowM
 	if sqliteutil.IsBusyError(aggregateErr) {
 		return nil
 	}
-	_, err := r.db.ExecContext(ctx, `update usage_hourly_aggregate_state set
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update usage_hourly_aggregate_state set
 		status = case
 			when status in ('clearing', 'backfilling') then status
 			when status = 'pending' and target_event_id > coverage_event_id then status
@@ -329,7 +312,7 @@ func (r *repository) State(ctx context.Context) (State, error) {
 }
 
 func (r *repository) LoadRows(ctx context.Context, filter Filter) ([]Row, State, bool, error) {
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, State{}, false, err
 	}

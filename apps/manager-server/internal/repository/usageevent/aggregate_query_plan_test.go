@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 func TestTopModelsQueryUsesTimestampIndexBeforePricingMaterialization(t *testing.T) {
@@ -21,13 +22,13 @@ func TestTopModelsQueryUsesTimestampIndexBeforePricingMaterialization(t *testing
 	}
 	// Preserve the original timestamp-only planner regression, then verify
 	// coexistence without pinning SQLite to one timestamp-leading index.
-	if _, err := db.Exec(`drop index ` + latencyCoverIndex); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `drop index `+latencyCoverIndex); err != nil {
 		t.Fatal(err)
 	}
 	t.Run("timestamp_only", func(t *testing.T) {
 		assertTopModelsTimestampPlan(t, db, "idx_usage_events_timestamp")
 	})
-	if _, err := db.Exec(latencyCoverDDL); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, latencyCoverDDL); err != nil {
 		t.Fatal(err)
 	}
 	t.Run("timestamp_and_latency_cover", func(t *testing.T) {

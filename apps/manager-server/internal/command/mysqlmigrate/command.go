@@ -5,6 +5,7 @@ package mysqlmigrate
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/database"
@@ -139,7 +141,13 @@ func copyTables(ctx context.Context, source, target *sql.DB, stdout io.Writer, c
 	if _, err := conn.ExecContext(ctx, "set foreign_key_checks=0"); err != nil {
 		return err
 	}
-	defer conn.ExecContext(context.Background(), "set foreign_key_checks=1")
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := conn.ExecContext(cleanup, "set foreign_key_checks=1"); err != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+	}()
 	// Preserve SQLite's high-water marks even when the highest raw rows were
 	// archived and deleted. Reusing these IDs would skip rollup ingestion.
 	sequences, err := source.QueryContext(ctx, "select name,seq from sqlite_sequence")
@@ -246,6 +254,14 @@ func copyTables(ctx context.Context, source, target *sql.DB, stdout io.Writer, c
 			return fmt.Errorf("row count mismatch in %s: source %d, target %d", name, count, copied)
 		}
 		fmt.Fprintf(stdout, "Copied %s: %d rows\n", name, count)
+	}
+	// SQLite has no hourly read models. Copying its shared state table must not
+	// erase destination-only seeds or import coverage for empty MySQL caches.
+	if _, err := tx.ExecContext(ctx, "delete from usage_monitoring_rollup_state where rollup_name in ('stats_hourly_v1','metadata_hourly_v1')"); err != nil {
+		return err
+	}
+	if err := mysqlrepo.EnsureAccelerationState(ctx, tx); err != nil {
+		return err
 	}
 	if err := checkLock(); err != nil {
 		return err

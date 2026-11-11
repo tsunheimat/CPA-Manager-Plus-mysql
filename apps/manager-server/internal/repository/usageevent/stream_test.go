@@ -15,6 +15,7 @@ import (
 	"time"
 
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
@@ -301,7 +302,7 @@ func TestCompatibleRowsByIDsFailsWhenSnapshotRowDisappears(t *testing.T) {
 		t.Fatalf("ordered ids: %v", err)
 	}
 	missingID := orderedIDs[0]
-	if _, err := db.ExecContext(ctx, "delete from usage_events where id = ?", missingID); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, db, "delete from usage_events where id = ?", missingID); err != nil {
 		t.Fatalf("delete snapshot row: %v", err)
 	}
 
@@ -679,7 +680,7 @@ func TestWriteFullExportJSONLRetainsRowsDeletedAfterSnapshot(t *testing.T) {
 			return
 		}
 		deleted = true
-		if _, err := db.Exec(`delete from usage_events where event_hash = ?`, events[0].EventHash); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_events where event_hash = ?`, events[0].EventHash); err != nil {
 			t.Fatalf("delete concurrent event: %v", err)
 		}
 	}}
@@ -790,7 +791,7 @@ func openCompatibleUsageStreamTestRepository(t *testing.T, sqliteOnly ...bool) (
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
-	return db, &repository{db: db}
+	return db, New(db).(*repository)
 }
 
 func writeAndDecodeCompatibleUsage(t *testing.T, ctx context.Context, repo *repository, limit int) usage.Payload {

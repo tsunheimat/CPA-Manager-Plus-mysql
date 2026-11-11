@@ -11,6 +11,7 @@ import (
 
 	quotasnapshotrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 func TestBackfillLegacySnapshotsBatchProcessesWholeGroupsAndResumes(t *testing.T) {
@@ -168,7 +169,7 @@ func TestQuotaReadersHideAttachedLegacyCodexWorkspaceRows(t *testing.T) {
 
 	legacyKey := "usage-account-history:3:codex-account:636F646578:776F726B73706163652D31"
 	scopeFingerprint := quotasnapshotrepo.ScopeFingerprint("all", "", nil)
-	observationResult, err := db.Exec(`insert into account_quota_observations (
+	observationResult, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_observations (
 		observation_hash, account_key, provider, source, source_observation_id,
 		inventory_scope_key, inventory_mode, observed_at_ms, window_count,
 		lifecycle_applied, created_at_ms
@@ -181,7 +182,7 @@ func TestQuotaReadersHideAttachedLegacyCodexWorkspaceRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read legacy observation id: %v", err)
 	}
-	windowResult, err := db.Exec(`insert into account_quota_windows (
+	windowResult, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_windows (
 		account_key, provider, provider_window_id, window_kind, window_mode,
 		model_scope_kind, model_scope_key, model_ids_json, scope_fingerprint,
 		inventory_scope_key, relationship_kind, container_provider_window_id,
@@ -197,7 +198,7 @@ func TestQuotaReadersHideAttachedLegacyCodexWorkspaceRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read legacy lifecycle window id: %v", err)
 	}
-	if _, err := db.Exec(`insert into account_quota_snapshots (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_snapshots (
 		observation_id, logical_window_id, account_key, provider, provider_window_id,
 		window_kind, window_mode, model_scope_kind, model_ids_json, scope_fingerprint,
 		source, source_observation_id, observed_at_ms, boundary_accuracy,
@@ -232,7 +233,7 @@ func TestQuotaReadersHideAttachedLegacyCodexWorkspaceRows(t *testing.T) {
 	}
 
 	memberKey := strings.Replace(legacyKey, ":codex-account:", ":codex-member:", 1)
-	memberWindowResult, err := db.Exec(`insert into account_quota_windows (
+	memberWindowResult, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_windows (
 		account_key, provider, provider_window_id, window_kind, window_mode,
 		model_scope_kind, model_scope_key, model_ids_json, scope_fingerprint,
 		inventory_scope_key, relationship_kind, container_provider_window_id,
@@ -275,7 +276,7 @@ func TestQuotaReadersHideLegacyCodexWorkspaceRowsWithoutProviderMetadata(t *test
 	t.Cleanup(func() { _ = db.Close() })
 
 	legacyKey := "usage-account-history:3:codex-account:636F646578:776F726B73706163652D31"
-	if _, err := db.Exec(`insert into account_quota_snapshots (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_snapshots (
 		account_key, provider, provider_window_id, window_kind, window_mode,
 		model_scope_kind, source, source_observation_id, observed_at_ms,
 		boundary_accuracy, used_percent, created_at_ms
@@ -383,7 +384,7 @@ func TestBackfillLegacySnapshotsBatchRepairsUnattachedSnapshotsForExistingObserv
 	if result.Processed != 1 || !result.Completed {
 		t.Fatalf("initial legacy observation result = %#v", result)
 	}
-	if _, err := db.Exec(`update account_quota_snapshots set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update account_quota_snapshots set
 		observation_id = null, logical_window_id = null, activation_id = null, cycle_id = null
 		where id = 1`); err != nil {
 		t.Fatalf("detach legacy snapshot from existing observation: %v", err)
@@ -420,7 +421,7 @@ func TestBackfillLegacySnapshotsBatchRollsBackLifecycleWhenProgressUpdateFails(t
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	seedLegacySnapshot(t, db, "account-1", "codex", "weekly", "weekly", "inspection", "group-1", 1000)
-	if _, err := db.Exec(`create trigger reject_legacy_migration_progress
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `create trigger reject_legacy_migration_progress
 		before update on usage_data_migrations
 		when new.name = 'quota_snapshot_lifecycle_v1'
 		begin select raise(abort, 'blocked progress update'); end`); err != nil {
@@ -446,7 +447,7 @@ func TestBackfillLegacySnapshotsBatchRollsBackLifecycleWhenProgressUpdateFails(t
 		t.Fatalf("lifecycle state committed without progress observations:%d windows:%d activations:%d cycles:%d", observations, windows, activations, cycles)
 	}
 
-	if _, err := db.Exec(`drop trigger reject_legacy_migration_progress`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `drop trigger reject_legacy_migration_progress`); err != nil {
 		t.Fatalf("drop progress failure trigger: %v", err)
 	}
 	result, err := quotasnapshotrepo.BackfillLegacySnapshotsBatch(context.Background(), db, 10)
@@ -502,7 +503,7 @@ func TestListCandidatesKeepsDistinctLegacyModelScopes(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	for index := 0; index < 9; index++ {
 		modelIDs := fmt.Sprintf(`["model-%d"]`, index)
-		if _, err := db.Exec(`insert into account_quota_snapshots (
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_snapshots (
 			account_key, provider, provider_window_id, window_kind, window_mode,
 			model_scope_kind, model_scope_key, model_ids_json, source,
 			source_observation_id, observed_at_ms, boundary_accuracy,
@@ -541,7 +542,7 @@ func seedLegacySnapshot(
 	observedAtMS int64,
 ) {
 	t.Helper()
-	if _, err := db.Exec(`insert into account_quota_snapshots (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into account_quota_snapshots (
 		account_key, provider, provider_window_id, window_kind, window_mode,
 		model_scope_kind, source, source_observation_id, observed_at_ms,
 		boundary_accuracy, duration_seconds, used_percent, remaining_percent,

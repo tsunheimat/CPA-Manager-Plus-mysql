@@ -17,6 +17,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/codexquota"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	monitoringrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
@@ -144,7 +145,7 @@ func TestRequestMonitoringProjectionTimestampIndexAvoidsTemporaryOrderBy(t *test
 	if err := db.RunDerivedStartupMaintenance(context.Background()); err != nil {
 		t.Fatalf("prepare monitoring projection indexes: %v", err)
 	}
-	if _, err := sqlDB.Exec(`with recursive ids(event_id) as (
+	if _, err := sqlwrite.ExecContext(context.Background(), sqlDB, `with recursive ids(event_id) as (
 		select 1
 		union all
 		select event_id + 1 from ids where event_id < 100000
@@ -185,7 +186,7 @@ func TestRequestMonitoringProjectionTimestampIndexAvoidsTemporaryOrderBy(t *test
 		t.Fatalf("request monitoring plan with index uses temporary order by: %v", withIndex)
 	}
 
-	if _, err := sqlDB.Exec(`drop index idx_usage_monitoring_event_projection_timestamp`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), sqlDB, `drop index idx_usage_monitoring_event_projection_timestamp`); err != nil {
 		t.Fatalf("drop monitoring projection timestamp index: %v", err)
 	}
 	withoutIndex := explainMonitoringPlan(t, sqlDB, query, int64(1800000000000), int64(1800000200000), 100)
@@ -284,10 +285,10 @@ func TestUsageMonitoringProjectionPreservesRebuildStateAcrossFailure(t *testing.
 	}); err != nil {
 		t.Fatalf("insert projection rebuild events: %v", err)
 	}
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_monitoring_event_projection_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `delete from usage_monitoring_event_projection_v1`); err != nil {
 		t.Fatalf("clear projection rows: %v", err)
 	}
-	if _, err := sqlDB.ExecContext(ctx, `update usage_monitoring_rollup_state set
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `update usage_monitoring_rollup_state set
 		status = 'pending', backfill_last_event_id = 0, coverage_event_id = 0,
 		target_event_id = 2, processed_events = 0, last_error = null
 		where rollup_name = ?`, monitoringrepo.ProjectionRollupName); err != nil {
@@ -432,7 +433,7 @@ func TestAccountWindowProjectionMatchesRawAcrossCoverageTailAndIdentity(t *testi
 		t.Fatalf("partial coverage stats = %#v", projected)
 	}
 
-	if _, err := sqlDB.ExecContext(ctx, `update usage_monitoring_rollup_state set schema_version = 0 where rollup_name = ?`, monitoringrepo.ProjectionRollupName); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `update usage_monitoring_rollup_state set schema_version = 0 where rollup_name = ?`, monitoringrepo.ProjectionRollupName); err != nil {
 		t.Fatalf("invalidate projection schema: %v", err)
 	}
 	_, state, available, err := db.UsageMonitoringAccountWindowStats(ctx, windows)
@@ -869,7 +870,7 @@ func TestAccountWindowProjectionUsesDailyStatsWithEdgesAndRawTail(t *testing.T) 
 	}
 	catchUpMonitoringRepository(t, ctx, db)
 
-	if _, err := sqlDB.ExecContext(ctx, `update usage_monitoring_event_projection_v1
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `update usage_monitoring_event_projection_v1
 		set normalized_total_input_tokens = 999999
 		where event_id in (
 			select id from usage_events where event_hash in ('window-daily-full-a', 'window-daily-full-b')
@@ -972,7 +973,7 @@ func TestUsageMonitoringSearchIndexTracksProjectionInsertUpdateAndDelete(t *test
 		t.Fatalf("initial search count = %d, want 1", got)
 	}
 
-	if _, err := sqlDB.ExecContext(ctx, `update usage_monitoring_event_projection_v1
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `update usage_monitoring_event_projection_v1
 		set search_text = 'updated-marker' where event_id = ?`, eventID); err != nil {
 		t.Fatalf("update event projection search text: %v", err)
 	}
@@ -983,7 +984,7 @@ func TestUsageMonitoringSearchIndexTracksProjectionInsertUpdateAndDelete(t *test
 		t.Fatalf("updated search count = %d, want 1", got)
 	}
 
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_monitoring_event_projection_v1 where event_id = ?`, eventID); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `delete from usage_monitoring_event_projection_v1 where event_id = ?`, eventID); err != nil {
 		t.Fatalf("delete event projection: %v", err)
 	}
 	if got := countSearchEvents("updated-marker"); got != 0 {
@@ -1155,10 +1156,10 @@ func TestMigrationBackfillsSearchIndexForExistingProjection(t *testing.T) {
 	}
 	catchUpMonitoringRepository(t, ctx, db)
 
-	if _, err := sqlDB.ExecContext(ctx, `drop table usage_monitoring_event_search_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `drop table usage_monitoring_event_search_v1`); err != nil {
 		t.Fatalf("drop search index fixture: %v", err)
 	}
-	if _, err := sqlDB.ExecContext(ctx, `drop table usage_monitoring_search_index_state`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `drop table usage_monitoring_search_index_state`); err != nil {
 		t.Fatalf("drop search index state fixture: %v", err)
 	}
 	if err := sqliterepo.Migrate(sqlDB); err != nil {
@@ -1199,7 +1200,7 @@ func TestMigrationRebuildsSearchIndexWhenReadyStateSurvivesMissingIndex(t *testi
 	}
 	catchUpMonitoringRepository(t, ctx, db)
 
-	if _, err := sqlDB.ExecContext(ctx, `drop table usage_monitoring_event_search_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `drop table usage_monitoring_event_search_v1`); err != nil {
 		t.Fatalf("drop search index fixture: %v", err)
 	}
 	var ready int
@@ -1239,7 +1240,7 @@ func TestMigrationRecoversMissingStatsTableAfterRestart(t *testing.T) {
 	filter := store.AnalyticsFilter{FromMS: baseMS, ToMS: baseMS + testDayMS, IncludeFailed: true}
 	assertMonitoringReadersMatchRaw(t, ctx, db, filter)
 
-	if _, err := sqlDB.ExecContext(ctx, `drop table usage_monitoring_api_key_daily_rollups_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `drop table usage_monitoring_api_key_daily_rollups_v1`); err != nil {
 		t.Fatalf("drop API key stats table: %v", err)
 	}
 	if err := sqlDB.Close(); err != nil {
@@ -1279,7 +1280,7 @@ func TestMigrationRecoversMissingMetadataTableAfterRestart(t *testing.T) {
 	}
 	catchUpMonitoringRepository(t, ctx, db)
 
-	if _, err := sqlDB.ExecContext(ctx, `drop table usage_monitoring_header_latest_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `drop table usage_monitoring_header_latest_v1`); err != nil {
 		t.Fatalf("drop header metadata table: %v", err)
 	}
 	if err := sqlDB.Close(); err != nil {
@@ -1320,12 +1321,12 @@ func TestMigrationRecoversMissingProjectionAndClearsStaleSearchIndexAfterRestart
 		t.Fatalf("insert projection recovery event: %v", err)
 	}
 	catchUpMonitoringRepository(t, ctx, db)
-	if _, err := sqlDB.ExecContext(ctx, `update usage_monitoring_event_projection_v1 set search_text = 'staleprojectionmarker'`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `update usage_monitoring_event_projection_v1 set search_text = 'staleprojectionmarker'`); err != nil {
 		t.Fatalf("seed stale projection search text: %v", err)
 	}
 	assertSearchIndexCount(t, ctx, sqlDB, "staleprojectionmarker", 1)
 
-	if _, err := sqlDB.ExecContext(ctx, `drop table usage_monitoring_event_projection_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `drop table usage_monitoring_event_projection_v1`); err != nil {
 		t.Fatalf("drop event projection table: %v", err)
 	}
 	if err := sqlDB.Close(); err != nil {
@@ -1360,7 +1361,7 @@ func TestMigrationRecoversMissingStatsStateWithoutDoubleCounting(t *testing.T) {
 		t.Fatalf("insert stats state recovery event: %v", err)
 	}
 	catchUpMonitoringRepository(t, ctx, db)
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_monitoring_rollup_state where rollup_name = ?`, monitoringrepo.StatsRollupName); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `delete from usage_monitoring_rollup_state where rollup_name = ?`, monitoringrepo.StatsRollupName); err != nil {
 		t.Fatalf("delete stats rollup state: %v", err)
 	}
 	if err := sqlDB.Close(); err != nil {
@@ -1617,7 +1618,7 @@ func TestUsageMonitoringStatsFailureDoesNotAdvanceCheckpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert pending event: %v", err)
 	}
-	if _, err := sqlDB.Exec(`drop table usage_monitoring_api_key_daily_rollups_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), sqlDB, `drop table usage_monitoring_api_key_daily_rollups_v1`); err != nil {
 		t.Fatalf("drop api key rollup table: %v", err)
 	}
 	if _, err := db.CatchUpUsageMonitoringStats(ctx, 1000, time.Now().UnixMilli()); err == nil {
@@ -1946,7 +1947,7 @@ func TestUsageMonitoringEventPaginationSkipsDeletedProjectionRows(t *testing.T) 
 		t.Fatalf("insert archived page events: %v", err)
 	}
 	catchUpMonitoringRepository(t, ctx, db)
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_events where event_hash in (?, ?)`,
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `delete from usage_events where event_hash in (?, ?)`,
 		events[4].EventHash, events[2].EventHash); err != nil {
 		t.Fatalf("delete archived page raw rows: %v", err)
 	}
@@ -1968,7 +1969,7 @@ func TestUsageMonitoringMetadataBackfillRefreshesHistoricalHeadersWithoutReset(t
 	sqlDB, db := newMonitoringRepositoryStore(t)
 	ctx := context.Background()
 	baseMS := int64(1_800_057_600_000)
-	if _, err := sqlDB.ExecContext(ctx, `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, model, auth_index,
 		source, source_hash, account_snapshot, auth_file_snapshot,
 		auth_provider_snapshot, failed, header_quota_plan_type, raw_json,
@@ -2077,7 +2078,7 @@ func TestUsageMonitoringMetadataBackfillRollsBackEventWhenProjectionRefreshFails
 	sqlDB, db := newMonitoringRepositoryStore(t)
 	ctx := context.Background()
 	baseMS := int64(1_800_057_600_000)
-	if _, err := sqlDB.ExecContext(ctx, `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, model, auth_index,
 		source, source_hash, account_snapshot, auth_file_snapshot,
 		auth_provider_snapshot, failed, raw_json, created_at_ms
@@ -2099,7 +2100,7 @@ func TestUsageMonitoringMetadataBackfillRollsBackEventWhenProjectionRefreshFails
 	); err != nil {
 		t.Fatalf("insert legacy event: %v", err)
 	}
-	if _, err := sqlDB.ExecContext(ctx, `drop table usage_monitoring_event_projection_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `drop table usage_monitoring_event_projection_v1`); err != nil {
 		t.Fatalf("drop event projection: %v", err)
 	}
 	updated, err := db.BackfillUsageResponseMetadata(ctx, 10)
@@ -2124,7 +2125,7 @@ func TestUsageMonitoringMetadataBackfillOlderEventDoesNotReplaceLatestHeader(t *
 	ctx := context.Background()
 	baseMS := int64(1_800_057_600_000)
 	olderMS := baseMS + testDayMS
-	if _, err := sqlDB.ExecContext(ctx, `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, model, auth_index,
 		source, source_hash, account_snapshot, auth_file_snapshot,
 		auth_provider_snapshot, failed, header_quota_plan_type, raw_json,

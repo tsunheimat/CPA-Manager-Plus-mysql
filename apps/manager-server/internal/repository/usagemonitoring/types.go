@@ -25,12 +25,31 @@ type HeaderSnapshot = usageevent.HeaderSnapshot
 type AccountWindowUsageQuery = usageevent.AccountWindowUsageQuery
 type AccountWindowModelStat = usageevent.AccountWindowModelStat
 
+// StatsBuildVersion versions the statistics algorithm independently of the
+// retained projection schema and the pricing structure. Version 2 repairs
+// historical raw-only rebuilds and success/failure grouping.
+const StatsBuildVersion = "stats-build-2"
+
+// StatsStructureRevision binds a statistics generation to both its build
+// algorithm and the pricing structure. Numeric rate edits do not change it.
+func StatsStructureRevision(pricingRevision string) string {
+	return StatsBuildVersion + ":" + pricingRevision
+}
+
+func CurrentStatsStructureRevision(ctx context.Context, db usagepricing.RowQuerier) (string, error) {
+	revision, err := usagepricing.StructureRevision(ctx, db)
+	if err != nil {
+		return "", err
+	}
+	return StatsStructureRevision(revision), nil
+}
+
 func currentStructureRevision(ctx context.Context, db usagepricing.RowQuerier) (string, error) {
-	return usagepricing.StructureRevision(ctx, db)
+	return CurrentStatsStructureRevision(ctx, db)
 }
 
 func floorDayMS(value int64) int64 {
-	return value - value%dayMS
+	return floorIntervalMS(value, dayMS)
 }
 
 func ceilDayMS(value int64) int64 {

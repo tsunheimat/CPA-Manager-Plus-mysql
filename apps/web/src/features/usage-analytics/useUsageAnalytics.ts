@@ -1,13 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useMonitoringAnalytics } from '@/features/monitoring/hooks/useMonitoringAnalytics';
+import {
+  createMonitoringAnalyticsScheduler,
+  useMonitoringAnalytics,
+} from '@/features/monitoring/hooks/useMonitoringAnalytics';
+import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
+import {
+  analyticsSectionState,
+  buildUsageAnalyticsSections,
+  currentAnalyticsData,
+  mergeUsageAnalyticsSections,
+} from './usageAnalyticsSections';
 import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
 import { buildApiKeyDisplayMap } from '@/features/monitoring/model/apiKeys';
 import { buildMonitoringAuthMetaMap } from '@/features/monitoring/model/authMeta';
 import { readString } from '@/features/monitoring/model/base';
 import type { MonitoringChannelMeta } from '@/features/monitoring/model/types';
 import { loadMonitoringMetaPayload } from '@/features/monitoring/services/monitoringMetaService';
-import { useConfigStore } from '@/stores';
+import { useAuthStore, useConfigStore } from '@/stores';
 import type { AuthFileItem } from '@/types/authFile';
 import type { CredentialInfo } from '@/types/sourceInfo';
 import { buildSourceInfoMap } from '@/utils/sourceResolver';
@@ -35,6 +45,7 @@ import {
   buildUsageAnalyticsFilterSelectorsInclude,
   buildUsageAnalyticsInclude,
   buildUsageTimeline,
+  canDrilldownUsageBucket,
   getSelectableApiKeyHash,
   getUsagePresentationRangeScopeKey,
   getUsageRangeBounds,
@@ -69,11 +80,13 @@ const API_KEY_TREND_SERIES_LIMIT = 4;
 type UsageAnalyticsMonitoringMeta = {
   authFiles: AuthFileItem[];
   channels: MonitoringChannelMeta[];
+  channelsLoaded: boolean;
 };
 
 const EMPTY_USAGE_ANALYTICS_MONITORING_META: UsageAnalyticsMonitoringMeta = {
   authFiles: [],
   channels: [],
+  channelsLoaded: false,
 };
 
 const getBrowserTimeZone = () => {
@@ -93,12 +106,24 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 }
 
 export function useUsageAnalytics() {
+  const availability = usePanelFeatureAvailability();
+  const progressive = (availability.analyticsSectionsVersion ?? 0) >= 1;
+  const scheduler = useMemo(() => createMonitoringAnalyticsScheduler(2), []);
+  const [refreshId, setRefreshId] = useState(0);
   const config = useConfigStore((state) => state.config);
+  const apiBase = useAuthStore((state) => state.apiBase);
+  const managementKey = useAuthStore((state) => state.managementKey);
+  const metadataScope = JSON.stringify([apiBase, managementKey]);
+  const metadataScopeRef = useRef(metadataScope);
+  metadataScopeRef.current = metadataScope;
   const { apiKeyAliases, loadApiKeyAliases } = useUsageData({ loadUsageEvents: false });
   const [monitoringMeta, setMonitoringMeta] = useState<UsageAnalyticsMonitoringMeta>(
     EMPTY_USAGE_ANALYTICS_MONITORING_META
   );
   const [monitoringMetaError, setMonitoringMetaError] = useState('');
+  const [monitoringMetaLoading, setMonitoringMetaLoading] = useState(true);
+  const [monitoringMetaLoaded, setMonitoringMetaLoaded] = useState(false);
+  const monitoringMetaRequestId = useRef(0);
   const [searchParams, setSearchParams] = useSearchParams();
   const [initialUiState] = useState<UsageAnalyticsUiState>(() =>
     buildUsageAnalyticsUiStateFromSearchParams(searchParams, readUsageAnalyticsUiState())
@@ -130,34 +155,45 @@ export function useUsageAnalytics() {
     [apiKeyAliases, config?.apiKeys]
   );
   const loadMonitoringMeta = useCallback(async () => {
-    const payload = await loadMonitoringMetaPayload(config);
-    setMonitoringMeta((current) => ({
-      authFiles: payload.authFilesLoaded ? payload.authFiles : current.authFiles,
-      channels: payload.channelsLoaded ? payload.channels : current.channels,
-    }));
-    setMonitoringMetaError(payload.error);
-  }, [config]);
+    if (metadataScopeRef.current !== metadataScope) return;
+    const requestId = ++monitoringMetaRequestId.current;
+    setMonitoringMetaLoading(true);
+    setMonitoringMetaError('');
+    try {
+      const payload = await loadMonitoringMetaPayload(config);
+      if (
+        requestId !== monitoringMetaRequestId.current ||
+        metadataScopeRef.current !== metadataScope
+      )
+        return;
+      setMonitoringMeta((current) => ({
+        authFiles: payload.authFilesLoaded ? payload.authFiles : current.authFiles,
+        // Use configuration fallback until the first successful channel snapshot.
+        // Even an empty successful response is authoritative on later failures.
+        channels:
+          payload.channelsLoaded || !current.channelsLoaded ? payload.channels : current.channels,
+        channelsLoaded: payload.channelsLoaded || current.channelsLoaded,
+      }));
+      if (payload.authFilesLoaded || payload.channelsLoaded) setMonitoringMetaLoaded(true);
+      setMonitoringMetaError(payload.error);
+    } catch (error) {
+      if (requestId === monitoringMetaRequestId.current) {
+        setMonitoringMetaError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      if (requestId === monitoringMetaRequestId.current) setMonitoringMetaLoading(false);
+    }
+  }, [config, metadataScope]);
   useEffect(() => {
-    let cancelled = false;
-    loadMonitoringMetaPayload(config)
-      .then((payload) => {
-        if (cancelled) return;
-        setMonitoringMeta({
-          authFiles: payload.authFiles,
-          channels: payload.channels,
-        });
-        setMonitoringMetaError(payload.error);
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setMonitoringMeta(EMPTY_USAGE_ANALYTICS_MONITORING_META);
-          setMonitoringMetaError(error instanceof Error ? error.message : String(error));
-        }
-      });
+    setMonitoringMeta(EMPTY_USAGE_ANALYTICS_MONITORING_META);
+    setMonitoringMetaLoaded(false);
+  }, [metadataScope]);
+  useEffect(() => {
+    void loadMonitoringMeta();
     return () => {
-      cancelled = true;
+      monitoringMetaRequestId.current += 1;
     };
-  }, [config]);
+  }, [loadMonitoringMeta]);
   const authMetaMap = useMemo(
     () => buildMonitoringAuthMetaMap(monitoringMeta.authFiles),
     [monitoringMeta.authFiles]
@@ -260,25 +296,40 @@ export function useUsageAnalytics() {
       setSearchParams(nextParams, { replace: true });
     }
   }, [activeTabState, filters, searchParams, setSearchParams]);
-  const drilldownPreview = useMemo(() => {
-    if (selectedBucketMs === null) return null;
-    return {
-      fromMs: selectedBucketMs,
-      toMs:
-        selectedBucketMs + (resolvedGranularity === 'day' ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000),
-      limit: 12,
-    };
-  }, [resolvedGranularity, selectedBucketMs]);
+  // Bounds, now, timezone and refresh identity are shared by the actual POSTs, not
+  // merely a rounded presentation key. Optional responses never cross this fence.
+  const fetchGenerationKey = JSON.stringify({
+    bounds,
+    nowMs,
+    refreshId,
+    timeZone: browserTimeZone,
+    filters: analyticsFilters,
+    searchQuery: debouncedSearchQuery,
+    granularity: resolvedGranularity,
+  });
+  const selectorGenerationKey = JSON.stringify({
+    bounds,
+    nowMs,
+    refreshId,
+    timeZone: browserTimeZone,
+    searchQuery: debouncedSearchQuery,
+  });
+  const sectionIncludes = useMemo(
+    () => buildUsageAnalyticsSections(activeTabState, resolvedGranularity),
+    [activeTabState, resolvedGranularity]
+  );
   const include = useMemo(
-    () => buildUsageAnalyticsInclude(activeTabState, resolvedGranularity, drilldownPreview),
-    [activeTabState, drilldownPreview, resolvedGranularity]
+    () =>
+      progressive
+        ? sectionIncludes.core
+        : buildUsageAnalyticsInclude(activeTabState, resolvedGranularity),
+    [activeTabState, progressive, resolvedGranularity, sectionIncludes]
   );
   const dataScopeKey = useMemo(
     () =>
       JSON.stringify({
         activeTab: activeTabState,
         presentationRangeScopeKey,
-        drilldownPreview,
         filters: analyticsFilters,
         granularity: resolvedGranularity,
         searchQuery: debouncedSearchQuery,
@@ -288,12 +339,16 @@ export function useUsageAnalytics() {
       analyticsFilters,
       presentationRangeScopeKey,
       debouncedSearchQuery,
-      drilldownPreview,
       resolvedGranularity,
     ]
   );
 
   const analytics = useMonitoringAnalytics({
+    enabled: !availability.checking,
+    fetchGenerationKey,
+    scheduler,
+    priority: 0,
+    timeZone: browserTimeZone,
     fromMs: bounds?.fromMs,
     toMs: bounds?.toMs,
     nowMs,
@@ -301,6 +356,82 @@ export function useUsageAnalytics() {
     searchQuery: debouncedSearchQuery,
     filters: analyticsFilters,
     include,
+    throttleMs: 0,
+  });
+
+  const coreData = currentAnalyticsData(analytics);
+  const hasDimensions = Object.keys(sectionIncludes.dimensions).length > 1;
+  const hasExact = Boolean(sectionIncludes.exact.percentiles);
+  const dimensionsAnalytics = useMonitoringAnalytics({
+    enabled: progressive && !availability.checking && hasDimensions,
+    fromMs: bounds?.fromMs,
+    toMs: bounds?.toMs,
+    nowMs,
+    fetchGenerationKey,
+    scheduler,
+    priority: 2,
+    timeZone: browserTimeZone,
+    searchQuery: debouncedSearchQuery,
+    filters: analyticsFilters,
+    include: sectionIncludes.dimensions,
+    throttleMs: 0,
+  });
+  const exactAnalytics = useMonitoringAnalytics({
+    enabled: progressive && Boolean(coreData?.summary) && hasExact,
+    fromMs: bounds?.fromMs,
+    toMs: bounds?.toMs,
+    nowMs,
+    fetchGenerationKey,
+    scheduler,
+    priority: 1,
+    timeZone: browserTimeZone,
+    searchQuery: debouncedSearchQuery,
+    filters: analyticsFilters,
+    include: sectionIncludes.exact,
+    throttleMs: 0,
+  });
+  const previewBucket = useMemo(() => {
+    if (selectedBucketMs === null || (activeTabState !== 'overview' && activeTabState !== 'trends'))
+      return null;
+    return (
+      adaptUsageAnalyticsData(
+        coreData,
+        resolvedGranularity,
+        '',
+        undefined,
+        undefined,
+        bounds
+      ).timeline.find((point) => point.bucketMs === selectedBucketMs) ?? null
+    );
+  }, [activeTabState, bounds, coreData, resolvedGranularity, selectedBucketMs]);
+  const previewEnabled = canDrilldownUsageBucket(previewBucket);
+  const previewInclude = useMemo(
+    () => ({
+      granularity: resolvedGranularity,
+      ...(previewEnabled && previewBucket
+        ? {
+            drilldown_preview: {
+              from_ms: Math.max(previewBucket.bucketMs, bounds?.fromMs ?? previewBucket.bucketMs),
+              to_ms: Math.min(previewBucket.bucketEndMs, bounds?.toMs ?? previewBucket.bucketEndMs),
+              limit: 12,
+            },
+          }
+        : {}),
+    }),
+    [bounds, previewBucket, previewEnabled, resolvedGranularity]
+  );
+  const previewAnalytics = useMonitoringAnalytics({
+    enabled: previewEnabled,
+    fromMs: bounds?.fromMs,
+    toMs: bounds?.toMs,
+    nowMs,
+    fetchGenerationKey,
+    scheduler,
+    priority: 0,
+    timeZone: browserTimeZone,
+    searchQuery: debouncedSearchQuery,
+    filters: analyticsFilters,
+    include: previewInclude,
     throttleMs: 0,
   });
 
@@ -314,6 +445,11 @@ export function useUsageAnalytics() {
     [presentationRangeScopeKey, debouncedSearchQuery]
   );
   const filterSelectorsAnalytics = useMonitoringAnalytics({
+    enabled: !availability.checking,
+    fetchGenerationKey: selectorGenerationKey,
+    scheduler,
+    priority: 3,
+    timeZone: browserTimeZone,
     fromMs: bounds?.fromMs,
     toMs: bounds?.toMs,
     nowMs,
@@ -346,6 +482,10 @@ export function useUsageAnalytics() {
     [analyticsFilters, debouncedSearchQuery, selectedHeatmapDate]
   );
   const heatmapDateAnalytics = useMonitoringAnalytics({
+    enabled: !availability.checking,
+    fetchGenerationKey,
+    scheduler,
+    timeZone: browserTimeZone,
     fromMs: selectedHeatmapDate?.fromMs,
     toMs: selectedHeatmapDate?.toMs,
     nowMs,
@@ -356,10 +496,19 @@ export function useUsageAnalytics() {
     throttleMs: 0,
   });
 
-  const analyticsData = analytics.dataStale ? null : analytics.data;
-  const filterSelectorsData = filterSelectorsAnalytics.dataStale
-    ? null
-    : filterSelectorsAnalytics.data;
+  const dimensionsData = currentAnalyticsData(dimensionsAnalytics);
+  const exactData = currentAnalyticsData(exactAnalytics);
+  const previewData = currentAnalyticsData(previewAnalytics);
+  const analyticsData = useMemo(
+    () =>
+      progressive
+        ? mergeUsageAnalyticsSections(coreData, dimensionsData, exactData, previewData)
+        : coreData
+          ? { ...coreData, drilldown_preview: previewData?.drilldown_preview }
+          : null,
+    [coreData, dimensionsData, exactData, previewData, progressive]
+  );
+  const filterSelectorsData = currentAnalyticsData(filterSelectorsAnalytics);
   const timelineBounds = include.timeline ? bounds : null;
   const adapted = useMemo(
     () =>
@@ -424,6 +573,10 @@ export function useUsageAnalytics() {
     ]
   );
   const apiKeyTrendAnalytics = useMonitoringAnalytics({
+    enabled: !availability.checking,
+    fetchGenerationKey,
+    scheduler,
+    timeZone: browserTimeZone,
     fromMs:
       (activeTabState === 'overview' || activeTabState === 'trends') && apiKeyTrendHashes.length > 0
         ? bounds?.fromMs
@@ -451,11 +604,9 @@ export function useUsageAnalytics() {
     [apiKeyDisplayMap, heatmapDateData]
   );
   const heatmapDetailSource = selectedHeatmapDate ? heatmapDateRows : adapted.heatmap;
-  const heatmapDateRefreshing = Boolean(
-    selectedHeatmapDate &&
-    (heatmapDateAnalytics.loading ||
-      heatmapDateAnalytics.dataStale ||
-      (!heatmapDateAnalytics.data && !heatmapDateAnalytics.error))
+  const heatmapDateSection = analyticsSectionState(
+    heatmapDateAnalytics,
+    Boolean(selectedHeatmapDate)
   );
   const summaryDelta = useMemo(
     () => buildUsageSummaryDelta(adapted.summary, adapted.summaryComparison),
@@ -505,19 +656,22 @@ export function useUsageAnalytics() {
             trendMetric,
             API_KEY_TREND_SERIES_LIMIT
           )
-        : buildEntityTrendSeries(
-            apiKeyTrendRows,
-            adapted.timeline,
-            trendMetric,
-            API_KEY_TREND_SERIES_LIMIT,
-            adapted.apiKeyRows
-          ),
+        : progressive
+          ? []
+          : buildEntityTrendSeries(
+              apiKeyTrendRows,
+              adapted.timeline,
+              trendMetric,
+              API_KEY_TREND_SERIES_LIMIT,
+              adapted.apiKeyRows
+            ),
     [
       apiKeyTimeline,
       apiKeyTrendRows,
       adapted.apiKeyRows,
       adapted.timeline,
       hasExactAPIKeyTimeline,
+      progressive,
       trendMetric,
     ]
   );
@@ -533,8 +687,9 @@ export function useUsageAnalytics() {
     () => ({
       granularity: resolvedGranularity,
       timeline: true,
+      ...(progressive ? { timeline_profile: 'core' as const } : {}),
     }),
-    [resolvedGranularity]
+    [progressive, resolvedGranularity]
   );
   const selectedApiKeyTimelineDataScopeKey = useMemo(
     () =>
@@ -556,6 +711,10 @@ export function useUsageAnalytics() {
     ]
   );
   const selectedApiKeyTimelineAnalytics = useMonitoringAnalytics({
+    enabled: !availability.checking,
+    fetchGenerationKey,
+    scheduler,
+    timeZone: browserTimeZone,
     fromMs: activeTabState === 'apiKeys' && selectedApiKeyFilterHash ? bounds?.fromMs : undefined,
     toMs: activeTabState === 'apiKeys' && selectedApiKeyFilterHash ? bounds?.toMs : undefined,
     nowMs,
@@ -611,6 +770,10 @@ export function useUsageAnalytics() {
     ]
   );
   const selectedCredentialTimelineAnalytics = useMonitoringAnalytics({
+    enabled: !availability.checking,
+    fetchGenerationKey,
+    scheduler,
+    timeZone: browserTimeZone,
     fromMs:
       activeTabState === 'credentials' && selectedCredentialFilterID ? bounds?.fromMs : undefined,
     toMs: activeTabState === 'credentials' && selectedCredentialFilterID ? bounds?.toMs : undefined,
@@ -754,34 +917,74 @@ export function useUsageAnalytics() {
   }, []);
 
   const refresh = useCallback(() => {
+    // Changing the generation schedules each hook exactly once. Calling refresh()
+    // as well would send both the old bounds and the new bounds on a rolling range.
     setNowMs(Date.now());
+    setRefreshId((id) => id + 1);
     void loadApiKeyAliases();
     void loadMonitoringMeta();
-    void analytics.refresh({ force: true });
-    void filterSelectorsAnalytics.refresh({ force: true });
-    if (selectedApiKeyTimelineAnalytics.enabled) {
-      void selectedApiKeyTimelineAnalytics.refresh({ force: true });
-    }
-    if (apiKeyTrendAnalytics.enabled) {
-      void apiKeyTrendAnalytics.refresh({ force: true });
-    }
-    if (selectedCredentialTimelineAnalytics.enabled) {
-      void selectedCredentialTimelineAnalytics.refresh({ force: true });
-    }
-    if (selectedHeatmapDate) {
-      void heatmapDateAnalytics.refresh({ force: true });
-    }
-  }, [
-    analytics,
-    apiKeyTrendAnalytics,
-    filterSelectorsAnalytics,
-    heatmapDateAnalytics,
-    loadApiKeyAliases,
-    loadMonitoringMeta,
-    selectedApiKeyTimelineAnalytics,
-    selectedCredentialTimelineAnalytics,
-    selectedHeatmapDate,
-  ]);
+  }, [loadApiKeyAliases, loadMonitoringMeta]);
+
+  const exactComplete =
+    !progressive ||
+    Boolean(
+      exactData?.percentiles?.timeline &&
+      (activeTabState !== 'overview' || exactData.percentiles.summary)
+    );
+  const sections = {
+    core: {
+      ...analyticsSectionState(
+        analytics,
+        Boolean(bounds) && !availability.checking,
+        Boolean(coreData?.summary)
+      ),
+      retry: refresh,
+    },
+    dimensions: analyticsSectionState(progressive ? dimensionsAnalytics : analytics, hasDimensions),
+    exact: analyticsSectionState(progressive ? exactAnalytics : analytics, hasExact, exactComplete),
+    anomalies: analyticsSectionState(
+      progressive ? exactAnalytics : analytics,
+      hasExact,
+      exactComplete
+    ),
+    selectors: analyticsSectionState(
+      filterSelectorsAnalytics,
+      Boolean(bounds),
+      Boolean(filterSelectorsData?.filter_options)
+    ),
+    preview: analyticsSectionState(
+      previewAnalytics,
+      previewEnabled,
+      Boolean(previewData?.drilldown_preview)
+    ),
+    trends: analyticsSectionState(apiKeyTrendAnalytics, apiKeyTrendHashes.length > 0),
+    apiKeyTrend: analyticsSectionState(
+      selectedApiKeyTimelineAnalytics,
+      activeTabState === 'apiKeys' && Boolean(selectedApiKeyFilterHash)
+    ),
+    credentialTrend: analyticsSectionState(
+      selectedCredentialTimelineAnalytics,
+      activeTabState === 'credentials' && Boolean(selectedCredentialFilterID)
+    ),
+    heatmapDate: heatmapDateSection,
+    metadata: {
+      enabled: true,
+      loading: monitoringMetaLoading,
+      loaded: monitoringMetaLoaded,
+      stale: monitoringMetaLoaded && Boolean(monitoringMetaError || monitoringMetaLoading),
+      error: monitoringMetaError,
+      retry: () => {
+        void loadMonitoringMeta();
+      },
+    },
+  };
+  if (progressive && !sections.core.loaded && !sections.core.loading) {
+    // A failed prerequisite is unavailable, not an exact request still running.
+    sections.exact.loading = false;
+    sections.anomalies.loading = false;
+    sections.exact.retry = refresh;
+    sections.anomalies.retry = refresh;
+  }
 
   return {
     filters,
@@ -792,8 +995,11 @@ export function useUsageAnalytics() {
     setActiveTab,
     bounds,
     resolvedGranularity,
-    loading: analytics.loading,
-    error: analytics.error || monitoringMetaError,
+    progressive,
+    fetchGenerationKey,
+    sections,
+    loading: analytics.loading || availability.checking,
+    error: analytics.error,
     enabled: analytics.enabled,
     apiKeyDisplayMap,
     unavailableReason: analytics.unavailableReason,
@@ -816,7 +1022,7 @@ export function useUsageAnalytics() {
     heatmapDateOptions,
     selectedHeatmapDateKey: activeHeatmapDateKey,
     selectHeatmapDate,
-    heatmapDateLoading: heatmapDateRefreshing,
+    heatmapDateLoading: heatmapDateSection.loading,
     heatmapDateLoaded: Boolean(heatmapDateData),
     heatmapDateError: selectedHeatmapDate ? heatmapDateAnalytics.error : '',
     selectedHeatmapCell,

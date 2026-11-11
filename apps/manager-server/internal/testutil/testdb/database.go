@@ -17,12 +17,14 @@ import (
 	mysqldriver "github.com/go-sql-driver/mysql"
 	mysqlrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 var paths = struct {
 	sync.Mutex
-	dsn map[string]string
-}{dsn: map[string]string{}}
+	dsn   map[string]string
+	pools map[*sql.DB]string
+}{dsn: map[string]string{}, pools: map[*sql.DB]string{}}
 
 func MySQL() bool { return os.Getenv("CPA_TEST_MYSQL_DSN") != "" }
 
@@ -38,7 +40,48 @@ func Open(t testing.TB, path string) (*sql.DB, error) {
 	if !MySQL() {
 		return sqliterepo.Open(path)
 	}
-	return mysqlrepo.Open(context.Background(), DSN(t, path))
+	dsn := DSN(t, path)
+	db, err := mysqlrepo.Open(context.Background(), dsn)
+	if err != nil {
+		return nil, err
+	}
+	paths.Lock()
+	paths.pools[db] = dsn
+	paths.Unlock()
+	t.Cleanup(func() {
+		paths.Lock()
+		delete(paths.pools, db)
+		paths.Unlock()
+	})
+	return db, nil
+}
+
+// Admin is an explicitly native administrative TEST connection for fixture DDL
+// such as compound CREATE TRIGGER bodies. Runtime pools keep their multi-statement
+// guard. Only pools registered by Open can resolve an isolated schema; never fall
+// back to the environment's base DSN or silently skip a fixture. SQLite uses its
+// existing test connection. The caller's testing scope closes the native pool.
+func Admin(t testing.TB, db *sql.DB) *sql.DB {
+	t.Helper()
+	if !mysqlrepo.IsMySQL(db) {
+		return db
+	}
+	admin, err := openFixtureAdmin(context.Background(), db, mysqlrepo.OpenNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = admin.Close() })
+	return admin
+}
+
+func openFixtureAdmin(ctx context.Context, db *sql.DB, open func(context.Context, string) (*sql.DB, error)) (*sql.DB, error) {
+	paths.Lock()
+	dsn, ok := paths.pools[db]
+	paths.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("administrative fixture connection requires a pool opened by testdb.Open")
+	}
+	return open(ctx, dsn)
 }
 
 func DSN(t testing.TB, path string) string {
@@ -132,7 +175,7 @@ func ExecScript(ctx context.Context, db *sql.DB, script string, args ...any) (sq
 			return nil, fmt.Errorf("fixture SQL argument count mismatch")
 		}
 		var err error
-		result, err = db.ExecContext(ctx, statement, args[:bindings]...)
+		result, err = sqlwrite.ExecContext(ctx, db, statement, args[:bindings]...)
 		if err != nil {
 			return nil, err
 		}

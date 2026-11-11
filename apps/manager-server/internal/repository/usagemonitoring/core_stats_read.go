@@ -33,88 +33,7 @@ func loadDailyAggregate(
 	revision string,
 	filter AnalyticsFilter,
 ) (Aggregate, error) {
-	var accumulator dailyAggregateAccumulator
-	fullStartMS := ceilDayMS(filter.FromMS)
-	fullEndMS := floorDayMS(filter.ToMS)
-	if fullStartMS >= fullEndMS {
-		if err := mergeProjectedAggregate(
-			ctx,
-			tx,
-			projectionCoverageEventID,
-			projectionComplete,
-			filter,
-			eventSourceOptions{},
-			&accumulator,
-		); err != nil {
-			return Aggregate{}, err
-		}
-		return accumulator.result(), nil
-	}
-
-	if err := mergeStoredAggregate(ctx, tx, revision, filter, fullStartMS, fullEndMS, &accumulator); err != nil {
-		return Aggregate{}, err
-	}
-	tailFilter := filter
-	tailFilter.FromMS = fullStartMS
-	tailFilter.ToMS = fullEndMS
-	if err := mergeProjectedAggregate(
-		ctx,
-		tx,
-		projectionCoverageEventID,
-		projectionComplete,
-		tailFilter,
-		eventSourceOptions{AfterID: state.CoverageEventID, UseAfter: true},
-		&accumulator,
-	); err != nil {
-		return Aggregate{}, err
-	}
-	markerFilter := tailFilter
-	if err := mergeProjectedAggregate(
-		ctx,
-		tx,
-		projectionCoverageEventID,
-		projectionComplete,
-		markerFilter,
-		eventSourceOptions{
-			MaxID:           state.CoverageEventID,
-			UseMax:          true,
-			CodexMarkerOnly: true,
-		},
-		&accumulator,
-	); err != nil {
-		return Aggregate{}, err
-	}
-	if filter.FromMS < fullStartMS {
-		edgeFilter := filter
-		edgeFilter.ToMS = fullStartMS
-		if err := mergeProjectedAggregate(
-			ctx,
-			tx,
-			projectionCoverageEventID,
-			projectionComplete,
-			edgeFilter,
-			eventSourceOptions{},
-			&accumulator,
-		); err != nil {
-			return Aggregate{}, err
-		}
-	}
-	if fullEndMS < filter.ToMS {
-		edgeFilter := filter
-		edgeFilter.FromMS = fullEndMS
-		if err := mergeProjectedAggregate(
-			ctx,
-			tx,
-			projectionCoverageEventID,
-			projectionComplete,
-			edgeFilter,
-			eventSourceOptions{},
-			&accumulator,
-		); err != nil {
-			return Aggregate{}, err
-		}
-	}
-	return accumulator.result(), nil
+	return (&repository{}).loadComposedAggregate(ctx, tx, state, true, projectionCoverageEventID, projectionComplete, revision, filter)
 }
 
 func mergeStoredAggregate(
@@ -126,7 +45,20 @@ func mergeStoredAggregate(
 	toMS int64,
 	accumulator *dailyAggregateAccumulator,
 ) error {
-	conditions, args := storedStatsConditions(filter, revision, fromMS, toMS)
+	return mergeStoredTableAggregate(ctx, tx, revision, filter, fromMS, toMS, accumulator, "usage_monitoring_account_daily_rollups_v1")
+}
+
+func mergeStoredTableAggregate(
+	ctx context.Context,
+	tx *sql.Tx,
+	revision string,
+	filter AnalyticsFilter,
+	fromMS int64,
+	toMS int64,
+	accumulator *dailyAggregateAccumulator,
+	table string,
+) error {
+	conditions, args := storedTableStatsConditions(filter, revision, fromMS, toMS, table)
 	return scanAggregateContribution(tx.QueryRowContext(ctx, `select
 		coalesce(sum(calls), 0),
 		coalesce(sum(case when failed = 0 then calls else 0 end), 0),
@@ -141,7 +73,7 @@ func mergeStoredAggregate(
 		coalesce(sum(zero_token_calls), 0),
 		coalesce(sum(latency_sum_ms), 0),
 		coalesce(sum(latency_samples), 0)
-	from usage_monitoring_account_daily_rollups_v1
+	from `+table+`
 	where `+strings.Join(conditions, " and "), args...), accumulator)
 }
 
@@ -251,63 +183,7 @@ func loadDailyModelStats(
 	revision string,
 	filter AnalyticsFilter,
 ) ([]ModelStat, error) {
-	grouped := map[dailyModelStatKey]*ModelStat{}
-	fullStartMS := ceilDayMS(filter.FromMS)
-	fullEndMS := floorDayMS(filter.ToMS)
-	if fullStartMS >= fullEndMS {
-		if err := mergeProjectedModelStats(ctx, tx, projectionCoverageEventID, projectionComplete, filter, eventSourceOptions{}, grouped); err != nil {
-			return nil, err
-		}
-		return sortedDailyModelStats(grouped), nil
-	}
-
-	if err := mergeStoredModelStats(ctx, tx, revision, filter, fullStartMS, fullEndMS, grouped); err != nil {
-		return nil, err
-	}
-	tailFilter := filter
-	tailFilter.FromMS = fullStartMS
-	tailFilter.ToMS = fullEndMS
-	if err := mergeProjectedModelStats(
-		ctx,
-		tx,
-		projectionCoverageEventID,
-		projectionComplete,
-		tailFilter,
-		eventSourceOptions{AfterID: state.CoverageEventID, UseAfter: true},
-		grouped,
-	); err != nil {
-		return nil, err
-	}
-	if err := mergeProjectedModelStats(
-		ctx,
-		tx,
-		projectionCoverageEventID,
-		projectionComplete,
-		tailFilter,
-		eventSourceOptions{
-			MaxID:           state.CoverageEventID,
-			UseMax:          true,
-			CodexMarkerOnly: true,
-		},
-		grouped,
-	); err != nil {
-		return nil, err
-	}
-	if filter.FromMS < fullStartMS {
-		edgeFilter := filter
-		edgeFilter.ToMS = fullStartMS
-		if err := mergeProjectedModelStats(ctx, tx, projectionCoverageEventID, projectionComplete, edgeFilter, eventSourceOptions{}, grouped); err != nil {
-			return nil, err
-		}
-	}
-	if fullEndMS < filter.ToMS {
-		edgeFilter := filter
-		edgeFilter.FromMS = fullEndMS
-		if err := mergeProjectedModelStats(ctx, tx, projectionCoverageEventID, projectionComplete, edgeFilter, eventSourceOptions{}, grouped); err != nil {
-			return nil, err
-		}
-	}
-	return sortedDailyModelStats(grouped), nil
+	return (&repository{}).loadComposedModelStats(ctx, tx, state, true, projectionCoverageEventID, projectionComplete, revision, filter)
 }
 
 func mergeStoredModelStats(
@@ -319,7 +195,20 @@ func mergeStoredModelStats(
 	toMS int64,
 	grouped map[dailyModelStatKey]*ModelStat,
 ) error {
-	conditions, args := storedStatsConditions(filter, revision, fromMS, toMS)
+	return mergeStoredTableModelStats(ctx, tx, revision, filter, fromMS, toMS, grouped, "usage_monitoring_account_daily_rollups_v1")
+}
+
+func mergeStoredTableModelStats(
+	ctx context.Context,
+	tx *sql.Tx,
+	revision string,
+	filter AnalyticsFilter,
+	fromMS int64,
+	toMS int64,
+	grouped map[dailyModelStatKey]*ModelStat,
+	table string,
+) error {
+	conditions, args := storedTableStatsConditions(filter, revision, fromMS, toMS, table)
 	rows, err := tx.QueryContext(ctx, `select
 		model, billing_model, pricing_model, context_threshold_tokens,
 		service_tier, sum(calls),
@@ -329,7 +218,7 @@ func mergeStoredModelStats(
 		sum(long_input_tokens), sum(long_output_tokens), sum(long_cached_tokens),
 		sum(long_cache_read_tokens), sum(long_cache_creation_tokens),
 		sum(total_tokens)
-	from usage_monitoring_account_daily_rollups_v1
+	from `+table+`
 	where `+strings.Join(conditions, " and ")+`
 	group by model, billing_model, pricing_model, context_threshold_tokens,
 		service_tier`, args...)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	modernsqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -115,7 +116,7 @@ func (r *repository) acquireRunOnce(
 	ownerID string,
 	leaseDuration time.Duration,
 ) (AcquireRunResult, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return AcquireRunResult{}, err
 	}
@@ -388,7 +389,7 @@ func (r *repository) HeartbeatRun(ctx context.Context, runID int64, ownerID stri
 		// timestamp captured before sqlite3_step could otherwise resurrect an
 		// already expired lease or return with substantially less lifetime than the
 		// heartbeat loop believes it renewed.
-		res, err := r.db.ExecContext(ctx, `update codex_inspection_leases set
+		res, err := sqlwrite.ExecContext(ctx, r.db, `update codex_inspection_leases set
 			heartbeat_at_ms = cast(unixepoch('subsec') * 1000 as integer),
 			lease_expires_at_ms = cast(unixepoch('subsec') * 1000 as integer) + ?
 			where id = 1 and run_id = ? and owner_id = ?
@@ -420,7 +421,7 @@ func (r *repository) UpdateRunProgress(ctx context.Context, run model.CodexInspe
 	}
 	return withSQLiteBusyRetry(ctx, func() error {
 		now := time.Now().UnixMilli()
-		res, err := r.db.ExecContext(ctx, `update codex_inspection_runs set
+		res, err := sqlwrite.ExecContext(ctx, r.db, `update codex_inspection_runs set
 			total_files = ?, probe_set_count = ?, sampled_count = ?, disabled_count = ?, enabled_count = ?,
 			delete_count = ?, disable_count = ?, enable_count = ?, reauth_count = ?, keep_count = ?,
 			settings_json = ?, updated_at_ms = ?
@@ -464,7 +465,7 @@ func (r *repository) UpdateRunProgress(ctx context.Context, run model.CodexInspe
 func (r *repository) MarkRunCancelling(ctx context.Context, runID int64, ownerID string, reason string) (bool, error) {
 	var changed bool
 	err := withSQLiteBusyRetry(ctx, func() error {
-		tx, err := r.db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 		if err != nil {
 			return err
 		}
@@ -513,7 +514,7 @@ func (r *repository) MarkRunCancelling(ctx context.Context, runID int64, ownerID
 
 func (r *repository) FinalizeRun(ctx context.Context, run model.CodexInspectionRun, ownerID string, finalLog *model.CodexInspectionLog) error {
 	return withSQLiteBusyRetry(ctx, func() error {
-		tx, err := r.db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 		if err != nil {
 			return err
 		}
@@ -572,7 +573,7 @@ func (r *repository) ForceFinalizeRun(ctx context.Context, run model.CodexInspec
 }
 
 func (r *repository) forceFinalizeRunOnce(ctx context.Context, run model.CodexInspectionRun, ownerID string, finalLog *model.CodexInspectionLog) error {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return err
 	}
@@ -659,7 +660,7 @@ func (r *repository) RecoverStaleRuns(ctx context.Context, nowMS int64, reason s
 	var recovered []model.CodexInspectionRun
 	err := withSQLiteBusyRetry(ctx, func() error {
 		recovered = recovered[:0]
-		tx, err := r.db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 		if err != nil {
 			return err
 		}

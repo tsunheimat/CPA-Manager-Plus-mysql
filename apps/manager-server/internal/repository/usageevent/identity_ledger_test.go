@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
@@ -52,7 +53,7 @@ func TestInsertBatchUsesIdentityLedgerAfterRawDeletion(t *testing.T) {
 		t.Fatalf("ledger row = id:%d timestamp:%d bucket:%d version:%d", rawEventID, ledgerTimestampMS, bucketMS, aggregateVersion)
 	}
 
-	if _, err := db.Exec(`delete from usage_events where event_hash = ?`, event.EventHash); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_events where event_hash = ?`, event.EventHash); err != nil {
 		t.Fatalf("delete raw event fixture: %v", err)
 	}
 	second, err := repo.InsertBatch(ctx, []usage.Event{event})
@@ -91,7 +92,7 @@ func TestInsertBatchBackfillsLedgerForLegacyDuplicate(t *testing.T) {
 		Model:       "gpt-test",
 		CreatedAtMS: timestampMS + 1,
 	}
-	if _, err := db.Exec(`insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, created_at_ms
 	) values (?, ?, ?, ?, ?)`, event.EventHash, event.TimestampMS, event.Timestamp, event.Model, originalCreatedAtMS); err != nil {
 		t.Fatalf("insert legacy raw event: %v", err)
@@ -132,7 +133,7 @@ func TestInsertBatchRollsBackIdentityClaimWhenRawInsertFails(t *testing.T) {
 		Model:       "gpt-test",
 		CreatedAtMS: timestampMS + 1,
 	}
-	if _, err := db.Exec(testdb.SQL(db, `create trigger reject_usage_event_insert before insert on usage_events
+	if _, err := sqlwrite.ExecContext(context.Background(), db, testdb.SQL(db, `create trigger reject_usage_event_insert before insert on usage_events
 		begin select raise(abort, 'blocked'); end`, `create trigger reject_usage_event_insert before insert on usage_events for each row signal sqlstate '45000' set message_text='blocked'`)); err != nil {
 		t.Fatalf("create failure trigger: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestInsertBatchRollsBackIdentityClaimWhenRawInsertFails(t *testing.T) {
 	if ledgerCount != 0 {
 		t.Fatalf("ledger claim survived raw insert rollback: count=%d", ledgerCount)
 	}
-	if _, err := db.Exec(`drop trigger reject_usage_event_insert`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `drop trigger reject_usage_event_insert`); err != nil {
 		t.Fatalf("drop failure trigger: %v", err)
 	}
 	result, err := repo.InsertBatch(ctx, []usage.Event{event})

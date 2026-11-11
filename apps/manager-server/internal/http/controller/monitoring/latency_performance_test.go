@@ -25,6 +25,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	adminauthsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/adminauth"
 	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	_ "modernc.org/sqlite"
 )
@@ -85,7 +86,7 @@ func TestLatencyCoveringIndexAPIExperiment(t *testing.T) {
 		}
 	}
 	// Keep the experiment's DDL timeout/WAL policy aligned with CPAMP.
-	if _, err := db.Exec(`pragma busy_timeout=5000`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `pragma busy_timeout=5000`); err != nil {
 		t.Fatal(err)
 	}
 	st, err := store.Open(path)
@@ -104,7 +105,7 @@ func TestLatencyCoveringIndexAPIExperiment(t *testing.T) {
 	}
 	exec := func(query string) {
 		t.Helper()
-		if _, err := db.Exec(query); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, query); err != nil {
 			t.Fatal(err)
 		}
 	}

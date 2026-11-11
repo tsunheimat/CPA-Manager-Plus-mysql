@@ -18,11 +18,21 @@ type Handler struct {
 }
 
 func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
+	r, requestID := middleware.EnsureRequestID(r)
+	w.Header().Set("X-Request-ID", requestID)
 	if !middleware.AuthorizePanel(w, r, h.App.AdminAuthService) {
 		return
 	}
 
 	path := strings.TrimRight(r.URL.Path, "/")
+	if path == "/v0/management/monitoring/analytics/diagnostics" {
+		if r.Method != http.MethodGet {
+			response.MethodNotAllowed(w)
+			return
+		}
+		response.JSON(w, http.StatusOK, h.App.MonitoringService.Diagnostics())
+		return
+	}
 	if path == "/v0/management/monitoring/header-snapshots" {
 		h.handleHeaderSnapshots(w, r)
 		return
@@ -54,9 +64,10 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.App.MonitoringService.Analytics(r.Context(), req)
+	ctx := monitoringsvc.WithRequestID(r.Context(), requestID)
+	result, err := h.App.MonitoringService.Analytics(ctx, req)
 	if err != nil {
-		response.Error(w, http.StatusInternalServerError, err)
+		response.AnalyticsError(w, err, requestID)
 		return
 	}
 	response.JSON(w, http.StatusOK, result)
@@ -140,6 +151,9 @@ func (h *Handler) handleHeaderSnapshots(w http.ResponseWriter, r *http.Request) 
 func validateRequest(req monitoringsvc.Request) error {
 	if req.FromMS <= 0 || req.ToMS <= 0 || req.FromMS >= req.ToMS {
 		return errors.New("from_ms and to_ms are required and from_ms must be less than to_ms")
+	}
+	if err := monitoringsvc.ValidateInclude(req.Include); err != nil {
+		return err
 	}
 	if req.Include.EventsPage != nil && req.Include.EventsPage.Limit > 50000 {
 		return errors.New("events_page.limit must be less than or equal to 50000")

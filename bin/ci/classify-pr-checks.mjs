@@ -47,13 +47,15 @@ const triggersFrontend = (filePath) =>
   filePath === '.github/dependabot.yml' ||
   filePath === 'eslint.config.js' ||
   filePath === 'bin/install-cpamp.sh' ||
+  filePath === 'bin/ci/bench-mysql-analytics.sh' ||
   startsWithPath(filePath, 'bin/release');
 
 const triggersManagerServer = (filePath) =>
   startsWithPath(filePath, 'apps/manager-server') ||
   filePath === 'bin/release/package-native.sh' ||
   filePath === 'bin/ci/test-mysql.sh' ||
-  filePath === 'bin/ci/test-mysql-recovery.sh';
+  filePath === 'bin/ci/test-mysql-recovery.sh' ||
+  filePath === 'bin/ci/bench-mysql-analytics.sh';
 
 const triggersNativeControl = (filePath) =>
   startsWithPath(filePath, 'bin/native') ||

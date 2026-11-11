@@ -10,6 +10,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	collectorservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -203,7 +204,7 @@ func writePartialConnectionRows(t *testing.T, dbPath string, managerCfg *store.M
 		if err != nil {
 			t.Fatalf("marshal manager config: %v", err)
 		}
-		if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values('manager_config_v1', ?, 1)
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into settings(key, value, updated_at_ms) values('manager_config_v1', ?, 1)
 			on conflict(key) do update set value = excluded.value`, string(data)); err != nil {
 			t.Fatalf("write manager config fixture: %v", err)
 		}
@@ -213,7 +214,7 @@ func writePartialConnectionRows(t *testing.T, dbPath string, managerCfg *store.M
 		if err != nil {
 			t.Fatalf("marshal setup: %v", err)
 		}
-		if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values('setup', ?, 1)
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into settings(key, value, updated_at_ms) values('setup', ?, 1)
 			on conflict(key) do update set value = excluded.value`, string(data)); err != nil {
 			t.Fatalf("write setup fixture: %v", err)
 		}

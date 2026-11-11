@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -20,14 +21,14 @@ func TestUsageCacheAccountingMigrationWorkerRunsBatchesBeforeCompletion(t *testi
 	st := store.New(rawDB)
 	t.Cleanup(func() { _ = st.Close() })
 	for _, hash := range []string{"legacy-1", "legacy-2"} {
-		if _, err := rawDB.Exec(`insert into usage_events (
+		if _, err := sqlwrite.ExecContext(context.Background(), rawDB, `insert into usage_events (
 			event_hash, timestamp_ms, timestamp, provider, model, input_tokens,
 			cached_tokens, created_at_ms
 		) values (?, 1, '1', 'openai', 'gpt-5', 100, 10, 1)`, hash); err != nil {
 			t.Fatalf("insert %s: %v", hash, err)
 		}
 	}
-	if _, err := rawDB.Exec(`update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(context.Background(), rawDB, `update usage_data_migrations set
 		status = 'discovering', last_event_id = 0, target_event_id = 0,
 		processed_rows = 0, changed_rows = 0, started_at_ms = null, updated_at_ms = 0,
 		finished_at_ms = null, last_error = null
@@ -104,7 +105,7 @@ func TestUsageCacheAccountingMigrationWorkerRediscoverSemanticsRevision(t *testi
 	t.Cleanup(func() { _ = st.Close() })
 
 	// 插入 Devin #838 历史错误数据
-	if _, err := rawDB.Exec(`insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), rawDB, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, executor_type, model, input_tokens,
 		cached_tokens, cache_read_tokens, cache_creation_tokens, total_tokens,
 		cache_input_mode, normalized_uncached_input_tokens, normalized_total_input_tokens,
@@ -117,7 +118,7 @@ func TestUsageCacheAccountingMigrationWorkerRediscoverSemanticsRevision(t *testi
 	}
 
 	// 模拟已处于 completed 状态，但 revision 为空
-	if _, err := rawDB.Exec(`update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(context.Background(), rawDB, `update usage_data_migrations set
 		status = 'completed', last_event_id = 1, target_event_id = 1,
 		processed_rows = 1, changed_rows = 0, applied_rows = 0,
 		started_at_ms = 1, updated_at_ms = 1, finished_at_ms = 1, last_error = null

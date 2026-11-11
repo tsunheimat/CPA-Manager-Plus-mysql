@@ -1,6 +1,7 @@
 package usagemonitoring
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -208,4 +209,32 @@ func normalizeLowerFilterValues(values []string) []string {
 		normalized[index] = strings.ToLower(value)
 	}
 	return normalized
+}
+
+func storedTableStatsConditions(filter AnalyticsFilter, revision string, fromMS, toMS int64, table string) ([]string, []any) {
+	conditions, args := storedStatsConditions(filter, revision, fromMS, toMS)
+	if strings.Contains(table, "_hourly_") {
+		conditions = append(conditions, "_revision_hash = ?")
+		args = append(args, revisionDigest(revision))
+		if keys := normalizeFilterValues(filter.APIKeyHashes); len(keys) > 0 {
+			if len(keys) <= 200 {
+				placeholders := make([]string, len(keys))
+				for i, key := range keys {
+					placeholders[i] = "?"
+					args = append(args, revisionDigest(key))
+				}
+				conditions = append(conditions, "_api_key_hash in ("+strings.Join(placeholders, ",")+")")
+			} else {
+				// Keep large scope lists to one binding, just like the full-value
+				// residual above. Decode the relation, not the indexed column.
+				digests := make([]string, len(keys))
+				for i, key := range keys {
+					digests[i] = hex.EncodeToString(revisionDigest(key))
+				}
+				conditions = append(conditions, "_api_key_hash in (select unhex(value) from json_each(?))")
+				args = append(args, encodeJSONFilterValues(digests))
+			}
+		}
+	}
+	return conditions, args
 }

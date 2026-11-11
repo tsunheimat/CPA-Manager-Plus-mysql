@@ -11,6 +11,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
@@ -115,7 +116,7 @@ func TestAcquireRunReclaimsExpiredLeaseAndInterruptsOldRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire first run: %v", err)
 	}
-	if _, err := db.Exec(`update codex_inspection_leases set heartbeat_at_ms = 0, lease_expires_at_ms = 0 where id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update codex_inspection_leases set heartbeat_at_ms = 0, lease_expires_at_ms = 0 where id = 1`); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 	second, err := repository.AcquireRun(context.Background(), newLifecycleTestRun(model.CodexInspectionTriggerManual, "manual"), "owner-b", time.Minute)
@@ -149,10 +150,10 @@ func TestAcquireRunDoesNotStrandReplacementWhenRecoveryLogFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire first run: %v", err)
 	}
-	if _, err := db.Exec(`update codex_inspection_leases set heartbeat_at_ms = 0, lease_expires_at_ms = 0 where id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update codex_inspection_leases set heartbeat_at_ms = 0, lease_expires_at_ms = 0 where id = 1`); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
-	if _, err := db.Exec(testdb.SQL(db, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs begin select raise(abort, 'forced recovery log failure'); end`, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs for each row signal sqlstate '45000' set message_text='forced recovery log failure'`)); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, testdb.SQL(db, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs begin select raise(abort, 'forced recovery log failure'); end`, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs for each row signal sqlstate '45000' set message_text='forced recovery log failure'`)); err != nil {
 		t.Fatalf("create log failure trigger: %v", err)
 	}
 
@@ -296,7 +297,7 @@ func TestFinalizeRunRejectsExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire run: %v", err)
 	}
-	if _, err := db.ExecContext(context.Background(), `update codex_inspection_leases set lease_expires_at_ms = 0 where id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update codex_inspection_leases set lease_expires_at_ms = 0 where id = 1`); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 	run := acquired.Run
@@ -344,7 +345,7 @@ func TestForceFinalizeRunRecoversExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire run: %v", err)
 	}
-	if _, err := db.ExecContext(context.Background(), `update codex_inspection_leases set lease_expires_at_ms = 0 where id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update codex_inspection_leases set lease_expires_at_ms = 0 where id = 1`); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 	run := acquired.Run
@@ -378,7 +379,7 @@ func TestForceFinalizeRunRequiresTheOriginalLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire run: %v", err)
 	}
-	if _, err := db.ExecContext(context.Background(), `delete from codex_inspection_leases where id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from codex_inspection_leases where id = 1`); err != nil {
 		t.Fatalf("delete lease: %v", err)
 	}
 	run := acquired.Run
@@ -469,7 +470,7 @@ func TestFinalizeRunRetriesRealSQLiteWriteLock(t *testing.T) {
 	t.Cleanup(func() { _ = locker.Close() })
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	if _, err := db.ExecContext(context.Background(), `pragma busy_timeout = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `pragma busy_timeout = 1`); err != nil {
 		t.Fatalf("set short busy timeout: %v", err)
 	}
 	repository := New(db)
@@ -522,7 +523,7 @@ func TestMarkRunCancellingRejectsExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire run: %v", err)
 	}
-	if _, err := db.ExecContext(context.Background(), `update codex_inspection_leases set lease_expires_at_ms = 0 where id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update codex_inspection_leases set lease_expires_at_ms = 0 where id = 1`); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 	if _, err := repository.MarkRunCancelling(context.Background(), acquired.Run.ID, "owner-a", "cancel"); !errors.Is(err, ErrLeaseLost) {
@@ -541,7 +542,7 @@ func TestHeartbeatRunCannotResurrectInterruptedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire run: %v", err)
 	}
-	if _, err := db.ExecContext(context.Background(), `update codex_inspection_runs set status = ?, finished_at_ms = ? where id = ?`, model.CodexInspectionStatusInterrupted, time.Now().UnixMilli(), acquired.Run.ID); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update codex_inspection_runs set status = ?, finished_at_ms = ? where id = ?`, model.CodexInspectionStatusInterrupted, time.Now().UnixMilli(), acquired.Run.ID); err != nil {
 		t.Fatalf("interrupt run: %v", err)
 	}
 	if err := repository.HeartbeatRun(context.Background(), acquired.Run.ID, "owner-a", time.Minute); !errors.Is(err, ErrLeaseLost) {
@@ -704,7 +705,7 @@ func TestUpdateRunProgressPreservesCancellingAndRejectsReclaimedLease(t *testing
 		t.Fatalf("stored cancelling progress = %#v found=%v err=%v", stored, found, err)
 	}
 
-	if _, err := db.ExecContext(context.Background(), `update codex_inspection_leases set lease_expires_at_ms = 0 where id = 1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update codex_inspection_leases set lease_expires_at_ms = 0 where id = 1`); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 	if _, err := repository.AcquireRun(
@@ -731,8 +732,7 @@ func TestGetActiveLeaseIgnoresUnboundLeaseRow(t *testing.T) {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.ExecContext(
-		context.Background(),
+	if _, err := sqlwrite.ExecContext(context.Background(), db,
 		`insert into codex_inspection_leases(id, run_id, owner_id, heartbeat_at_ms, lease_expires_at_ms) values (1, null, ?, ?, ?)`,
 		"owner-a",
 		time.Now().UnixMilli(),
@@ -752,8 +752,7 @@ func TestAcquireRunReclaimsUnboundLeaseRow(t *testing.T) {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.ExecContext(
-		context.Background(),
+	if _, err := sqlwrite.ExecContext(context.Background(), db,
 		`insert into codex_inspection_leases(id, run_id, owner_id, heartbeat_at_ms, lease_expires_at_ms) values (1, null, ?, ?, ?)`,
 		"orphan-owner",
 		time.Now().UnixMilli(),
@@ -786,7 +785,7 @@ func TestAcquireRunReclaimsLeaseBoundToTerminalRun(t *testing.T) {
 		t.Fatalf("create old run: %v", err)
 	}
 	finishedAt := old.FinishedAtMS
-	if _, err := db.ExecContext(context.Background(), `insert into codex_inspection_leases(id, run_id, owner_id, heartbeat_at_ms, lease_expires_at_ms) values (1, ?, ?, ?, ?)`, old.ID, "old-owner", finishedAt, finishedAt+time.Hour.Milliseconds()); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into codex_inspection_leases(id, run_id, owner_id, heartbeat_at_ms, lease_expires_at_ms) values (1, ?, ?, ?, ?)`, old.ID, "old-owner", finishedAt, finishedAt+time.Hour.Milliseconds()); err != nil {
 		t.Fatalf("insert orphaned terminal lease: %v", err)
 	}
 	acquired, err := repository.AcquireRun(context.Background(), newLifecycleTestRun(model.CodexInspectionTriggerManual, "replacement"), "new-owner", time.Minute)
@@ -810,8 +809,7 @@ func TestMarkRunCancellingRejectsUnboundLeaseRow(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	repository := New(db)
 	run := insertLifecycleTestRun(t, db, newLifecycleTestRun(model.CodexInspectionTriggerManual, "stale"))
-	if _, err := db.ExecContext(
-		context.Background(),
+	if _, err := sqlwrite.ExecContext(context.Background(), db,
 		`insert into codex_inspection_leases(id, run_id, owner_id, heartbeat_at_ms, lease_expires_at_ms) values (1, null, ?, ?, ?)`,
 		"owner-a",
 		time.Now().UnixMilli(),
@@ -878,7 +876,7 @@ func TestRecoverStaleRunsDoesNotRollBackWhenRecoveryLogFails(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	repository := New(db)
 	stale := insertLifecycleTestRun(t, db, newLifecycleTestRun(model.CodexInspectionTriggerManual, "stale-log-failure"))
-	if _, err := db.ExecContext(context.Background(), testdb.SQL(db, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs begin select raise(abort, 'forced recovery log failure'); end`, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs for each row signal sqlstate '45000' set message_text='forced recovery log failure'`)); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, testdb.SQL(db, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs begin select raise(abort, 'forced recovery log failure'); end`, `create trigger fail_codex_inspection_recovery_log before insert on codex_inspection_logs for each row signal sqlstate '45000' set message_text='forced recovery log failure'`)); err != nil {
 		t.Fatalf("create log failure trigger: %v", err)
 	}
 	_, err = repository.RecoverStaleRuns(context.Background(), time.Now().UnixMilli(), "服务重启或任务租约过期，巡检已中断")

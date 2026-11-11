@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
@@ -74,7 +75,7 @@ func (r *repository) Upsert(ctx context.Context, input model.AccountActionCandid
 		seenAt = now
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return model.AccountActionCandidate{}, err
 	}
@@ -421,7 +422,7 @@ func (r *repository) updateStatus(ctx context.Context, id int64, status string, 
 		query += ` and status = ?`
 		args = append(args, model.AccountActionStatusPending)
 	}
-	res, err := r.db.ExecContext(ctx, query, args...)
+	res, err := sqlwrite.ExecContext(ctx, r.db, query, args...)
 	if err != nil {
 		return model.AccountActionCandidate{}, err
 	}
@@ -436,7 +437,7 @@ func (r *repository) RecordFailure(ctx context.Context, id int64, reason string)
 	if id <= 0 {
 		return errors.New("candidate id is required")
 	}
-	_, err := r.db.ExecContext(ctx, `update account_action_candidates set last_error = ?, updated_at_ms = ? where id = ?`, nullString(reason), time.Now().UnixMilli(), id)
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update account_action_candidates set last_error = ?, updated_at_ms = ? where id = ?`, nullString(reason), time.Now().UnixMilli(), id)
 	return err
 }
 
@@ -447,7 +448,7 @@ func (r *repository) MarkAutoDisabled(ctx context.Context, id int64, disabledAtM
 	if disabledAtMS <= 0 {
 		disabledAtMS = time.Now().UnixMilli()
 	}
-	res, err := r.db.ExecContext(ctx, `update account_action_candidates set auto_disabled_at_ms = ?, last_error = null, updated_at_ms = ? where id = ? and status = ?`, disabledAtMS, disabledAtMS, id, model.AccountActionStatusPending)
+	res, err := sqlwrite.ExecContext(ctx, r.db, `update account_action_candidates set auto_disabled_at_ms = ?, last_error = null, updated_at_ms = ? where id = ? and status = ?`, disabledAtMS, disabledAtMS, id, model.AccountActionStatusPending)
 	if err != nil {
 		return err
 	}

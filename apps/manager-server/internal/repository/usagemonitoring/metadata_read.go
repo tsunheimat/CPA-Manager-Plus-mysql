@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -45,7 +46,7 @@ func (r *repository) LoadFilterOptions(ctx context.Context, filter AnalyticsFilt
 	if !SupportsEventProjectionFilter(filter) {
 		return FilterOptionValues{}, State{}, false, nil
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return FilterOptionValues{}, State{}, false, err
 	}
@@ -128,7 +129,7 @@ func (r *repository) LoadFilterSelectors(ctx context.Context, filter AnalyticsFi
 	if !SupportsEventProjectionFilter(filter) {
 		return FilterSelectorValues{}, State{}, false, nil
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return FilterSelectorValues{}, State{}, false, err
 	}
@@ -143,29 +144,8 @@ func (r *repository) LoadFilterSelectors(ctx context.Context, filter AnalyticsFi
 	}
 
 	grouped := map[selectorKey]*selectorRow{}
-	if state.SchemaVersion == SchemaVersion && SupportsSelectorFilter(filter) {
-		fullStartMS := ceilDayMS(filter.FromMS)
-		fullEndMS := floorDayMS(filter.ToMS)
-		if fullStartMS >= fullEndMS {
-			err = mergeProjectedSelectorRows(ctx, tx, projectionState.CoverageEventID, projectionComplete, filter, 0, false, grouped)
-		} else {
-			if err = mergeStoredSelectorRows(ctx, tx, fullStartMS, fullEndMS, grouped); err == nil {
-				tailFilter := filter
-				tailFilter.FromMS = fullStartMS
-				tailFilter.ToMS = fullEndMS
-				err = mergeProjectedSelectorRows(ctx, tx, projectionState.CoverageEventID, projectionComplete, tailFilter, state.CoverageEventID, true, grouped)
-			}
-			if err == nil && filter.FromMS < fullStartMS {
-				edgeFilter := filter
-				edgeFilter.ToMS = fullStartMS
-				err = mergeProjectedSelectorRows(ctx, tx, projectionState.CoverageEventID, projectionComplete, edgeFilter, 0, false, grouped)
-			}
-			if err == nil && fullEndMS < filter.ToMS {
-				edgeFilter := filter
-				edgeFilter.FromMS = fullEndMS
-				err = mergeProjectedSelectorRows(ctx, tx, projectionState.CoverageEventID, projectionComplete, edgeFilter, 0, false, grouped)
-			}
-		}
+	if SupportsSelectorFilter(filter) {
+		err = r.loadSelectorsComposed(ctx, tx, state, projectionState, projectionComplete, filter, grouped)
 	} else {
 		err = mergeProjectedSelectorRows(ctx, tx, projectionState.CoverageEventID, projectionComplete, filter, 0, false, grouped)
 	}
@@ -184,13 +164,29 @@ func mergeStoredSelectorRows(
 	fromMS, toMS int64,
 	grouped map[selectorKey]*selectorRow,
 ) error {
+	return mergeStoredSelectorTableRows(ctx, tx, fromMS, toMS, grouped, "usage_monitoring_selector_daily_rollups_v1")
+}
+
+func mergeStoredSelectorTableRows(
+	ctx context.Context,
+	tx *sql.Tx,
+	fromMS, toMS int64,
+	grouped map[selectorKey]*selectorRow,
+	table string,
+) error {
+	condition := ""
+	args := []any{usageidentity.ModelFormatVersion, fromMS, toMS}
+	if strings.Contains(table, "_hourly_") {
+		condition = " and _revision_hash = ?"
+		args = append(args, revisionDigest(usageidentity.ModelFormatVersion))
+	}
 	rows, err := tx.QueryContext(ctx, `select
 		model, api_key_hash, provider, auth_file_snapshot, account_snapshot,
 		auth_label_snapshot, auth_index, max(source), source_hash
-	from usage_monitoring_selector_daily_rollups_v1
-	where model_format_revision = ? and bucket_ms >= ? and bucket_ms < ?
+	from `+table+`
+	where model_format_revision = ? and bucket_ms >= ? and bucket_ms < ?`+condition+`
 	group by model, api_key_hash, provider, auth_file_snapshot,
-		account_snapshot, auth_label_snapshot, auth_index, source_hash`, usageidentity.ModelFormatVersion, fromMS, toMS)
+		account_snapshot, auth_label_snapshot, auth_index, source_hash`, args...)
 	if err != nil {
 		return err
 	}
@@ -387,7 +383,7 @@ func (r *repository) LoadHeaderSnapshots(ctx context.Context, sinceMS int64, lim
 	if limit <= 0 {
 		return []HeaderSnapshot{}, State{}, true, nil
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, State{}, false, err
 	}

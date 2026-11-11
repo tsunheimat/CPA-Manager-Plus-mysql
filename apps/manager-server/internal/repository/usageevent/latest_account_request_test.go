@@ -10,6 +10,7 @@ import (
 	"time"
 
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
@@ -480,7 +481,7 @@ func TestRecentAccountRequestsMatchesNullAndEmptyAuthIndex(t *testing.T) {
 	if _, err := repo.InsertBatch(ctx, []usage.Event{nonEmpty}); err != nil {
 		t.Fatalf("insert events: %v", err)
 	}
-	if _, err := db.Exec(`insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, auth_file_snapshot, auth_index, source, created_at_ms
 	) values (?, ?, ?, ?, ?, null, ?, ?)`,
 		"null-index",
@@ -493,7 +494,7 @@ func TestRecentAccountRequestsMatchesNullAndEmptyAuthIndex(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert null auth_index: %v", err)
 	}
-	if _, err := db.Exec(`insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, auth_file_snapshot, auth_index, source, created_at_ms
 	) values (?, ?, ?, ?, ?, '', ?, ?)`,
 		"empty-index",
@@ -764,7 +765,7 @@ func BenchmarkRecentAccountRequestsDenseCredential(b *testing.B) {
 	if err := testdb.PrepareIndexes(context.Background(), db); err != nil {
 		b.Fatalf("prepare latest-request indexes: %v", err)
 	}
-	if _, err := db.Exec(`with recursive ids(id) as (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `with recursive ids(id) as (
 		select 1
 		union all
 		select id + 1 from ids where id < 100000
@@ -813,7 +814,7 @@ func prepareLatestRequestTestIndexes(t *testing.T, ctx context.Context, db *sql.
 		// MySQL creates indexes synchronously. Remove just these optional lookup
 		// indexes in this isolated fixture to exercise the actual fallback path.
 		for _, name := range []string{latestRequestAuthFileIndex, latestRequestSourceIndex} {
-			if _, err := db.ExecContext(ctx, "drop index "+name+" on usage_events"); err != nil {
+			if _, err := sqlwrite.ExecContext(ctx, db, "drop index "+name+" on usage_events"); err != nil {
 				t.Fatal(err)
 			}
 		}

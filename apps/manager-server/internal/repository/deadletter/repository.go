@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 type Repository interface {
@@ -20,8 +22,8 @@ func New(db *sql.DB) Repository {
 }
 
 func (r *repository) Insert(ctx context.Context, payload string, errText string) error {
-	_, err := r.db.ExecContext(
-		ctx,
+	_, err := sqlwrite.ExecContext(
+		ctx, r.db,
 		`insert into dead_letter_events(payload, error, created_at_ms) values(?, ?, ?)`,
 		payload,
 		errText,

@@ -28,6 +28,10 @@ type UsagePricingRollupWorker struct {
 	checkInterval     time.Duration
 	continuationDelay time.Duration
 	nextTask          int
+	continuing        bool
+	nextRescan        time.Time
+	idleTasks         [usageDerivedTaskCount]bool
+	rescanRequested   int32
 	reportedStarted   [usageDerivedTaskCount]bool
 	lastReported      [usageDerivedTaskCount]int64
 }
@@ -38,6 +42,8 @@ const (
 	usageDerivedMonitoringMetadataTask
 	usageDerivedMonitoringStatsTask
 	usageDerivedCodexLegacyIdentityTask
+	usageDerivedMonitoringHourlyStatsTask
+	usageDerivedMonitoringHourlyMetadataTask
 	usageDerivedTaskCount
 )
 
@@ -71,6 +77,7 @@ func (w *UsagePricingRollupWorker) Wake() {
 	if w == nil {
 		return
 	}
+	atomic.StoreInt32(&w.rescanRequested, 1)
 	select {
 	case w.wake <- struct{}{}:
 	default:
@@ -87,8 +94,29 @@ func (w *UsagePricingRollupWorker) catchUp(ctx context.Context) bool {
 	}
 	defer atomic.StoreInt32(&w.running, 0)
 
-	pendingByTask := [usageDerivedTaskCount]bool{}
+	// A bounded turn can end before every task has run. Preserve the sweep's
+	// idle set across continuations so a small budget neither starves later
+	// tasks nor spins forever after all tasks become idle. Ingestion wakes
+	// invalidate the set, including when they arrive during a pending sweep.
 	idleByTask := [usageDerivedTaskCount]bool{}
+	rescan := atomic.SwapInt32(&w.rescanRequested, 0) != 0
+	now := time.Now()
+	if w.continuing && !rescan && now.Before(w.nextRescan) {
+		idleByTask = w.idleTasks
+	} else {
+		// Periodic checks must retry failed/deferred tasks even while another
+		// task has a long backlog. Continuations retain the bounded retry delay.
+		interval := w.checkInterval
+		if interval <= 0 {
+			interval = defaultUsagePricingCheckInterval
+		}
+		w.nextRescan = now.Add(interval)
+	}
+	w.continuing = false
+	if !w.store.UsageMonitoringHourlyEnabled() {
+		idleByTask[usageDerivedMonitoringHourlyStatsTask] = true
+		idleByTask[usageDerivedMonitoringHourlyMetadataTask] = true
+	}
 	for batch := 0; batch < w.maxBatches; batch++ {
 		if ctx.Err() != nil {
 			return false
@@ -106,21 +134,16 @@ func (w *UsagePricingRollupWorker) catchUp(ctx context.Context) bool {
 				log.Printf("[usage-derived] record %s catch-up failure: %v", usageDerivedTaskName(task), recordErr)
 			}
 			idleByTask[task] = true
-			pendingByTask[task] = false
 			continue
 		}
 		w.logTaskProgress(task, result)
-		pendingByTask[task] = result.Pending && (result.Processed > 0 || result.ContinueSoon)
 		if !result.Pending || (result.Processed == 0 && !result.ContinueSoon) {
 			idleByTask[task] = true
 		}
 	}
-	for _, pending := range pendingByTask {
-		if pending {
-			return true
-		}
-	}
-	return false
+	w.idleTasks = idleByTask
+	w.continuing = w.maxBatches > 0 && ctx.Err() == nil && !allUsageDerivedTasksIdle(idleByTask)
+	return w.continuing
 }
 
 type usageDerivedCatchUpResult struct {
@@ -153,6 +176,12 @@ func allUsageDerivedTasksIdle(idle [usageDerivedTaskCount]bool) bool {
 
 func (w *UsagePricingRollupWorker) catchUpTask(ctx context.Context, task int, nowMS int64) (usageDerivedCatchUpResult, error) {
 	switch task {
+	case usageDerivedMonitoringHourlyStatsTask:
+		result, err := w.store.CatchUpUsageMonitoringHourlyStats(ctx, w.batchLimit, nowMS)
+		return usageDerivedCatchUpResult{Processed: result.Processed, CoverageEventID: result.CoverageEventID, TargetEventID: result.TargetEventID, Pending: result.Pending, Rebuilt: result.Rebuilt, ContinueSoon: result.ContinueSoon}, err
+	case usageDerivedMonitoringHourlyMetadataTask:
+		result, err := w.store.CatchUpUsageMonitoringHourlyMetadata(ctx, w.batchLimit, nowMS)
+		return usageDerivedCatchUpResult{Processed: result.Processed, CoverageEventID: result.CoverageEventID, TargetEventID: result.TargetEventID, Pending: result.Pending, Rebuilt: result.Rebuilt, ContinueSoon: result.ContinueSoon}, err
 	case usageDerivedMonitoringProjectionTask:
 		result, err := w.store.CatchUpUsageMonitoringProjection(ctx, w.batchLimit, nowMS)
 		return usageDerivedCatchUpResult{Processed: result.Processed, CoverageEventID: result.CoverageEventID, TargetEventID: result.TargetEventID, Pending: result.Pending, Rebuilt: result.Rebuilt, ContinueSoon: result.ContinueSoon}, err
@@ -195,6 +224,10 @@ func (w *UsagePricingRollupWorker) logTaskProgress(task int, result usageDerived
 
 func (w *UsagePricingRollupWorker) recordTaskFailure(ctx context.Context, task int, rollupErr error, nowMS int64) error {
 	switch task {
+	case usageDerivedMonitoringHourlyStatsTask:
+		return w.store.RecordUsageMonitoringFailure(ctx, monitoringrepo.HourlyStatsRollupName, rollupErr, nowMS)
+	case usageDerivedMonitoringHourlyMetadataTask:
+		return w.store.RecordUsageMonitoringFailure(ctx, monitoringrepo.HourlyMetadataRollupName, rollupErr, nowMS)
 	case usageDerivedMonitoringProjectionTask:
 		return w.store.RecordUsageMonitoringFailure(ctx, monitoringrepo.ProjectionRollupName, rollupErr, nowMS)
 	case usageDerivedMonitoringMetadataTask:
@@ -210,6 +243,10 @@ func (w *UsagePricingRollupWorker) recordTaskFailure(ctx context.Context, task i
 
 func usageDerivedTaskName(task int) string {
 	switch task {
+	case usageDerivedMonitoringHourlyStatsTask:
+		return "monitoring hourly stats"
+	case usageDerivedMonitoringHourlyMetadataTask:
+		return "monitoring hourly metadata"
 	case usageDerivedMonitoringProjectionTask:
 		return "monitoring projection"
 	case usageDerivedMonitoringMetadataTask:

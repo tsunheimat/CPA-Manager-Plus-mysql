@@ -4474,6 +4474,15 @@
     "method_not_allowed": "目前介面不支援該操作。"
   },
   "usage_analytics": {
+    "section_core": "核心用量分析",
+    "section_exact": "精確延遲指標",
+    "section_dimensions": "維度排行",
+    "section_selectors": "篩選選項",
+    "section_metadata": "顯示中繼資料",
+    "section_unavailable": "暫不可用",
+    "section_missing": "伺服器未傳回此分區，請重試載入。",
+    "section_stale": "上次資料已過期。",
+    "section_retry": "重試此分區",
     "title": "用量分析",
     "subtitle": "全面瞭解 API 使用情況，分析趨勢與成本，最佳化資源配置。",
     "tabs_label": "用量分析分區",
@@ -4688,6 +4697,7 @@
     "health_trend_title": "請求健康趨勢",
     "anomaly_points_title": "異常時間點",
     "anomaly_points_hint": "根據請求、成本、Token、快取、失敗率和延遲變化識別出的異常時段。",
+    "bucket_drilldown_unavailable": "由於時區變更，無法確認單一連續時間範圍能準確對應此時間桶。請求預覽和詳情跳轉無法使用；彙總統計維持不變。",
     "drilldown_preview_title": "請求樣本預覽",
     "drilldown_preview_hint": "選中時間段後展示該時間段內的真實請求樣本。",
     "drilldown_preview_empty": "點擊趨勢圖中的時間段查看請求樣本。",

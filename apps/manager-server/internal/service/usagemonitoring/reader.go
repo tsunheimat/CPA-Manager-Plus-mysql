@@ -18,9 +18,7 @@ type Reader struct {
 	lastFallbackLogMS atomic.Int64
 }
 
-func New(store *store.Store) *Reader {
-	return &Reader{store: store}
-}
+func New(store *store.Store) *Reader { return &Reader{store: store} }
 
 func SupportsStatsFilter(filter store.AnalyticsFilter) bool {
 	return monitoringrepo.SupportsStatsFilter(filter)
@@ -38,188 +36,90 @@ func PrefersEventProjection(filter store.AnalyticsFilter) bool {
 	return monitoringrepo.PrefersEventProjection(filter)
 }
 
-func (r *Reader) AccountStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.AccountModelStat, bool) {
-	if r == nil || r.store == nil {
-		return nil, false
+// readDerived distinguishes unsupported/unavailable sources from failed reads.
+// Only the former permit a raw fallback. In particular a terminal SQL, coverage
+// or cancellation error must not start a second expensive query or silently
+// replace retained history with the smaller live-event population.
+func readDerived[T any](ctx context.Context, r *Reader, stage string, supported bool, load func() (T, store.UsageMonitoringState, bool, error)) (T, bool, error) {
+	var zero T
+	if err := ctx.Err(); err != nil {
+		return zero, false, err
 	}
-	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
-		return nil, false
+	if r == nil || r.store == nil || !supported {
+		return zero, false, nil
 	}
-	rows, state, available, err := r.store.UsageMonitoringAccountStats(ctx, filter)
+	rows, _, available, err := load()
 	if err != nil {
-		r.logFallback(fmt.Sprintf("account daily rollup query failed: %v", err))
-		return nil, false
+		return zero, false, fmt.Errorf("%s: %w", stage, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return zero, false, err
 	}
 	if !available {
-		r.logFallback(fmt.Sprintf("account daily rollup unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
-		return nil, false
+		r.logFallback(stage + " unavailable")
+		return zero, false, nil
 	}
-	return rows, true
+	return rows, true, nil
 }
 
-func (r *Reader) AccountWindowStats(ctx context.Context, windows []store.AccountWindowUsageQuery) ([]store.AccountWindowModelStat, bool) {
-	if r == nil || r.store == nil {
-		return nil, false
-	}
-	rows, state, available, err := r.store.UsageMonitoringAccountWindowStats(ctx, windows)
-	if err != nil {
-		r.logFallback(fmt.Sprintf("account window projection query failed: %v", err))
-		return nil, false
-	}
-	if !available {
-		r.logFallback(fmt.Sprintf("account window projection unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
-		return nil, false
-	}
-	return rows, true
+func (r *Reader) AccountStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.AccountModelStat, bool, error) {
+	return readDerived(ctx, r, "account_stats", SupportsEventProjectionFilter(filter), func() ([]store.AccountModelStat, store.UsageMonitoringState, bool, error) {
+		return r.store.UsageMonitoringAccountStats(ctx, filter)
+	})
 }
 
-func (r *Reader) APIKeyStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.APIKeyModelStat, bool) {
-	if r == nil || r.store == nil {
-		return nil, false
-	}
-	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
-		return nil, false
-	}
-	rows, state, available, err := r.store.UsageMonitoringAPIKeyStats(ctx, filter)
-	if err != nil {
-		r.logFallback(fmt.Sprintf("api key daily rollup query failed: %v", err))
-		return nil, false
-	}
-	if !available {
-		r.logFallback(fmt.Sprintf("api key daily rollup unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
-		return nil, false
-	}
-	return rows, true
+func (r *Reader) AccountWindowStats(ctx context.Context, windows []store.AccountWindowUsageQuery) ([]store.AccountWindowModelStat, bool, error) {
+	return readDerived(ctx, r, "account_windows", true, func() ([]store.AccountWindowModelStat, store.UsageMonitoringState, bool, error) {
+		return r.store.UsageMonitoringAccountWindowStats(ctx, windows)
+	})
 }
 
-func (r *Reader) FilterOptions(ctx context.Context, filter store.AnalyticsFilter) (store.FilterOptionValues, bool) {
-	if r == nil || r.store == nil {
-		return store.FilterOptionValues{}, false
-	}
-	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
-		return store.FilterOptionValues{}, false
-	}
-	values, state, available, err := r.store.UsageMonitoringFilterOptions(ctx, filter)
-	if err != nil {
-		r.logFallback(fmt.Sprintf("filter option projection query failed: %v", err))
-		return store.FilterOptionValues{}, false
-	}
-	if !available {
-		r.logFallback(fmt.Sprintf("filter option projection unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
-		return store.FilterOptionValues{}, false
-	}
-	return values, true
+func (r *Reader) APIKeyStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.APIKeyModelStat, bool, error) {
+	return readDerived(ctx, r, "api_key_stats", SupportsEventProjectionFilter(filter), func() ([]store.APIKeyModelStat, store.UsageMonitoringState, bool, error) {
+		return r.store.UsageMonitoringAPIKeyStats(ctx, filter)
+	})
 }
 
-func (r *Reader) FilterSelectors(ctx context.Context, filter store.AnalyticsFilter) (store.FilterSelectorValues, bool) {
-	if r == nil || r.store == nil {
-		return store.FilterSelectorValues{}, false
-	}
-	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
-		return store.FilterSelectorValues{}, false
-	}
-	values, state, available, err := r.store.UsageMonitoringFilterSelectors(ctx, filter)
-	if err != nil {
-		r.logFallback(fmt.Sprintf("selector daily rollup query failed: %v", err))
-		return store.FilterSelectorValues{}, false
-	}
-	if !available {
-		r.logFallback(fmt.Sprintf("selector daily rollup unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
-		return store.FilterSelectorValues{}, false
-	}
-	return values, true
+func (r *Reader) FilterOptions(ctx context.Context, filter store.AnalyticsFilter) (store.FilterOptionValues, bool, error) {
+	return readDerived(ctx, r, "filter_options", SupportsEventProjectionFilter(filter), func() (store.FilterOptionValues, store.UsageMonitoringState, bool, error) {
+		return r.store.UsageMonitoringFilterOptions(ctx, filter)
+	})
 }
 
-func (r *Reader) Aggregate(ctx context.Context, filter store.AnalyticsFilter) (store.Aggregate, bool) {
-	if r == nil || r.store == nil {
-		return store.Aggregate{}, false
-	}
-	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
-		return store.Aggregate{}, false
-	}
-	aggregate, state, available, err := r.store.UsageMonitoringAggregate(ctx, filter)
-	if err != nil {
-		r.logFallback(fmt.Sprintf("event projection aggregate query failed: %v", err))
-		return store.Aggregate{}, false
-	}
-	if !available {
-		r.logFallback(fmt.Sprintf("event projection aggregate unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
-		return store.Aggregate{}, false
-	}
-	return aggregate, true
+func (r *Reader) FilterSelectors(ctx context.Context, filter store.AnalyticsFilter) (store.FilterSelectorValues, bool, error) {
+	return readDerived(ctx, r, "filter_selectors", SupportsEventProjectionFilter(filter), func() (store.FilterSelectorValues, store.UsageMonitoringState, bool, error) {
+		return r.store.UsageMonitoringFilterSelectors(ctx, filter)
+	})
 }
 
-func (r *Reader) ModelStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.ModelStat, bool) {
-	if r == nil || r.store == nil {
-		return nil, false
-	}
-	if !monitoringrepo.SupportsEventProjectionFilter(filter) {
-		return nil, false
-	}
-	rows, state, available, err := r.store.UsageMonitoringModelStats(ctx, filter)
-	if err != nil {
-		r.logFallback(fmt.Sprintf("event projection model stats query failed: %v", err))
-		return nil, false
-	}
-	if !available {
-		r.logFallback(fmt.Sprintf("event projection model stats unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
-		return nil, false
-	}
-	return rows, true
+func (r *Reader) Aggregate(ctx context.Context, filter store.AnalyticsFilter) (store.Aggregate, bool, error) {
+	return readDerived(ctx, r, "aggregate", SupportsEventProjectionFilter(filter), func() (store.Aggregate, store.UsageMonitoringState, bool, error) {
+		return r.store.UsageMonitoringAggregate(ctx, filter)
+	})
 }
 
-func (r *Reader) EventsCount(ctx context.Context, filter store.AnalyticsFilter) (int64, bool) {
-	if r == nil || r.store == nil {
-		return 0, false
-	}
-	if !monitoringrepo.SupportsEventProjectionFilter(filter) || !monitoringrepo.PrefersEventProjection(filter) {
-		return 0, false
-	}
-	total, state, available, err := r.store.UsageMonitoringEventsCount(ctx, filter)
-	if err != nil {
-		r.logFallback(fmt.Sprintf("event projection count query failed: %v", err))
-		return 0, false
-	}
-	if !available {
-		r.logFallback(fmt.Sprintf("event projection count unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
-		return 0, false
-	}
-	return total, true
+func (r *Reader) ModelStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.ModelStat, bool, error) {
+	return readDerived(ctx, r, "model_stats", SupportsEventProjectionFilter(filter), func() ([]store.ModelStat, store.UsageMonitoringState, bool, error) {
+		return r.store.UsageMonitoringModelStats(ctx, filter)
+	})
 }
 
-func (r *Reader) EventsPage(ctx context.Context, filter store.AnalyticsFilter, beforeMS, beforeID int64, limit int) (store.EventsPage, bool) {
-	if r == nil || r.store == nil {
-		return store.EventsPage{}, false
-	}
-	if !monitoringrepo.SupportsEventProjectionFilter(filter) || !monitoringrepo.PrefersEventProjection(filter) {
-		return store.EventsPage{}, false
-	}
-	page, state, available, err := r.store.UsageMonitoringEventsPage(ctx, filter, beforeMS, beforeID, limit)
-	if err != nil {
-		r.logFallback(fmt.Sprintf("event projection page query failed: %v", err))
-		return store.EventsPage{}, false
-	}
-	if !available {
-		r.logFallback(fmt.Sprintf("event projection page unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
-		return store.EventsPage{}, false
-	}
-	return page, true
+func (r *Reader) EventsCount(ctx context.Context, filter store.AnalyticsFilter) (int64, bool, error) {
+	return readDerived(ctx, r, "events_count", SupportsEventProjectionFilter(filter) && PrefersEventProjection(filter), func() (int64, store.UsageMonitoringState, bool, error) {
+		return r.store.UsageMonitoringEventsCount(ctx, filter)
+	})
 }
 
-func (r *Reader) HeaderSnapshots(ctx context.Context, sinceMS int64, limit int) ([]store.HeaderSnapshot, bool) {
-	if r == nil || r.store == nil {
-		return nil, false
-	}
-	items, state, available, err := r.store.UsageMonitoringHeaderSnapshots(ctx, sinceMS, limit)
-	if err != nil {
-		r.logFallback(fmt.Sprintf("header latest rollup query failed: %v", err))
-		return nil, false
-	}
-	if !available {
-		r.logFallback(fmt.Sprintf("header latest rollup unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
-		return nil, false
-	}
-	return items, true
+func (r *Reader) EventsPage(ctx context.Context, filter store.AnalyticsFilter, beforeMS, beforeID int64, limit int) (store.EventsPage, bool, error) {
+	return readDerived(ctx, r, "events_page", SupportsEventProjectionFilter(filter) && PrefersEventProjection(filter), func() (store.EventsPage, store.UsageMonitoringState, bool, error) {
+		return r.store.UsageMonitoringEventsPage(ctx, filter, beforeMS, beforeID, limit)
+	})
+}
+
+func (r *Reader) HeaderSnapshots(ctx context.Context, sinceMS int64, limit int) ([]store.HeaderSnapshot, bool, error) {
+	return readDerived(ctx, r, "header_snapshots", true, func() ([]store.HeaderSnapshot, store.UsageMonitoringState, bool, error) {
+		return r.store.UsageMonitoringHeaderSnapshots(ctx, sinceMS, limit)
+	})
 }
 
 func (r *Reader) logFallback(message string) {

@@ -14,6 +14,17 @@ const getPath = (value: unknown, keyPath: string) =>
   }, value);
 
 const usageAnalyticsKeys = [
+  ...[
+    'core',
+    'exact',
+    'dimensions',
+    'selectors',
+    'metadata',
+    'unavailable',
+    'missing',
+    'stale',
+    'retry',
+  ].map((section) => `usage_analytics.section_${section}`),
   'nav.usage_analytics',
   'usage_analytics.title',
   'usage_analytics.subtitle',
@@ -158,6 +169,7 @@ const usageAnalyticsKeys = [
   'usage_analytics.insight_cache_room_body',
   'usage_analytics.anomaly_points_title',
   'usage_analytics.anomaly_points_hint',
+  'usage_analytics.bucket_drilldown_unavailable',
   'usage_analytics.drilldown_preview_title',
   'usage_analytics.drilldown_preview_hint',
   'usage_analytics.drilldown_preview_empty',

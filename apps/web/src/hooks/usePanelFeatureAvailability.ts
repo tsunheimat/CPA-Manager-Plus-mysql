@@ -19,6 +19,7 @@ export type PanelFeatureUnavailableReason =
   | 'monitoring_disabled';
 
 export interface PanelFeatureAvailability {
+  analyticsSectionsVersion?: number;
   checking: boolean;
   panelHostConfirmed: boolean;
   panelHostMode: PanelHostMode;
@@ -34,6 +35,7 @@ export interface PanelFeatureAvailability {
 }
 
 export interface ResolvePanelFeatureAvailabilityInput {
+  analyticsSectionsVersion?: number;
   checking?: boolean;
   panelHostConfirmed: boolean;
   panelHostedByUsageService: boolean;
@@ -50,6 +52,7 @@ const buildUnavailableState = (
   input: ResolvePanelFeatureAvailabilityInput,
   reason: PanelFeatureUnavailableReason
 ): PanelFeatureAvailability => ({
+  analyticsSectionsVersion: 0,
   checking: input.checking === true,
   panelHostConfirmed: input.panelHostConfirmed,
   panelHostMode: input.panelHostedByUsageService ? 'manager_embedded' : 'external_panel',
@@ -94,6 +97,11 @@ export function resolvePanelFeatureAvailability(
   const requestMonitoringAvailable = hasCPAConnection && collectorEnabled;
 
   return {
+    analyticsSectionsVersion:
+      typeof input.analyticsSectionsVersion === 'number' &&
+      Number.isFinite(input.analyticsSectionsVersion)
+        ? Math.max(0, Math.floor(input.analyticsSectionsVersion))
+        : 0,
     checking: input.checking === true,
     panelHostConfirmed: input.panelHostConfirmed,
     panelHostMode: input.panelHostedByUsageService ? 'manager_embedded' : 'external_panel',
@@ -155,6 +163,7 @@ type PanelFeatureAvailabilityRequest = {
 };
 
 const initialAvailability: PanelFeatureAvailability = {
+  analyticsSectionsVersion: 0,
   checking: true,
   panelHostConfirmed: false,
   panelHostMode: 'external_panel',
@@ -170,6 +179,7 @@ const initialAvailability: PanelFeatureAvailability = {
 };
 
 const demoAvailability: PanelFeatureAvailability = {
+  analyticsSectionsVersion: 1,
   checking: false,
   panelHostConfirmed: true,
   panelHostMode: 'manager_embedded',
@@ -262,6 +272,7 @@ async function detectPanelFeatureAvailability({
         panelBase: normalizedPanelBase,
         managerServiceBase: candidate,
         managerConfig: response.config,
+        analyticsSectionsVersion: info.analyticsSectionsVersion,
         hasManagerCandidate: candidates.length > 0,
         managementKey,
       });

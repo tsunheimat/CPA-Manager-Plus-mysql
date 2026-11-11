@@ -43,6 +43,7 @@ type Service struct {
 	store            *store.Store
 	hourlyReader     *usagehourly.Reader
 	monitoringReader *monitoringrollup.Reader
+	execution        *analyticsExecution
 }
 
 type analyticsQueryGroup struct {
@@ -53,6 +54,7 @@ type analyticsQueryGroup struct {
 	errorOnce sync.Once
 	waitOnce  sync.Once
 	err       error
+	execution *analyticsExecution
 }
 
 func newAnalyticsQueryGroup(ctx context.Context, concurrency int) *analyticsQueryGroup {
@@ -68,21 +70,45 @@ func newAnalyticsQueryGroup(ctx context.Context, concurrency int) *analyticsQuer
 }
 
 func (g *analyticsQueryGroup) Go(query func(context.Context) error) {
+	g.GoStage("query", query)
+}
+
+func (g *analyticsQueryGroup) GoStage(stage string, query func(context.Context) error) {
 	g.waitGroup.Add(1)
 	go func() {
 		defer g.waitGroup.Done()
-		select {
-		case g.semaphore <- struct{}{}:
-			defer func() { <-g.semaphore }()
-		case <-g.ctx.Done():
+		started := time.Now()
+		var err error
+		defer func() {
+			logAnalyticsStage(g.ctx, stage+"_prefetch", started, err)
+			if err != nil {
+				g.errorOnce.Do(func() { g.err = err; g.cancel() })
+			}
+		}()
+		// A waiting percentile job must not occupy shared query capacity.
+		if g.execution != nil && stage == "percentiles" {
+			var release func()
+			release, err = acquireQuery(g.ctx, g.execution.percentiles)
+			if err != nil {
+				return
+			}
+			defer release()
+		}
+		release, acquireErr := acquireQuery(g.ctx, g.semaphore)
+		err = acquireErr
+		if err != nil {
 			return
 		}
-		if err := query(g.ctx); err != nil {
-			g.errorOnce.Do(func() {
-				g.err = err
-				g.cancel()
-			})
+		defer release()
+		if g.execution != nil {
+			releaseShared, sharedErr := acquireQuery(g.ctx, g.execution.queries)
+			err = sharedErr
+			if err != nil {
+				return
+			}
+			defer releaseShared()
 		}
+		err = query(g.ctx)
 	}()
 }
 
@@ -92,7 +118,6 @@ func (g *analyticsQueryGroup) Wait() error {
 		if g.err == nil && g.ctx.Err() != nil {
 			g.err = g.ctx.Err()
 		}
-		g.cancel()
 	})
 	return g.err
 }
@@ -111,6 +136,7 @@ func New(store *store.Store, hourlyRollupEnabled ...bool) *Service {
 		store:            store,
 		hourlyReader:     usagehourly.New(store, enabled, "monitoring-rollup"),
 		monitoringReader: monitoringrollup.New(store),
+		execution:        newAnalyticsExecution(Options{}, store.DatabasePoolStats().MaxOpenConnections),
 	}
 }
 
@@ -147,30 +173,32 @@ type Filters struct {
 }
 
 type Include struct {
-	Summary            bool              `json:"summary"`
-	SummaryProfile     string            `json:"summary_profile"`
-	SummaryPercentiles bool              `json:"summary_percentiles"`
-	SummaryComparison  bool              `json:"summary_comparison"`
-	Timeline           bool              `json:"timeline"`
-	HourlyDistribution bool              `json:"hourly_distribution"`
-	ModelShare         bool              `json:"model_share"`
-	ChannelShare       bool              `json:"channel_share"`
-	ModelStats         bool              `json:"model_stats"`
-	FailureSources     bool              `json:"failure_sources"`
-	AccountStats       bool              `json:"account_stats"`
-	CredentialStats    bool              `json:"credential_stats"`
-	CredentialTimeline bool              `json:"credential_timeline"`
-	APIKeyTimeline     bool              `json:"api_key_timeline"`
-	APIKeyStats        bool              `json:"api_key_stats"`
-	FilterOptions      bool              `json:"filter_options"`
-	FilterSelectors    bool              `json:"filter_selectors"`
-	Heatmap            bool              `json:"heatmap"`
-	AnomalyPoints      bool              `json:"anomaly_points"`
-	TaskBuckets        bool              `json:"task_buckets"`
-	RecentFailures     int               `json:"recent_failures"`
-	EventsPage         *EventsPage       `json:"events_page"`
-	DrilldownPreview   *DrilldownPreview `json:"drilldown_preview"`
-	Granularity        string            `json:"granularity"`
+	Summary            bool                `json:"summary"`
+	SummaryProfile     string              `json:"summary_profile"`
+	SummaryPercentiles bool                `json:"summary_percentiles"`
+	SummaryComparison  bool                `json:"summary_comparison"`
+	Timeline           bool                `json:"timeline"`
+	TimelineProfile    string              `json:"timeline_profile"`
+	Percentiles        *PercentilesInclude `json:"percentiles"`
+	HourlyDistribution bool                `json:"hourly_distribution"`
+	ModelShare         bool                `json:"model_share"`
+	ChannelShare       bool                `json:"channel_share"`
+	ModelStats         bool                `json:"model_stats"`
+	FailureSources     bool                `json:"failure_sources"`
+	AccountStats       bool                `json:"account_stats"`
+	CredentialStats    bool                `json:"credential_stats"`
+	CredentialTimeline bool                `json:"credential_timeline"`
+	APIKeyTimeline     bool                `json:"api_key_timeline"`
+	APIKeyStats        bool                `json:"api_key_stats"`
+	FilterOptions      bool                `json:"filter_options"`
+	FilterSelectors    bool                `json:"filter_selectors"`
+	Heatmap            bool                `json:"heatmap"`
+	AnomalyPoints      bool                `json:"anomaly_points"`
+	TaskBuckets        bool                `json:"task_buckets"`
+	RecentFailures     int                 `json:"recent_failures"`
+	EventsPage         *EventsPage         `json:"events_page"`
+	DrilldownPreview   *DrilldownPreview   `json:"drilldown_preview"`
+	Granularity        string              `json:"granularity"`
 }
 
 type EventsPage struct {
@@ -190,6 +218,7 @@ type Response struct {
 	Granularity        string                    `json:"granularity"`
 	Coverage           *AnalyticsCoverage        `json:"coverage,omitempty"`
 	Summary            *Summary                  `json:"summary,omitempty"`
+	Percentiles        *PercentilesResponse      `json:"percentiles,omitempty"`
 	SummaryComparison  *SummaryComparison        `json:"summary_comparison,omitempty"`
 	Timeline           []TimelinePoint           `json:"timeline,omitempty"`
 	HourlyDistribution []HourlyPoint             `json:"hourly_distribution,omitempty"`
@@ -464,26 +493,33 @@ type SummaryComparison struct {
 }
 
 type TimelinePoint struct {
-	BucketMS            int64    `json:"bucket_ms"`
-	Label               string   `json:"label"`
-	Calls               int64    `json:"calls"`
-	Tokens              int64    `json:"tokens"`
-	Success             int64    `json:"success"`
-	Failure             int64    `json:"failure"`
-	InputTokens         int64    `json:"input_tokens"`
-	OutputTokens        int64    `json:"output_tokens"`
-	CachedTokens        int64    `json:"cached_tokens"`
-	CacheReadTokens     int64    `json:"cache_read_tokens"`
-	CacheCreationTokens int64    `json:"cache_creation_tokens"`
-	CacheHitRate        float64  `json:"cache_hit_rate"`
-	ReasoningTokens     int64    `json:"reasoning_tokens"`
-	TotalTokens         int64    `json:"total_tokens"`
-	Cost                float64  `json:"cost"`
-	AvgLatencyMS        *float64 `json:"average_latency_ms"`
-	P95LatencyMS        *float64 `json:"p95_latency_ms"`
-	P95TTFTMS           *float64 `json:"p95_ttft_ms"`
-	SuccessRate         float64  `json:"success_rate"`
-	FailureRate         float64  `json:"failure_rate"`
+	// When present, bucket_intervals is the exact half-open UTC membership.
+	// The legacy [bucket_ms, bucket_end_ms) pair is NOT an exact filter then:
+	// membership may be disconnected or begin before the canonical bucket ID.
+	// Intersect these intervals with the analytics request range for drilldowns.
+	BucketIntervals     []usage.AnalyticsBucketInterval `json:"bucket_intervals,omitempty"`
+	BucketRangeExact    bool                            `json:"bucket_range_exact"`
+	BucketEndMS         int64                           `json:"bucket_end_ms"`
+	BucketMS            int64                           `json:"bucket_ms"`
+	Label               string                          `json:"label"`
+	Calls               int64                           `json:"calls"`
+	Tokens              int64                           `json:"tokens"`
+	Success             int64                           `json:"success"`
+	Failure             int64                           `json:"failure"`
+	InputTokens         int64                           `json:"input_tokens"`
+	OutputTokens        int64                           `json:"output_tokens"`
+	CachedTokens        int64                           `json:"cached_tokens"`
+	CacheReadTokens     int64                           `json:"cache_read_tokens"`
+	CacheCreationTokens int64                           `json:"cache_creation_tokens"`
+	CacheHitRate        float64                         `json:"cache_hit_rate"`
+	ReasoningTokens     int64                           `json:"reasoning_tokens"`
+	TotalTokens         int64                           `json:"total_tokens"`
+	Cost                float64                         `json:"cost"`
+	AvgLatencyMS        *float64                        `json:"average_latency_ms"`
+	P95LatencyMS        *float64                        `json:"p95_latency_ms"`
+	P95TTFTMS           *float64                        `json:"p95_ttft_ms"`
+	SuccessRate         float64                         `json:"success_rate"`
+	FailureRate         float64                         `json:"failure_rate"`
 }
 
 type HourlyPoint struct {
@@ -519,21 +555,25 @@ type HeatmapContributor struct {
 }
 
 type AnomalyPoint struct {
-	BucketMS               int64    `json:"bucket_ms"`
-	BucketEndMS            int64    `json:"bucket_end_ms"`
-	Label                  string   `json:"label"`
-	Severity               string   `json:"severity"`
-	MetricKeys             []string `json:"metric_keys"`
-	Calls                  int64    `json:"calls"`
-	TotalTokens            int64    `json:"total_tokens"`
-	Cost                   float64  `json:"cost"`
-	FailureRate            float64  `json:"failure_rate"`
-	RequestChange          float64  `json:"request_change"`
-	CostChange             float64  `json:"cost_change"`
-	TokensPerRequestChange float64  `json:"tokens_per_request_change"`
-	CacheHitRateChange     float64  `json:"cache_hit_rate_change"`
-	FailureRateChange      float64  `json:"failure_rate_change"`
-	LatencyP95Change       float64  `json:"latency_p95_change"`
+	// Same exact-membership contract as TimelinePoint; never infer a continuous
+	// drilldown range when bucket_range_exact is false.
+	BucketIntervals        []usage.AnalyticsBucketInterval `json:"bucket_intervals,omitempty"`
+	BucketRangeExact       bool                            `json:"bucket_range_exact"`
+	BucketMS               int64                           `json:"bucket_ms"`
+	BucketEndMS            int64                           `json:"bucket_end_ms"`
+	Label                  string                          `json:"label"`
+	Severity               string                          `json:"severity"`
+	MetricKeys             []string                        `json:"metric_keys"`
+	Calls                  int64                           `json:"calls"`
+	TotalTokens            int64                           `json:"total_tokens"`
+	Cost                   float64                         `json:"cost"`
+	FailureRate            float64                         `json:"failure_rate"`
+	RequestChange          float64                         `json:"request_change"`
+	CostChange             float64                         `json:"cost_change"`
+	TokensPerRequestChange float64                         `json:"tokens_per_request_change"`
+	CacheHitRateChange     float64                         `json:"cache_hit_rate_change"`
+	FailureRateChange      float64                         `json:"failure_rate_change"`
+	LatencyP95Change       float64                         `json:"latency_p95_change"`
 }
 
 type ModelShareRow struct {
@@ -911,16 +951,13 @@ type EventRow struct {
 }
 
 func (s *Service) Analytics(ctx context.Context, req Request) (Response, error) {
-	var response Response
-	err := s.store.WithModelPriceSnapshot(func() error {
-		var analyticsErr error
-		response, analyticsErr = s.analytics(ctx, req)
-		return analyticsErr
-	})
-	return response, err
+	return s.runAnalytics(ctx, req)
 }
 
-func (s *Service) analytics(ctx context.Context, req Request) (Response, error) {
+func (s *Service) analytics(ctx context.Context, req Request, plan analyticsPlan) (result Response, resultErr error) {
+	if err := ValidateInclude(req.Include); err != nil {
+		return Response{}, err
+	}
 	if req.FromMS <= 0 || req.ToMS <= 0 || req.FromMS >= req.ToMS {
 		return Response{}, errors.New("from_ms and to_ms are required and from_ms must be less than to_ms")
 	}
@@ -935,7 +972,9 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 	}
 	filter := buildFilter(req)
 	compactSummary := req.Include.Summary && req.Include.SummaryProfile == "compact"
+	coverageStarted := time.Now()
 	rawCoverage, err := s.store.UsageArchives.RawCoverage(ctx, req.FromMS, req.ToMS)
+	logAnalyticsStage(ctx, "coverage", coverageStarted, err)
 	if err != nil {
 		return Response{}, err
 	}
@@ -1030,6 +1069,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 		if edgeErr != nil {
 			return Response{}, edgeErr
 		}
+		hourlyStarted := time.Now()
 		hourlySnapshot, hourlySnapshotAvailable = s.hourlyReader.LoadAnalytics(
 			ctx,
 			filter,
@@ -1038,13 +1078,14 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 			hourlyTimelineRepresentable,
 			edges,
 		)
+		logAnalyticsStage(ctx, "hourly_snapshot", hourlyStarted, hourlySnapshot.ReadError)
 		if hourlySnapshot.ReadError != nil {
 			return Response{}, hourlySnapshot.ReadError
 		}
 	}
 	if hourlySnapshotAvailable {
 		prices = hourlySnapshot.Prices
-	} else {
+	} else if plan.modelPrices {
 		prices, err = s.store.LoadModelPrices(ctx)
 		if err != nil {
 			return Response{}, err
@@ -1074,20 +1115,33 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 	}
 
 	queries := newAnalyticsQueryGroup(ctx, analyticsPrefetchConcurrency)
-	defer queries.Close()
+	queries.execution = s.execution
+	defer func() {
+		queries.Close()
+		if queries.err != nil && errors.Is(resultErr, context.Canceled) {
+			resultErr = queries.err
+		}
+	}()
+	// Sibling failures cancel foreground work as well as background queries.
+	// Successful Wait leaves this context alive for dependent stages.
+	ctx = queries.ctx
 
 	var latencyPercentiles []store.LatencyPercentiles
-	if req.Include.Timeline || req.Include.AnomalyPoints {
-		queries.Go(func(queryCtx context.Context) error {
-			var queryErr error
-			latencyPercentiles, queryErr = s.store.LatencyPercentilesWithFilter(queryCtx, filter, granularity, location)
+	var latencySummary store.LatencySummary
+	if plan.latencySummary || plan.latencyTimeline {
+		queries.GoStage("percentiles", func(queryCtx context.Context) error {
+			metrics, queryErr := s.store.LatencyMetricsWithFilter(queryCtx, filter, granularity, location, plan.latencySummary, plan.latencyTimeline)
+			if queryErr == nil {
+				latencySummary = metrics.Summary
+				latencyPercentiles = metrics.Timeline
+			}
 			return queryErr
 		})
 	}
 
 	var hourlyDistributionPoints []store.HourlyPoint
 	if req.Include.HourlyDistribution {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("hourly_distribution", func(queryCtx context.Context) error {
 			var queryErr error
 			hourlyDistributionPoints, queryErr = s.store.HourlyDistributionWithFilter(queryCtx, filter, location)
 			return queryErr
@@ -1096,7 +1150,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 
 	var heatmapPoints []store.HeatmapPoint
 	if req.Include.Heatmap {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("heatmap", func(queryCtx context.Context) error {
 			var queryErr error
 			heatmapPoints, queryErr = s.store.HeatmapWithFilter(queryCtx, filter, location)
 			return queryErr
@@ -1104,7 +1158,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 	}
 
 	if req.Include.ChannelShare && !deriveChannelStatsFromAccounts {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("channel_stats", func(queryCtx context.Context) error {
 			var queryErr error
 			channelStats, channelStatsDerived, queryErr = s.channelModelStatsWithSource(queryCtx, filter)
 			return queryErr
@@ -1113,7 +1167,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 
 	var failureSourceStats []store.FailureSourceStat
 	if req.Include.FailureSources {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("failure_sources", func(queryCtx context.Context) error {
 			var queryErr error
 			failureSourceStats, queryErr = s.store.FailureSourcesWithFilter(queryCtx, filter)
 			return queryErr
@@ -1121,7 +1175,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 	}
 
 	if req.Include.AccountStats {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("account_stats", func(queryCtx context.Context) error {
 			var queryErr error
 			accountStats, accountStatsDerived, queryErr = s.accountModelStatsWithSource(queryCtx, filter)
 			return queryErr
@@ -1130,7 +1184,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 
 	var credentialStats []store.CredentialModelStat
 	if req.Include.CredentialStats {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("credential_stats", func(queryCtx context.Context) error {
 			var queryErr error
 			credentialStats, queryErr = s.store.CredentialModelStatsWithFilter(queryCtx, filter)
 			return queryErr
@@ -1139,7 +1193,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 
 	var credentialTimelinePoints []store.CredentialTimelinePoint
 	if req.Include.CredentialTimeline {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("credential_timeline", func(queryCtx context.Context) error {
 			var queryErr error
 			credentialTimelinePoints, queryErr = s.store.CredentialTimelineWithFilter(queryCtx, filter, granularity, location)
 			return queryErr
@@ -1148,7 +1202,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 
 	var apiKeyTimelinePoints []store.APIKeyTimelinePoint
 	if req.Include.APIKeyTimeline {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("api_key_timeline", func(queryCtx context.Context) error {
 			var queryErr error
 			apiKeyTimelinePoints, queryErr = s.store.APIKeyTimelineWithFilter(queryCtx, filter, granularity, location)
 			return queryErr
@@ -1156,7 +1210,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 	}
 
 	if req.Include.APIKeyStats {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("api_key_stats", func(queryCtx context.Context) error {
 			var queryErr error
 			apiKeyStats, apiKeyStatsDerived, queryErr = s.apiKeyModelStatsWithSource(queryCtx, filter)
 			return queryErr
@@ -1171,21 +1225,21 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 	var filterOptionValuesAvailable bool
 	filterOptionValuesDerived := false
 	if req.Include.FilterSelectors {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("filter_selectors", func(queryCtx context.Context) error {
 			var queryErr error
 			selectorOptions, selectorOptionsDerived, queryErr = s.filterSelectorsWithSource(queryCtx, filter)
 			return queryErr
 		})
 	} else if req.Include.FilterOptions {
 		if filterOptionsMatchMainScope(filter) {
-			queries.Go(func(queryCtx context.Context) error {
+			queries.GoStage("filter_options", func(queryCtx context.Context) error {
 				var queryErr error
 				filterOptionValues, filterOptionValuesDerived, queryErr = s.filterOptionValuesWithSource(queryCtx, filterOptionsBaseFilter(filter))
 				filterOptionValuesAvailable = queryErr == nil
 				return queryErr
 			})
 		} else {
-			queries.Go(func(queryCtx context.Context) error {
+			queries.GoStage("filter_options", func(queryCtx context.Context) error {
 				var queryErr error
 				prebuiltFilterOptions, prebuiltFilterOptionsDerived, queryErr = s.filterOptionsWithSource(queryCtx, filter, prices, filterOptionStats{})
 				return queryErr
@@ -1195,7 +1249,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 
 	var recentFailureRows []store.RecentFailure
 	if req.Include.RecentFailures > 0 {
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("recent_failures", func(queryCtx context.Context) error {
 			var queryErr error
 			recentFailureRows, queryErr = s.store.RecentFailuresWithFilter(queryCtx, filter, req.Include.RecentFailures)
 			return queryErr
@@ -1219,7 +1273,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 		if req.Include.EventsPage.BeforeID != nil {
 			beforeID = *req.Include.EventsPage.BeforeID
 		}
-		queries.Go(func(queryCtx context.Context) error {
+		queries.GoStage("events_page", func(queryCtx context.Context) error {
 			var queryErr error
 			if rawCoverage.RawDeletedEventCount > 0 {
 				eventsPage, queryErr = s.store.EventsPageWithFilter(
@@ -1244,7 +1298,9 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 
 	var taskBuckets []store.TaskBucket
 	if req.Include.TaskBuckets || (req.Include.Summary && !compactSummary) {
+		tasksStarted := time.Now()
 		taskBuckets, err = s.store.TaskBucketsWithFilter(ctx, filter)
+		logAnalyticsStage(ctx, "task_buckets", tasksStarted, err)
 		if err != nil {
 			return Response{}, err
 		}
@@ -1260,13 +1316,6 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 			summaryDerived = true
 		} else {
 			agg, summaryDerived, err = s.aggregateWithSource(ctx, filter)
-			if err != nil {
-				return Response{}, err
-			}
-		}
-		var latencySummary store.LatencySummary
-		if !compactSummary || req.Include.SummaryPercentiles {
-			latencySummary, err = s.store.LatencySummaryWithFilter(ctx, filter)
 			if err != nil {
 				return Response{}, err
 			}
@@ -1295,7 +1344,7 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 		if compactSummary {
 			summaryTaskBuckets = nil
 		}
-		response.Summary = buildSummary(agg, latencySummary, rollingAgg, activeDays, modelStats, summaryTaskBuckets, prices, zeroTokenModels)
+		response.Summary = buildSummary(agg, store.LatencySummary{}, rollingAgg, activeDays, modelStats, summaryTaskBuckets, prices, zeroTokenModels)
 		if compactSummary {
 			clearFullSummaryMetrics(response.Summary)
 		}
@@ -1375,6 +1424,11 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 	if err := queries.Wait(); err != nil {
 		return Response{}, err
 	}
+	if plan.legacySummaryPercentiles {
+		response.Summary.P95LatencyMS = nullableFloat(latencySummary.P95LatencyMS.Valid, latencySummary.P95LatencyMS.Float64)
+		response.Summary.P95TTFTMS = nullableFloat(latencySummary.P95TTFTMS.Valid, latencySummary.P95TTFTMS.Float64)
+	}
+	response.Percentiles = buildPercentiles(req.Include.Percentiles, latencySummary, latencyPercentiles)
 	if deriveChannelStatsFromAccounts {
 		channelStats = channelModelStatsFromAccountStats(accountStats)
 		channelStatsDerived = accountStatsDerived
@@ -1389,17 +1443,28 @@ func (s *Service) analytics(ctx context.Context, req Request) (Response, error) 
 			timelineDerived = pointsAvailable
 		}
 		if !pointsAvailable {
+			timelineStarted := time.Now()
 			points, err = s.store.TimelineWithFilter(ctx, filter, granularity, location)
+			logAnalyticsStage(ctx, "timeline", timelineStarted, err)
 			if err != nil {
 				return Response{}, err
 			}
 		}
-		timeline = buildTimeline(points, latencyPercentiles, granularity, location, prices)
-		if req.Include.Timeline {
-			response.Timeline = timeline
+		timeline, err = buildTimeline(ctx, points, latencyPercentiles, granularity, location, prices)
+		if err != nil {
+			return Response{}, err
 		}
 		if req.Include.AnomalyPoints {
 			response.AnomalyPoints = buildAnomalyPoints(timeline, granularity)
+		}
+		if req.Include.Timeline {
+			if !plan.legacyTimelinePercentiles {
+				for i := range timeline {
+					timeline[i].P95LatencyMS = nil
+					timeline[i].P95TTFTMS = nil
+				}
+			}
+			response.Timeline = timeline
 		}
 	}
 	if req.Include.HourlyDistribution {
@@ -1636,6 +1701,12 @@ func buildAnalyticsCoverage(
 			if !sources.Timeline {
 				appendLimitation("timeline_metrics_require_raw_events")
 			}
+		}
+		plan := planAnalytics(req.Include)
+		if plan.latencySummary && req.Include.Percentiles != nil && req.Include.Percentiles.Summary {
+			appendLimitation("extended_summary_metrics_require_raw_events")
+		}
+		if plan.latencyTimeline {
 			appendLimitation("timeline_latency_percentiles_require_raw_events")
 		}
 		if req.Include.HourlyDistribution || req.Include.Heatmap || req.Include.TaskBuckets {
@@ -1754,7 +1825,7 @@ func (s *Service) deletedHourlyEdges(ctx context.Context, fromMS, toMS int64, ha
 
 func (s *Service) AccountHistory(ctx context.Context, req AccountHistoryRequest) (AccountHistoryResponse, error) {
 	var response AccountHistoryResponse
-	err := s.store.WithModelPriceSnapshot(func() error {
+	err := s.store.WithModelPriceSnapshotContext(ctx, func() error {
 		var historyErr error
 		response, historyErr = s.accountHistory(ctx, req)
 		return historyErr
@@ -1974,7 +2045,7 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 
 func (s *Service) AccountWindowUsage(ctx context.Context, req AccountWindowUsageRequest) (AccountWindowUsageResponse, error) {
 	var response AccountWindowUsageResponse
-	err := s.store.WithModelPriceSnapshot(func() error {
+	err := s.store.WithModelPriceSnapshotContext(ctx, func() error {
 		var usageErr error
 		response, usageErr = s.accountWindowUsage(ctx, req)
 		return usageErr
@@ -2049,9 +2120,11 @@ func (s *Service) accountWindowUsage(ctx context.Context, req AccountWindowUsage
 		})
 	}
 
-	stats, available := s.monitoringReader.AccountWindowStats(ctx, queries)
+	stats, available, err := s.monitoringReader.AccountWindowStats(ctx, queries)
+	if err != nil {
+		return AccountWindowUsageResponse{}, err
+	}
 	if !available {
-		var err error
 		stats, err = s.store.AccountWindowModelStats(ctx, queries)
 		if err != nil {
 			return AccountWindowUsageResponse{}, err
@@ -2127,9 +2200,11 @@ func (s *Service) HeaderSnapshots(ctx context.Context, req HeaderSnapshotsReques
 	}
 	nowMS := time.Now().UnixMilli()
 	fromMS := nowMS - int64(days)*24*60*60*1000
-	items, available := s.monitoringReader.HeaderSnapshots(ctx, fromMS, limit)
+	items, available, err := s.monitoringReader.HeaderSnapshots(ctx, fromMS, limit)
+	if err != nil {
+		return HeaderSnapshotsResponse{}, err
+	}
 	if !available {
-		var err error
 		items, err = s.store.LatestHeaderSnapshots(ctx, fromMS, limit)
 		if err != nil {
 			return HeaderSnapshotsResponse{}, err
@@ -2289,13 +2364,15 @@ func filterOptionsMatchMainScope(filter store.AnalyticsFilter) bool {
 
 func (s *Service) filterSelectorsWithSource(ctx context.Context, filter store.AnalyticsFilter) (*FilterOptions, bool, error) {
 	optionFilter := filterOptionsBaseFilter(filter)
-	values, derived := s.monitoringReader.FilterSelectors(ctx, optionFilter)
-	if !derived {
-		var err error
-		values, err = s.store.FilterSelectorValuesWithFilter(ctx, optionFilter)
-		if err != nil {
-			return nil, false, err
-		}
+	values, derived, err := analyticsReadSource(ctx, "filter_selectors",
+		func() (store.FilterSelectorValues, bool, error) {
+			return s.monitoringReader.FilterSelectors(ctx, optionFilter)
+		},
+		func() (store.FilterSelectorValues, error) {
+			return s.store.FilterSelectorValuesWithFilter(ctx, optionFilter)
+		})
+	if err != nil {
+		return nil, false, err
 	}
 	accountStats := buildAccountSelectorStats(values)
 	return &FilterOptions{
@@ -2311,11 +2388,9 @@ func (s *Service) filterSelectorsWithSource(ctx context.Context, filter store.An
 }
 
 func (s *Service) filterOptionValuesWithSource(ctx context.Context, filter store.AnalyticsFilter) (store.FilterOptionValues, bool, error) {
-	if values, available := s.monitoringReader.FilterOptions(ctx, filter); available {
-		return values, true, nil
-	}
-	values, err := s.store.FilterOptionValuesWithFilter(ctx, filter)
-	return values, false, err
+	return analyticsReadSource(ctx, "filter_options",
+		func() (store.FilterOptionValues, bool, error) { return s.monitoringReader.FilterOptions(ctx, filter) },
+		func() (store.FilterOptionValues, error) { return s.store.FilterOptionValuesWithFilter(ctx, filter) })
 }
 
 func (s *Service) accountModelStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.AccountModelStat, error) {
@@ -2324,11 +2399,9 @@ func (s *Service) accountModelStats(ctx context.Context, filter store.AnalyticsF
 }
 
 func (s *Service) accountModelStatsWithSource(ctx context.Context, filter store.AnalyticsFilter) ([]store.AccountModelStat, bool, error) {
-	if rows, available := s.monitoringReader.AccountStats(ctx, filter); available {
-		return rows, true, nil
-	}
-	rows, err := s.store.AccountModelStatsWithFilter(ctx, filter)
-	return rows, false, err
+	return analyticsReadSource(ctx, "account_stats",
+		func() ([]store.AccountModelStat, bool, error) { return s.monitoringReader.AccountStats(ctx, filter) },
+		func() ([]store.AccountModelStat, error) { return s.store.AccountModelStatsWithFilter(ctx, filter) })
 }
 
 func (s *Service) apiKeyModelStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.APIKeyModelStat, error) {
@@ -2337,11 +2410,9 @@ func (s *Service) apiKeyModelStats(ctx context.Context, filter store.AnalyticsFi
 }
 
 func (s *Service) apiKeyModelStatsWithSource(ctx context.Context, filter store.AnalyticsFilter) ([]store.APIKeyModelStat, bool, error) {
-	if rows, available := s.monitoringReader.APIKeyStats(ctx, filter); available {
-		return rows, true, nil
-	}
-	rows, err := s.store.APIKeyModelStatsWithFilter(ctx, filter)
-	return rows, false, err
+	return analyticsReadSource(ctx, "api_key_stats",
+		func() ([]store.APIKeyModelStat, bool, error) { return s.monitoringReader.APIKeyStats(ctx, filter) },
+		func() ([]store.APIKeyModelStat, error) { return s.store.APIKeyModelStatsWithFilter(ctx, filter) })
 }
 
 func (s *Service) channelModelStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.ChannelModelStat, error) {
@@ -2350,11 +2421,15 @@ func (s *Service) channelModelStats(ctx context.Context, filter store.AnalyticsF
 }
 
 func (s *Service) channelModelStatsWithSource(ctx context.Context, filter store.AnalyticsFilter) ([]store.ChannelModelStat, bool, error) {
-	if rows, available := s.monitoringReader.AccountStats(ctx, filter); available {
-		return channelModelStatsFromAccountStats(rows), true, nil
-	}
-	rows, err := s.store.ChannelModelStatsWithFilter(ctx, filter)
-	return rows, false, err
+	return analyticsReadSource(ctx, "channel_stats",
+		func() ([]store.ChannelModelStat, bool, error) {
+			rows, available, err := s.monitoringReader.AccountStats(ctx, filter)
+			if err != nil || !available {
+				return nil, available, err
+			}
+			return channelModelStatsFromAccountStats(rows), true, nil
+		},
+		func() ([]store.ChannelModelStat, error) { return s.store.ChannelModelStatsWithFilter(ctx, filter) })
 }
 
 type channelModelStatKey struct {
@@ -2472,11 +2547,9 @@ func (s *Service) aggregate(ctx context.Context, filter store.AnalyticsFilter) (
 }
 
 func (s *Service) aggregateWithSource(ctx context.Context, filter store.AnalyticsFilter) (store.Aggregate, bool, error) {
-	if aggregate, available := s.monitoringReader.Aggregate(ctx, filter); available {
-		return aggregate, true, nil
-	}
-	aggregate, err := s.store.AggregateWithFilter(ctx, filter)
-	return aggregate, false, err
+	return analyticsReadSource(ctx, "aggregate",
+		func() (store.Aggregate, bool, error) { return s.monitoringReader.Aggregate(ctx, filter) },
+		func() (store.Aggregate, error) { return s.store.AggregateWithFilter(ctx, filter) })
 }
 
 func (s *Service) modelStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.ModelStat, error) {
@@ -2485,11 +2558,9 @@ func (s *Service) modelStats(ctx context.Context, filter store.AnalyticsFilter) 
 }
 
 func (s *Service) modelStatsWithSource(ctx context.Context, filter store.AnalyticsFilter) ([]store.ModelStat, bool, error) {
-	if rows, available := s.monitoringReader.ModelStats(ctx, filter); available {
-		return rows, true, nil
-	}
-	rows, err := s.store.ModelStatsWithFilter(ctx, filter, 0)
-	return rows, false, err
+	return analyticsReadSource(ctx, "model_stats",
+		func() ([]store.ModelStat, bool, error) { return s.monitoringReader.ModelStats(ctx, filter) },
+		func() ([]store.ModelStat, error) { return s.store.ModelStatsWithFilter(ctx, filter, 0) })
 }
 
 func (s *Service) eventsCount(ctx context.Context, filter store.AnalyticsFilter) (int64, error) {
@@ -2500,17 +2571,21 @@ func (s *Service) eventsCount(ctx context.Context, filter store.AnalyticsFilter)
 		}
 		return aggregate.TotalCalls, nil
 	}
-	if total, available := s.monitoringReader.EventsCount(ctx, filter); available {
-		return total, nil
-	}
-	return s.store.EventsCountWithFilter(ctx, filter)
+	total, _, err := analyticsReadSource(ctx, "events_count",
+		func() (int64, bool, error) { return s.monitoringReader.EventsCount(ctx, filter) },
+		func() (int64, error) { return s.store.EventsCountWithFilter(ctx, filter) })
+	return total, err
 }
 
 func (s *Service) eventsPage(ctx context.Context, filter store.AnalyticsFilter, beforeMS, beforeID int64, limit int) (store.EventsPage, error) {
-	if page, available := s.monitoringReader.EventsPage(ctx, filter, beforeMS, beforeID, limit); available {
-		return page, nil
-	}
-	return s.store.EventsPageWithFilter(ctx, filter, beforeMS, beforeID, limit)
+	page, _, err := analyticsReadSource(ctx, "events_page",
+		func() (store.EventsPage, bool, error) {
+			return s.monitoringReader.EventsPage(ctx, filter, beforeMS, beforeID, limit)
+		},
+		func() (store.EventsPage, error) {
+			return s.store.EventsPageWithFilter(ctx, filter, beforeMS, beforeID, limit)
+		})
+	return page, err
 }
 
 func countAPIKeySelectors(values store.FilterSelectorValues) int {
@@ -2684,7 +2759,19 @@ func clearFullSummaryMetrics(summary *Summary) {
 	summary.ZeroTokenModels = nil
 }
 
-func buildTimeline(points []store.TimelinePoint, percentiles []store.LatencyPercentiles, granularity string, location *time.Location, prices map[string]store.ModelPrice) []TimelinePoint {
+func buildTimeline(ctx context.Context, points []store.TimelinePoint, percentiles []store.LatencyPercentiles, granularity string, location *time.Location, prices map[string]store.ModelPrice) ([]TimelinePoint, error) {
+	bucketIDs := make([]int64, 0, len(points))
+	seen := make(map[int64]struct{}, len(points))
+	for _, point := range points {
+		if _, exists := seen[point.BucketMS]; !exists {
+			seen[point.BucketMS] = struct{}{}
+			bucketIDs = append(bucketIDs, point.BucketMS)
+		}
+	}
+	intervalsByBucket, err := usage.AnalyticsBucketIntervalsForBuckets(ctx, bucketIDs, granularity, location)
+	if err != nil {
+		return nil, err
+	}
 	type bucketAccumulator struct {
 		point               TimelinePoint
 		cacheHitTokens      int64
@@ -2711,11 +2798,18 @@ func buildTimeline(points []store.TimelinePoint, percentiles []store.LatencyPerc
 	for _, point := range orderedPoints {
 		bucket := buckets[point.BucketMS]
 		if bucket == nil {
+			intervals := intervalsByBucket[point.BucketMS]
+			rangeExact := len(intervals) == 1 && intervals[0].FromMS == point.BucketMS
 			bucket = &bucketAccumulator{
 				point: TimelinePoint{
-					BucketMS: point.BucketMS,
-					Label:    timelineLabel(point.BucketMS, granularity, location),
+					BucketMS:         point.BucketMS,
+					BucketEndMS:      intervals[len(intervals)-1].ToMS,
+					BucketRangeExact: rangeExact,
+					Label:            timelineLabel(point.BucketMS, granularity, location),
 				},
+			}
+			if !rangeExact {
+				bucket.point.BucketIntervals = intervals
 			}
 			buckets[point.BucketMS] = bucket
 			order = append(order, point.BucketMS)
@@ -2772,7 +2866,7 @@ func buildTimeline(points []store.TimelinePoint, percentiles []store.LatencyPerc
 			result[index].P95TTFTMS = nullableFloat(point.P95TTFTMS.Valid, point.P95TTFTMS.Float64)
 		}
 	}
-	return result
+	return result, nil
 }
 
 func buildHourly(points []store.HourlyPoint) []HourlyPoint {
@@ -2938,7 +3032,9 @@ func buildAnomalyPoints(timeline []TimelinePoint, granularity string) []AnomalyP
 		}
 		result = append(result, AnomalyPoint{
 			BucketMS:               current.BucketMS,
-			BucketEndMS:            current.BucketMS + bucketSizeMS(granularity),
+			BucketEndMS:            current.BucketEndMS,
+			BucketIntervals:        current.BucketIntervals,
+			BucketRangeExact:       current.BucketRangeExact,
 			Label:                  current.Label,
 			Severity:               anomalySeverity(len(metricKeys)),
 			MetricKeys:             metricKeys,

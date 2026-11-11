@@ -54,6 +54,19 @@ func runMySQL(ctx context.Context, opts options, cfg config.Config, stdout io.Wr
 		return err
 	}
 	defer db.Close()
+	return dispatchMySQL(ctx, opts, cfg, db, stdout, func() error { return lock.Check(ctx) }, func() error {
+		initialized, err := mysqlrepo.Open(ctx, cfg.DBDSN)
+		if err != nil {
+			return err
+		}
+		return initialized.Close()
+	})
+}
+
+// Keep the destination on the non-migrating administrative pool until restore
+// preparation succeeds. The injected upgrade boundary also permits offline tests
+// of dispatcher ordering, not just tests of the inner row restore.
+func dispatchMySQL(ctx context.Context, opts options, cfg config.Config, db *sql.DB, stdout io.Writer, checkLock, upgrade func() error) error {
 	if opts.Action == "recover" {
 		return recoverMySQLFiles(ctx, db, cfg)
 	}
@@ -62,22 +75,12 @@ func runMySQL(ctx context.Context, opts options, cfg config.Config, stdout io.Wr
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	var err error
 	switch opts.Action {
 	case "create":
-		err = createMySQL(ctx, db, cfg, opts.SnapshotDir, func() error { return lock.Check(ctx) })
+		err = createMySQL(ctx, db, cfg, opts.SnapshotDir, checkLock)
 	case "restore":
-		var tables int
-		if err := db.QueryRowContext(ctx, "select count(*) from information_schema.tables where table_schema=database()").Scan(&tables); err != nil {
-			return err
-		}
-		if tables == 0 {
-			initialized, err := mysqlrepo.Open(ctx, cfg.DBDSN)
-			if err != nil {
-				return err
-			}
-			initialized.Close()
-		}
-		err = restoreMySQL(ctx, db, cfg, opts.SnapshotDir, func() error { return lock.Check(ctx) })
+		err = restoreMySQLWithUpgrade(ctx, db, cfg, opts.SnapshotDir, checkLock, upgrade)
 	default:
 		return fmt.Errorf("unsupported MySQL snapshot action %q", opts.Action)
 	}
@@ -359,7 +362,11 @@ func mysqlFingerprint(ctx context.Context, db *sql.DB) (string, error) {
 	sum := sha256.Sum256([]byte(server + "/" + name))
 	return hex.EncodeToString(sum[:]), err
 }
-func restoreMySQL(ctx context.Context, db *sql.DB, cfg config.Config, dir string, checkLock func() error) (returnErr error) {
+func restoreMySQL(ctx context.Context, db *sql.DB, cfg config.Config, dir string, checkLock func() error) error {
+	return restoreMySQLWithUpgrade(ctx, db, cfg, dir, checkLock, func() error { return nil })
+}
+
+func restoreMySQLWithUpgrade(ctx context.Context, db *sql.DB, cfg config.Config, dir string, checkLock, upgrade func() error) error {
 	abs, m, err := loadManifest(dir)
 	if err != nil {
 		return err
@@ -378,10 +385,6 @@ func restoreMySQL(ctx context.Context, db *sql.DB, cfg config.Config, dir string
 		}
 	}
 	j := mysqlJournal{}
-	j.Fingerprint, err = mysqlFingerprint(ctx, db)
-	if err != nil {
-		return err
-	}
 	var token [32]byte
 	if _, err := rand.Read(token[:]); err != nil {
 		return err
@@ -454,7 +457,28 @@ func restoreMySQL(ctx context.Context, db *sql.DB, cfg config.Config, dir string
 		return err
 	}
 	defer gz.Close()
-	restore, err := mysqlrepo.BeginRestore(ctx, db, gz)
+	prepared, err := mysqlrepo.PrepareRestore(ctx, gz)
+	if err != nil {
+		return err
+	}
+	defer prepared.Close()
+	// All payload integrity, archive extraction and row-stream structure checks
+	// precede upgrade DDL. Only private stages exist; no journal/live file has
+	// been published. Restore consumes this same validated spool after upgrading.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := checkLock(); err != nil {
+		return err
+	}
+	j.Fingerprint, err = mysqlFingerprint(ctx, db)
+	if err != nil {
+		return err
+	}
+	if err := upgrade(); err != nil {
+		return err
+	}
+	restore, err := prepared.BeginRestore(ctx, db)
 	if err != nil {
 		return err
 	}

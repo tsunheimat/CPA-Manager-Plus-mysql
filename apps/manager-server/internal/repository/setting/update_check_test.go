@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	_ "modernc.org/sqlite"
 )
 
@@ -18,7 +19,7 @@ func TestNotificationClaimIsAtomicAndDurable(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err = db.Exec("create table settings(key text primary key,value text not null,updated_at_ms integer not null)"); err != nil {
+	if _, err = sqlwrite.ExecContext(context.Background(), db, "create table settings(key text primary key,value text not null,updated_at_ms integer not null)"); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 func TestStoreEncryptsSetupAndManagerConfigSecrets(t *testing.T) {
@@ -78,7 +79,7 @@ func TestStoreReadsLegacyPlaintextSecretsAndRewritesEncrypted(t *testing.T) {
 		_ = db.Close()
 	})
 
-	if _, err := db.db.Exec(
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db,
 		`insert into settings(key, value, updated_at_ms) values('setup', ?, 1)`,
 		`{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"management-key","queue":"usage","popSide":"right"}`,
 	); err != nil {

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -130,7 +131,7 @@ func TestUsagePricingRollupWorkerContinuesPendingBacklog(t *testing.T) {
 	worker.maxBatches = 1
 	worker.checkInterval = time.Hour
 	worker.continuationDelay = time.Millisecond
-	worker.Start(ctx)
+	startUsagePricingWorkerForTest(t, worker, ctx, cancel)
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -195,9 +196,9 @@ func TestUsagePricingRollupWorkerContinuesRevisionClearing(t *testing.T) {
 	worker.maxBatches = usageDerivedTaskCount
 	worker.checkInterval = time.Hour
 	worker.continuationDelay = time.Millisecond
-	worker.Start(ctx)
+	startUsagePricingWorkerForTest(t, worker, ctx, cancel)
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		state, err := db.UsagePricingState(ctx)
 		if err != nil {
@@ -210,6 +211,43 @@ func TestUsagePricingRollupWorkerContinuesRevisionClearing(t *testing.T) {
 			t.Fatalf("revision clearing did not continue: state=%#v want_revision=%q", state, revisionA.StructureRevision)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestUsagePricingRollupWorkerFinishesSweepWithOneBatchBudget(t *testing.T) {
+	st := newUsagePricingRollupWorkerStore(t)
+	ctx := context.Background()
+	worker := NewUsagePricingRollupWorker(st)
+	worker.batchLimit, worker.maxBatches = 1, 1
+	finish := func() {
+		t.Helper()
+		for turn := 0; turn < 100; turn++ {
+			if !worker.catchUp(ctx) {
+				return
+			}
+		}
+		t.Fatal("completed sweep kept scheduling continuations")
+	}
+	finish() // Empty pricing must not prevent the other checkpoints from running.
+	for _, name := range []string{"projection_v1", "metadata_v1", "stats_v1", "codex_legacy_identity_v1"} {
+		state, err := st.UsageMonitoringState(ctx, name)
+		if err != nil || state.Status != "ready" {
+			t.Fatalf("empty sweep skipped %s: %#v %v", name, state, err)
+		}
+	}
+	if st.UsageMonitoringHourlyEnabled() {
+		t.Fatal("default store unexpectedly enabled hourly tasks")
+	}
+	if _, err := st.InsertEvents(ctx, []usage.Event{usagePricingRollupWorkerEvent("single-budget", 1_800_000_000_000, 10)}); err != nil {
+		t.Fatal(err)
+	}
+	worker.Wake()
+	finish()
+	for _, name := range []string{"projection_v1", "metadata_v1", "stats_v1", "codex_legacy_identity_v1"} {
+		state, err := st.UsageMonitoringState(ctx, name)
+		if err != nil || state.CoverageEventID != 1 || state.Status != "ready" {
+			t.Fatalf("single-budget sweep skipped %s: %#v %v", name, state, err)
+		}
 	}
 }
 
@@ -227,7 +265,7 @@ func TestUsagePricingRollupWorkerRecordsFailure(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
-	if _, err := sqlDB.ExecContext(ctx, `drop table usage_pricing_hourly_rollups_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `drop table usage_pricing_hourly_rollups_v1`); err != nil {
 		t.Fatalf("drop pricing rollup fixture: %v", err)
 	}
 
@@ -243,6 +281,24 @@ func TestUsagePricingRollupWorkerRecordsFailure(t *testing.T) {
 	if ctx.Err() != nil {
 		t.Fatalf("worker failure unexpectedly canceled context: %v", ctx.Err())
 	}
+}
+
+func startUsagePricingWorkerForTest(t *testing.T, worker *UsagePricingRollupWorker, ctx context.Context, cancel context.CancelFunc) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.loop(ctx)
+	}()
+	worker.Wake()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("usage derived worker did not stop before database cleanup")
+		}
+	})
 }
 
 func newUsagePricingRollupWorkerStore(t *testing.T) *store.Store {

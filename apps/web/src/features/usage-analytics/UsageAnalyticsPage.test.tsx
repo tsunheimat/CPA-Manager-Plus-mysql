@@ -547,6 +547,92 @@ beforeEach(() => {
 });
 
 describe('UsageAnalyticsPage', () => {
+  const makeSections = (overrides: Record<string, Record<string, unknown>> = {}) =>
+    Object.fromEntries(
+      [
+        'core',
+        'exact',
+        'anomalies',
+        'dimensions',
+        'selectors',
+        'preview',
+        'metadata',
+        'trends',
+        'apiKeyTrend',
+        'credentialTrend',
+        'heatmapDate',
+      ].map((key) => [
+        key,
+        {
+          enabled: true,
+          loaded: true,
+          loading: false,
+          stale: false,
+          error: '',
+          retry: vi.fn(),
+          ...overrides[key],
+        },
+      ])
+    );
+
+  it('renders core while exact, anomalies, and dimensions are pending without reporting empty or zero', () => {
+    const waiting = { loaded: false, loading: true };
+    mocks.usageState = createUsageState({
+      anomalyPoints: [],
+      sections: makeSections({ exact: waiting, anomalies: waiting, dimensions: waiting }),
+    });
+    const renderer = renderPage();
+    const text = getText(renderer.root);
+    expect(text).toContain('usage_analytics.overview_trend_title');
+    expect(text).toContain('usage_analytics.section_exact');
+    expect(text).toContain('common.loading');
+    expect(text).not.toContain('usage_analytics.anomaly_none');
+    expect(text).not.toContain('420ms');
+    expect(text).not.toContain('0 usage_analytics.anomaly_points_title');
+    expect(renderer.root.findAllByType(EChartsView).length).toBeGreaterThan(0);
+    act(() => renderer.unmount());
+  });
+
+  it('offers a section-only retry after exact failure and keeps preview errors distinct from empty', () => {
+    const retry = vi.fn();
+    const state = createUsageState({
+      selectedBucket: createTimelinePoint(),
+      drilldownPreview: [],
+      sections: makeSections({
+        exact: { loaded: false, error: 'percentile timeout', retry },
+        anomalies: { loaded: false, error: 'percentile timeout', retry },
+        preview: { loaded: false, error: 'preview offline' },
+        metadata: { error: 'metadata offline', stale: true },
+      }),
+    });
+    mocks.usageState = state;
+    const renderer = renderPage();
+    const text = getText(renderer.root);
+    expect(text).toContain('percentile timeout');
+    expect(text).toContain('preview offline');
+    expect(text).toContain('metadata offline');
+    expect(text).not.toContain('usage_analytics.drilldown_preview_empty');
+    expect(text).not.toContain('usage_analytics.anomaly_none');
+    const exactAlert = renderer.root.findAll(
+      (node) =>
+        node.props.role === 'alert' && getText(node).includes('usage_analytics.section_exact')
+    )[0];
+    clickHostButton(exactAlert.findByType('button'));
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(state.refresh).not.toHaveBeenCalled();
+    act(() => renderer.unmount());
+  });
+
+  it('does not render fabricated zero core metrics before the first successful response', () => {
+    mocks.usageState = createUsageState({
+      sections: makeSections({ core: { loaded: false, loading: true } }),
+    });
+    const renderer = renderPage();
+    expect(renderer.root.findAllByType(EChartsView)).toHaveLength(0);
+    expect(getText(renderer.root)).not.toContain('usage_analytics.summary_meta');
+    act(() => renderer.unmount());
+  });
+
   it('renders overview as the default tab with risk, trend, and contribution panels', () => {
     const renderer = renderPage();
     const text = getText(renderer.root);
@@ -573,30 +659,53 @@ describe('UsageAnalyticsPage', () => {
 
   it('keeps cost axis labels separate from token labels while preserving exact tooltip costs', () => {
     const renderer = renderPage();
-    const chart = renderer.root.findAllByType(EChartsView).find((node) =>
-      Array.isArray(node.props.option.yAxis) && node.props.option.yAxis.length === 3
-    );
+    const chart = renderer.root
+      .findAllByType(EChartsView)
+      .find(
+        (node) => Array.isArray(node.props.option.yAxis) && node.props.option.yAxis.length === 3
+      );
     expect(chart).toBeDefined();
     const option = chart!.props.option;
     expect(option.yAxis[2].axisLabel.formatter(1000)).toBe('$1.00K');
     expect(option.yAxis[1].offset).toBeGreaterThanOrEqual(64);
     expect(option.grid.outerBoundsMode).toBe('same');
     expect(option.grid.right).toBe(10);
-    const costSeries = option.series.find((series: { yAxisIndex: number }) => series.yAxisIndex === 2);
-    expect(option.tooltip.formatter([{ dataIndex: 0, data: 1234.5, seriesName: costSeries.name }])).toContain('$1,234.50');
+    const costSeries = option.series.find(
+      (series: { yAxisIndex: number }) => series.yAxisIndex === 2
+    );
+    expect(
+      option.tooltip.formatter([{ dataIndex: 0, data: 1234.5, seriesName: costSeries.name }])
+    ).toContain('$1,234.50');
     act(() => renderer.unmount());
   });
 
   it.each([324, 702, 1148])('keeps the multi-axis plot readable in a %i px chart', (width) => {
-    const first = createTimelinePoint({ label: '07/01', requestCount: 0, totalTokens: 0, estimatedCost: 0 });
-    const last = createTimelinePoint({ label: '08/05', requestCount: 8000, totalTokens: 1_200_000_000, estimatedCost: 1000 });
+    const first = createTimelinePoint({
+      label: '07/01',
+      requestCount: 0,
+      totalTokens: 0,
+      estimatedCost: 0,
+    });
+    const last = createTimelinePoint({
+      label: '08/05',
+      requestCount: 8000,
+      totalTokens: 1_200_000_000,
+      estimatedCost: 1000,
+    });
     mocks.usageState = createUsageState({ timeline: [first, last] });
     const renderer = renderPage();
-    const chart = renderer.root.findAllByType(EChartsView).find((node) =>
-      Array.isArray(node.props.option.yAxis) && node.props.option.yAxis.length === 3
-    );
+    const chart = renderer.root
+      .findAllByType(EChartsView)
+      .find(
+        (node) => Array.isArray(node.props.option.yAxis) && node.props.option.yAxis.length === 3
+      );
     echarts.use([SVGRenderer]);
-    const instance = echarts.init(null, undefined, { renderer: 'svg', ssr: true, width, height: 350 });
+    const instance = echarts.init(null, undefined, {
+      renderer: 'svg',
+      ssr: true,
+      width,
+      height: 350,
+    });
     try {
       instance.setOption({ ...chart!.props.option, animation: false });
       const start = instance.convertToPixel({ xAxisIndex: 0 }, first.label) as number;
@@ -642,6 +751,110 @@ describe('UsageAnalyticsPage', () => {
     expect(text).not.toContain('usage_analytics.api_key_overview_title');
     expect(text).not.toContain('usage_analytics.drilldown_preview_title');
   });
+
+  it.each(['overview', 'trends'])(
+    'explains unavailable exact drilldowns after chart clicks and in anomaly links on %s',
+    (activeTab) => {
+      const point = createTimelinePoint({
+        label: 'Repeated local day',
+        bucketRangeExact: false,
+        bucketIntervals: [
+          { fromMs: 1_780_000_000_000, toMs: 1_780_000_600_000 },
+          { fromMs: 1_780_001_800_000, toMs: 1_780_003_600_000 },
+        ],
+      });
+      const base = createUsageState();
+      const anomalyPoints = [{ ...base.anomalyPoints[0], ...point }];
+      const selectBucket = vi.fn();
+      mocks.usageState = createUsageState({
+        activeTab,
+        timeline: [point],
+        selectedBucket: null,
+        anomalyAnalysis: null,
+        anomalyPoints,
+        selectBucket,
+      });
+      const renderer = renderPage();
+      const chart = renderer.root.findAllByType(EChartsView).find((node) => node.props.onClick);
+      expect(chart).toBeDefined();
+      act(() => chart!.props.onClick({ dataIndex: 0 }));
+      expect(selectBucket).toHaveBeenCalledWith(point);
+      expect(mocks.navigate).not.toHaveBeenCalled();
+
+      mocks.usageState = createUsageState({
+        activeTab,
+        timeline: [point],
+        selectedBucket: point,
+        anomalyAnalysis: { ...base.anomalyAnalysis, point },
+        anomalyPoints,
+        selectBucket,
+        // Even a stale sample cannot be shown for a bucket that has no supported exact drilldown.
+        drilldownPreview: [createDrilldownEvent({ requestId: 'unsafe-envelope-sample' })],
+        sections: makeSections({ preview: { enabled: false, loaded: false } }),
+      });
+      act(() => renderer.update(<UsageAnalyticsPage />));
+      const text = getText(renderer.root);
+      expect(text).toContain('usage_analytics.bucket_drilldown_unavailable');
+      expect(text).not.toContain('usage_analytics.drilldown_preview_empty');
+      expect(text).not.toContain('usage_analytics.drilldown_preview_hint');
+      expect(text).not.toContain('unsafe-envelope-sample');
+      expect(renderer.root.findAll((node) => node.props.role === 'status').length).toBeGreaterThan(
+        0
+      );
+      const row = renderer.root
+        .findAllByType('tr')
+        .find((node) => getText(node).includes(point.label));
+      expect(row).toBeDefined();
+      const cells = row!.findAllByType('td');
+      expect(getText(cells[2])).toBe('12');
+      expect(getText(cells[3])).toBe('1.2K');
+      expect(getText(cells[4])).toContain('1.25');
+      const blocked = renderer.root
+        .findAllByType('button')
+        .filter(
+          (node) =>
+            node.props.disabled && getText(node).includes('usage_analytics.view_monitoring_details')
+        );
+      expect(blocked).toHaveLength(activeTab === 'trends' ? 2 : 1);
+      // Exercise the callback guards too, rather than relying only on disabled HTML buttons.
+      blocked.forEach(clickHostButton);
+      expect(mocks.navigate).not.toHaveBeenCalled();
+      act(() => renderer.unmount());
+    }
+  );
+
+  it.each([undefined, true])(
+    'keeps normal chart/anomaly links and preview available (exact=%s)',
+    (bucketRangeExact) => {
+      const point = createTimelinePoint({ bucketRangeExact });
+      const base = createUsageState();
+      mocks.usageState = createUsageState({
+        activeTab: 'trends',
+        timeline: [point],
+        selectedBucket: point,
+        anomalyAnalysis: { ...base.anomalyAnalysis, point },
+        anomalyPoints: [{ ...base.anomalyPoints[0], ...point }],
+      });
+      const renderer = renderPage();
+      expect(getText(renderer.root)).not.toContain('usage_analytics.bucket_drilldown_unavailable');
+      expect(getText(renderer.root)).toContain('usage_analytics.drilldown_preview_hint');
+      const links = renderer.root
+        .findAllByType('button')
+        .filter((node) => getText(node).includes('usage_analytics.view_monitoring_details'));
+      expect(links).toHaveLength(2);
+      for (const link of links) {
+        expect(link.props.disabled).not.toBe(true);
+        clickHostButton(link);
+      }
+      expect(mocks.navigate).toHaveBeenCalledTimes(2);
+      for (const [url] of mocks.navigate.mock.calls) {
+        const params = new URL(url, 'https://panel.test').searchParams;
+        expect(params.get('from_ms')).toBe(String(point.bucketMs));
+        expect(params.get('to_ms')).toBe(String(point.bucketEndMs));
+      }
+      act(() => renderer.unmount());
+    }
+  );
 
   it('renders fine-grained cache buckets in token charts', () => {
     const point = createTimelinePoint({
@@ -1316,8 +1529,16 @@ describe('UsageAnalyticsPage', () => {
       });
       mocks.usageState = state;
       const renderer = renderPage();
-      const panel = () => renderer.root.find(n => typeof n.type === 'function' && n.type.name === (tab === 'credentials' ? 'EntityTrendChart' : 'HeatmapDetailPanel'));
-      const emptyLabel = tab === 'credentials' ? 'usage_analytics.empty_title' : 'usage_analytics.heatmap_date_empty';
+      const panel = () =>
+        renderer.root.find(
+          (n) =>
+            typeof n.type === 'function' &&
+            n.type.name === (tab === 'credentials' ? 'EntityTrendChart' : 'HeatmapDetailPanel')
+        );
+      const emptyLabel =
+        tab === 'credentials'
+          ? 'usage_analytics.empty_title'
+          : 'usage_analytics.heatmap_date_empty';
       for (const phase of ['pending', 'failure', 'recovery']) {
         Object.assign(state, {
           credentialTrendLoading: phase === 'pending',

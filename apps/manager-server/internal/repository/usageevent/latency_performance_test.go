@@ -19,6 +19,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -466,7 +467,7 @@ func latencyPerfEnvInt(t *testing.T, key string, fallback int) int {
 }
 func latencyPerfExec(t *testing.T, db *sql.DB, query string, args ...any) {
 	t.Helper()
-	if _, err := db.Exec(query, args...); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, query, args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -478,9 +479,14 @@ func latencyPerfFileSize(path string) int64 {
 	return info.Size()
 }
 
-// Extract the exact SQL literal so this opt-in test cannot silently benchmark a
-// different query after a production change. Only INDEXED BY is added below.
+// Keep the pre-optimization sample transfer baseline for the optional covering
+// index experiment. Actual repository timings below exercise the current rank
+// implementation; they are not equivalent to this baseline's scan/group split.
+// Summary still extracts its exact reference SQL literal.
 func latencyPerfSQL(t *testing.T, function string) string {
+	if function == "LatencyPercentilesWithFilter" {
+		return `select timestamp_ms, coalesce(latency_ms, 0), coalesce(ttft_ms, 0) from usage_events %s and (latency_ms > 0 or ttft_ms > 0) order by timestamp_ms`
+	}
 	t.Helper()
 	source, err := os.ReadFile("analytics.go")
 	if err != nil {

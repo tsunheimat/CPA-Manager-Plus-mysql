@@ -15,17 +15,77 @@ import { useAuthStore } from '@/stores';
 
 const DEFAULT_REFRESH_THROTTLE_MS = 5_000;
 
+export interface MonitoringAnalyticsScheduler {
+  run<T>(work: () => Promise<T>, signal: AbortSignal, priority?: number): Promise<T>;
+}
+
+/** Page-local admission, not a result cache. Aborted running work holds its slot until settled. */
+export function createMonitoringAnalyticsScheduler(limit = 2): MonitoringAnalyticsScheduler {
+  let active = 0;
+  const queue: Array<{ priority: number; start: () => void; signal: AbortSignal }> = [];
+  const pump = () => {
+    queue.sort((a, b) => a.priority - b.priority);
+    while (active < Math.max(1, limit) && queue.length) {
+      const next = queue.shift()!;
+      if (!next.signal.aborted) next.start();
+    }
+  };
+  return {
+    run: <T>(work: () => Promise<T>, signal: AbortSignal, priority = 2) =>
+      new Promise<T>((resolve, reject) => {
+        const abort = () => {
+          const index = queue.indexOf(entry);
+          if (index >= 0) queue.splice(index, 1);
+          reject(new DOMException('Analytics request canceled', 'AbortError'));
+        };
+        const entry = {
+          priority,
+          signal,
+          start: () => {
+            signal.removeEventListener('abort', abort);
+            active += 1;
+            Promise.resolve()
+              .then(() => {
+                if (signal.aborted)
+                  throw new DOMException('Analytics request canceled', 'AbortError');
+                return work();
+              })
+              .then(resolve, reject)
+              .finally(() => {
+                active -= 1;
+                pump();
+              });
+          },
+        };
+        if (signal.aborted) {
+          abort();
+          return;
+        }
+        signal.addEventListener('abort', abort, { once: true });
+        queue.push(entry);
+        queueMicrotask(pump);
+      }),
+  };
+}
+
 export interface UseMonitoringAnalyticsParams {
   fromMs?: number | null;
   toMs?: number | null;
   nowMs?: number;
   dataScopeKey?: string;
+  /** Opt-in exact immutable identity, separate from a rounded presentation scope. */
+  fetchGenerationKey?: string;
+  timeZone?: string;
+  scheduler?: MonitoringAnalyticsScheduler;
+  priority?: number;
   searchQuery?: string;
   searchApiKeyHash?: string;
   filters?: MonitoringAnalyticsFilters;
   include?: MonitoringAnalyticsInclude;
   eventsPage?: MonitoringAnalyticsEventsPageRequest | null;
   throttleMs?: number;
+  /** Defer a section until its dependencies and capability probe are ready. */
+  enabled?: boolean;
 }
 
 export interface MonitoringAnalyticsRefreshOptions {
@@ -83,12 +143,17 @@ export function useMonitoringAnalytics({
   toMs,
   nowMs,
   dataScopeKey,
+  fetchGenerationKey,
+  timeZone: requestedTimeZone,
+  scheduler,
+  priority,
   searchQuery,
   searchApiKeyHash,
   filters,
   include,
   eventsPage,
   throttleMs = DEFAULT_REFRESH_THROTTLE_MS,
+  enabled: requestedEnabled = true,
 }: UseMonitoringAnalyticsParams): UseMonitoringAnalyticsReturn {
   const managementKey = useAuthStore((state) => state.managementKey);
   const apiBase = useAuthStore((state) => state.apiBase);
@@ -125,7 +190,7 @@ export function useMonitoringAnalytics({
       from_ms: fromMs,
       to_ms: toMs,
     };
-    const timeZone = getBrowserTimeZone();
+    const timeZone = requestedTimeZone ?? getBrowserTimeZone();
     if (timeZone) {
       payload.time_zone = timeZone;
     }
@@ -150,19 +215,49 @@ export function useMonitoringAnalytics({
       payload.include = nextInclude;
     }
     return payload;
-  }, [eventsPageKey, filtersKey, fromMs, includeKey, nowMs, searchApiKeyHash, searchQuery, toMs]);
+  }, [
+    eventsPageKey,
+    filtersKey,
+    fromMs,
+    includeKey,
+    nowMs,
+    requestedTimeZone,
+    searchApiKeyHash,
+    searchQuery,
+    toMs,
+  ]);
 
   const requestKey = useMemo(() => (request ? stableJson(request) : ''), [request]);
+  const exactRequestKey =
+    fetchGenerationKey === undefined
+      ? ''
+      : stableJson([fetchGenerationKey, requestKey, requestedEnabled]);
   const inFlightRequestIdentityKey = useMemo(
-    () => (request ? buildInFlightRequestIdentityKey(dataScopeKey, request, requestKey) : ''),
-    [dataScopeKey, request, requestKey]
+    () =>
+      request
+        ? exactRequestKey || buildInFlightRequestIdentityKey(dataScopeKey, request, requestKey)
+        : '',
+    [dataScopeKey, exactRequestKey, request, requestKey]
   );
-  const activeDataScopeKey = dataScopeKey || requestKey;
+  const activeDataScopeKey = exactRequestKey || dataScopeKey || requestKey;
   const serviceBase = availability.serviceBase;
-  const enabled = availability.available && Boolean(serviceBase) && Boolean(request);
+  const enabled =
+    requestedEnabled && availability.available && Boolean(serviceBase) && Boolean(request);
   const connectionScope = JSON.stringify([apiBase, serviceBase, managementKey]);
   const connectionScopeRef = useRef(connectionScope);
   connectionScopeRef.current = connectionScope;
+  const exactRequestKeyRef = useRef(exactRequestKey);
+  exactRequestKeyRef.current = exactRequestKey;
+  useLayoutEffect(() => {
+    if (!exactRequestKey) return;
+    requestIdRef.current += 1;
+    abortControllerRef.current?.abort();
+    inFlightRequestIdentityKeyRef.current = '';
+    inFlightRequestIdRef.current = 0;
+    lastRequestKeyRef.current = '';
+    setLoading(false);
+    setError('');
+  }, [exactRequestKey]);
   useLayoutEffect(() => {
     requestIdRef.current += 1;
     abortControllerRef.current?.abort();
@@ -181,7 +276,11 @@ export function useMonitoringAnalytics({
 
   const refresh = useCallback(
     async (options: MonitoringAnalyticsRefreshOptions = {}) => {
-      if (connectionScopeRef.current !== connectionScope) return;
+      if (
+        connectionScopeRef.current !== connectionScope ||
+        exactRequestKeyRef.current !== exactRequestKey
+      )
+        return;
       if (!enabled || !request || !serviceBase) {
         abortControllerRef.current?.abort();
         abortControllerRef.current = null;
@@ -222,20 +321,32 @@ export function useMonitoringAnalytics({
       setError('');
 
       try {
-        const response = await monitoringAnalyticsApi.getAnalytics(
-          serviceBase,
-          managementKey,
-          request,
-          controller.signal
-        );
-        if (requestIdRef.current !== requestId || connectionScopeRef.current !== connectionScope)
+        const work = () =>
+          monitoringAnalyticsApi.getAnalytics(
+            serviceBase,
+            managementKey,
+            request,
+            controller.signal
+          );
+        const response = await (scheduler
+          ? scheduler.run(work, controller.signal, priority)
+          : work());
+        if (
+          requestIdRef.current !== requestId ||
+          connectionScopeRef.current !== connectionScope ||
+          exactRequestKeyRef.current !== exactRequestKey
+        )
           return;
         setData(response);
         setDataScopeStateKey(activeDataScopeKey);
         setLastRefreshedAt(new Date());
       } catch (err) {
         if (controller.signal.aborted) return;
-        if (requestIdRef.current !== requestId || connectionScopeRef.current !== connectionScope)
+        if (
+          requestIdRef.current !== requestId ||
+          connectionScopeRef.current !== connectionScope ||
+          exactRequestKeyRef.current !== exactRequestKey
+        )
           return;
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -255,6 +366,9 @@ export function useMonitoringAnalytics({
       activeDataScopeKey,
       connectionScope,
       enabled,
+      exactRequestKey,
+      scheduler,
+      priority,
       inFlightRequestIdentityKey,
       managementKey,
       request,
@@ -279,7 +393,11 @@ export function useMonitoringAnalytics({
     []
   );
 
-  const dataStale = Boolean(dataScopeKey && data && dataScopeStateKey !== activeDataScopeKey);
+  const dataStale = Boolean(
+    (dataScopeKey || exactRequestKey) &&
+    data &&
+    (dataScopeStateKey !== activeDataScopeKey || (exactRequestKey && (loading || error)))
+  );
   const scopedData = dataScopeKey || dataScopeStateKey === activeDataScopeKey ? data : null;
 
   return useMemo(

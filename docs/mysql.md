@@ -92,7 +92,9 @@ All offline commands use the configured MySQL database when `--db-path` is omitt
 
 For Compose, stop the service and prefix a command with `docker compose run --rm --no-deps cpa-manager-plus`. Use a snapshot directory on a persistent mounted volume, outside `usage-archives/`, and restart the service after maintenance.
 
-Snapshots contain all database rows, auto-increment high-water marks, the local `data.key`, and the complete archive directory. They use checksums and a compressed, lossless row stream. Restore accepts a matching schema version, restores into an initialized or empty MySQL database, validates foreign keys, and replaces rows in one transaction. Auto-increment counters never move backwards. Keep the exact binary/image version with a backup. If you supply `CPA_MANAGER_DATA_KEY` directly, retain that external secret separately; it is not a local file in the snapshot.
+Snapshots contain all database rows, auto-increment high-water marks, the local `data.key`, and the complete archive directory. They use checksums and a compressed, lossless row stream. The current binary accepts the explicitly supported v1 and current MySQL snapshot layouts, restores into an initialized or empty MySQL database, validates foreign keys, and replaces rows in one transaction. Restoring a v1 snapshot keeps the destination's current physical schema version and initializes new hourly acceleration states as pending; it does not downgrade the schema. Unknown future layouts are rejected. Auto-increment counters never move backwards. Keep the exact binary/image version with a backup. If you supply `CPA_MANAGER_DATA_KEY` directly, retain that external secret separately; it is not a local file in the snapshot.
+
+Both v1 and current v2 restores need temporary disk space for the decoded row stream. The binary validates snapshot integrity and stream structure into a private, bounded-memory spool before upgrading the destination schema or replacing rows. This also recovers legacy v1 sequence high-water marks. The spool is removed on success or failure. Allow space for the decoded data, not only the compressed backup. Database constraints and destination failures remain transactional restore checks; a completed schema upgrade is not rolled back by a later row-level failure.
 
 Local-file changes and the database commit use a durable recovery journal. If a restore is interrupted, startup refuses to proceed until you run the following command with the same database and data-key paths:
 
@@ -110,6 +112,10 @@ Recovery checks whether the database transaction committed, then completes or ro
 - Substring search retains its behavior using the retained event projection. MySQL does not use SQLite's FTS5 trigram index, so broad substring searches can cost more on large histories. Measure your workload before setting retention or capacity targets.
 
 MySQL 5.7 and MariaDB are not supported by this implementation.
+
+## Analytics performance
+
+See the [MySQL analytics implementation and validation guide](performance/mysql-analytics.md) for progressive analytics, native optimization switches, upgrade precautions, exact-metric guarantees, and a disposable-database acceptance matrix. Native query plans and latency must be validated on MySQL; SQLite timings are not MySQL performance evidence.
 
 ## Development validation
 
@@ -132,4 +138,4 @@ Use an administrator on the disposable test server: fixtures need `CREATE DATABA
 
 The recovery script requires Docker and creates its own disposable MySQL container. It kills MySQL during an actual Manager process, checks shutdown on lost ownership, restarts both, verifies committed data, and exercises native snapshot restoration. The integration suite also covers concurrent ingestion with duplicate events, migration, API/worker/service workflows, encrypted settings, and backup rollback. These checks do not replace a staged migration of your production data or workload-specific capacity testing.
 
-The initial native schema is generated from a fresh SQLite schema with `go generate ./internal/repository/mysql` from `apps/manager-server`. Review schema changes and add a versioned MySQL upgrade when changing an already released schema; regenerating version 1 does not upgrade an existing MySQL database.
+The initial native schema was generated from SQLite and is now a frozen v1 upgrade/restore baseline. `go generate ./internal/repository/mysql` from `apps/manager-server` checks that baseline rather than silently replacing it. Review schema changes and add a numbered MySQL migration for new layouts; regenerating version 1 does not upgrade an existing MySQL database. Fresh databases also run the numbered migrations. Version 2 adds the independent hourly dimension tables and their initial pending states, not a synchronous history backfill.

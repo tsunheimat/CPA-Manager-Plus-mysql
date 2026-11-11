@@ -18,15 +18,37 @@ type statement struct {
 	returningID    bool
 	parameterCount int
 	bindings       []int
+	write          bool
+	txControl      bool
+	ddl            bool
 }
 
 func compile(query string) (statement, error) {
-	tokens, err := lex(query)
+	native := strings.HasPrefix(query, nativePrefix)
+	query = strings.TrimPrefix(query, nativePrefix)
+	tokens, err := lexSQL(query, native)
 	if err != nil {
 		return statement{}, err
 	}
 	if len(tokens) == 0 {
 		return statement{}, fmt.Errorf("empty SQL statement")
+	}
+	write, control, ddl, err := classify(tokens)
+	if err != nil {
+		return statement{}, err
+	}
+	if !native && (ddl || equal(tokens[0], "set")) {
+		// These statements, like Native, go to MySQL verbatim. In MySQL --
+		// starts a comment only before whitespace/control; otherwise it is
+		// arithmetic and must not hide parameters or transaction controls.
+		tokens, err = lexSQL(query, true)
+		if err != nil {
+			return statement{}, err
+		}
+		write, control, ddl, err = classify(tokens)
+		if err != nil {
+			return statement{}, err
+		}
 	}
 	parameterCount := 0
 	for i, token := range tokens {
@@ -35,12 +57,17 @@ func compile(query string) (statement, error) {
 			parameterCount++
 		}
 	}
-	if equal(tokens[0], "create") || equal(tokens[0], "alter") || equal(tokens[0], "drop") || equal(tokens[0], "set") {
-		bindings := make([]int, parameterCount)
-		for i := range bindings {
-			bindings[i] = i
+	s := statement{parameterCount: parameterCount, write: write, txControl: control, ddl: ddl}
+	if native || ddl || equal(tokens[0], "set") {
+		s.sql = query
+		s.bindings = make([]int, parameterCount)
+		for i := range s.bindings {
+			s.bindings[i] = i
 		}
-		return statement{sql: query, parameterCount: parameterCount, bindings: bindings}, nil
+		if native && nativeIgnoresErrors(tokens) {
+			s.ignore, s.bulkIgnore = true, true
+		}
+		return s, nil
 	}
 	if equal(tokens[0], "with") {
 		if insert := topSequence(tokens, "insert"); insert >= 0 {
@@ -94,7 +121,6 @@ func compile(query string) (statement, error) {
 	if len(tokens) > 12 && equal(tokens[0], "delete") && equal(tokens[1], "from") && equal(tokens[3], "where") && equal(tokens[4], "rowid") && equal(tokens[5], "in") && tokens[6] == "(" && equal(tokens[7], "select") && equal(tokens[8], "rowid") && equal(tokens[9], "from") && tokens[10] == tokens[2] && tokens[len(tokens)-1] == ")" {
 		tokens = append(append([]string{}, tokens[:3]...), tokens[11:len(tokens)-1]...)
 	}
-	s := statement{parameterCount: parameterCount}
 	for _, token := range tokens {
 		if equal(token, "json_group_array") && len(tokens) > 2 && equal(tokens[len(tokens)-2], "from") && equal(tokens[len(tokens)-1], "filtered_events") {
 			tokens = tokens[:len(tokens)-2]
@@ -104,6 +130,10 @@ func compile(query string) (statement, error) {
 	if len(tokens) >= 2 && equal(tokens[len(tokens)-2], "returning") && equal(tokens[len(tokens)-1], "id") {
 		s.returningID = true
 		tokens = tokens[:len(tokens)-2]
+	}
+	if len(tokens) > 2 && equal(tokens[0], "insert") && equal(tokens[1], "ignore") {
+		s.ignore = true
+		tokens = append(tokens[:1], tokens[2:]...)
 	}
 	if len(tokens) > 3 && equal(tokens[0], "insert") && equal(tokens[1], "or") && equal(tokens[2], "ignore") {
 		s.ignore = true
@@ -204,13 +234,41 @@ func compile(query string) (statement, error) {
 
 func equal(a, b string) bool { return strings.EqualFold(a, b) }
 
-func lex(query string) ([]string, error) {
+func lex(query string) ([]string, error) { return lexSQL(query, false) }
+
+func lexSQL(query string, native bool) ([]string, error) {
 	var out []string
+	ended := false
 	for i := 0; i < len(query); {
 		c := query[i]
-		if c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == ';' {
+		if c == ' ' || c == '\n' || c == '\r' || c == '\t' {
 			i++
 			continue
+		}
+		if c == ';' {
+			ended = true
+			i++
+			continue
+		}
+		if c == '#' || c == '-' && i+1 < len(query) && query[i+1] == '-' && (!native || i+2 == len(query) || query[i+2] <= ' ') {
+			for i < len(query) && query[i] != '\n' && query[i] != '\r' {
+				i++
+			}
+			continue
+		}
+		if c == '/' && i+1 < len(query) && query[i+1] == '*' {
+			if i+2 < len(query) && query[i+2] == '!' {
+				return nil, fmt.Errorf("executable SQL comments are not supported")
+			}
+			end := strings.Index(query[i+2:], "*/")
+			if end < 0 {
+				return nil, fmt.Errorf("unterminated SQL comment")
+			}
+			i += end + 4
+			continue
+		}
+		if ended {
+			return nil, fmt.Errorf("multiple SQL statements are not supported")
 		}
 		start := i
 		if c == '\'' || c == '"' || c == '`' {
@@ -231,11 +289,6 @@ func lex(query string) ([]string, error) {
 			if !closed {
 				return nil, fmt.Errorf("unterminated SQL quote")
 			}
-		} else if c == '-' && i+1 < len(query) && query[i+1] == '-' {
-			for i < len(query) && query[i] != '\n' {
-				i++
-			}
-			continue
 		} else if c >= '0' && c <= '9' {
 			for i < len(query) && (query[i] >= '0' && query[i] <= '9' || query[i] == '.' || query[i] == '_') {
 				i++

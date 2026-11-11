@@ -4479,6 +4479,15 @@
     "method_not_allowed": "This operation is not supported by the current service path."
   },
   "usage_analytics": {
+    "section_core": "Core analytics",
+    "section_exact": "Exact latency metrics",
+    "section_dimensions": "Dimension rankings",
+    "section_selectors": "Filter options",
+    "section_metadata": "Display metadata",
+    "section_unavailable": "Unavailable",
+    "section_missing": "The server did not return this section. Retry to load it.",
+    "section_stale": "Previous data is out of date.",
+    "section_retry": "Retry section",
     "title": "Usage Analytics",
     "subtitle": "Understand API usage, analyze trends and costs, and optimize resource allocation.",
     "tabs_label": "Usage analytics sections",
@@ -4693,6 +4702,7 @@
     "health_trend_title": "Request Health Trend",
     "anomaly_points_title": "Anomaly Time Buckets",
     "anomaly_points_hint": "Unusual time periods detected from changes in requests, cost, tokens, cache, failure rate, and latency.",
+    "bucket_drilldown_unavailable": "Time-zone changes prevent a verified single-range drilldown for this bucket. Request preview and navigation are unavailable; aggregated totals are unchanged.",
     "drilldown_preview_title": "Request Sample Preview",
     "drilldown_preview_hint": "After selecting a time bucket, real request samples from that bucket are shown here.",
     "drilldown_preview_empty": "Click a time bucket in the trend chart to preview request samples.",

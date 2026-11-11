@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
@@ -127,7 +128,7 @@ func TestDashboardRowsRemainCompleteDuringRebuildAndRestart(t *testing.T) {
 	if _, err := events.InsertBatch(ctx, []usage.Event{first, second, third, fourth}); err != nil {
 		t.Fatalf("insert rebuild fixtures: %v", err)
 	}
-	if _, err := db.Exec(`delete from usage_dashboard_hourly_rollups`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_dashboard_hourly_rollups`); err != nil {
 		t.Fatalf("clear dashboard rollups: %v", err)
 	}
 	scheduleRollupRebuildForTest(t, db, DashboardHourlyCheckpointName, 4)
@@ -278,7 +279,7 @@ func TestCatchUpDashboardHourlyFailureDoesNotAdvanceCheckpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert events: %v", err)
 	}
-	if _, err := db.Exec(`drop table usage_dashboard_hourly_rollups`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `drop table usage_dashboard_hourly_rollups`); err != nil {
 		t.Fatalf("drop table: %v", err)
 	}
 	if _, err := repo.CatchUpDashboardHourly(ctx, 10, 1_700_000_010_000); err == nil {

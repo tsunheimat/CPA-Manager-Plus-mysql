@@ -3,12 +3,17 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // BackupHeader describes the portable, lossless row stream. Generated columns
@@ -32,7 +37,7 @@ func backupLayout(ctx context.Context, db *sql.DB) (BackupHeader, error) {
 	if err := db.QueryRowContext(ctx, "select version from manager_schema_version where id=1").Scan(&h.SchemaVersion); err != nil {
 		return h, err
 	}
-	if h.SchemaVersion != schemaVersion {
+	if h.SchemaVersion < 1 || h.SchemaVersion > schemaVersion {
 		return h, fmt.Errorf("unsupported MySQL schema version %d", h.SchemaVersion)
 	}
 	rows, err := db.QueryContext(ctx, "select table_name,coalesce(auto_increment,0) from information_schema.tables where table_schema=database() and table_type='BASE TABLE' order by table_name")
@@ -72,8 +77,45 @@ func backupLayout(ctx context.Context, db *sql.DB) (BackupHeader, error) {
 			return h, err
 		}
 	}
+	if err := validateBackupLayout(h); err != nil {
+		return h, err
+	}
+	if h.SchemaVersion >= 2 {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			return h, err
+		}
+		err = validateHourlySchema(ctx, conn)
+		conn.Close()
+		if err != nil {
+			return h, err
+		}
+	}
 	return h, nil
 }
+
+// Validate against the historical source schema, never a lenient subset of the
+// destination. Unknown future versions and missing/extra/reordered columns are
+// rejected before any DELETE, ALTER, or filesystem publication.
+func validateBackupLayout(h BackupHeader) error {
+	if h.Version != 1 {
+		return errors.New("unsupported MySQL backup format")
+	}
+	expected, err := versionedBackupLayout(h.SchemaVersion)
+	if err != nil {
+		return err
+	}
+	if len(h.Tables) != len(expected) {
+		return errors.New("backup table layout does not match its schema version")
+	}
+	for i, t := range h.Tables {
+		if t.Name != expected[i].Name || !reflect.DeepEqual(t.Columns, expected[i].Columns) || t.Rows < 0 || t.NextID < 0 {
+			return errors.New("backup table layout does not match its schema version")
+		}
+	}
+	return nil
+}
+
 func columnList(cols []string) string {
 	out := make([]string, len(cols))
 	for i, c := range cols {
@@ -144,32 +186,99 @@ type RestoreTransaction struct {
 
 func (r *RestoreTransaction) Close() {
 	_ = r.Tx.Rollback()
-	_, _ = r.conn.ExecContext(context.Background(), "set foreign_key_checks=1")
-	_ = r.conn.Close()
+	resetRestoreConnection(r.conn)
 }
 
-// BeginRestore validates the complete stream and all foreign keys before the
-// caller can commit. Existing rows are replaced in one InnoDB transaction.
-// AUTO_INCREMENT is only advanced, never rewound, even if a restore rolls back.
-func BeginRestore(ctx context.Context, db *sql.DB, input io.Reader) (result *RestoreTransaction, returnErr error) {
+// A connection whose session checks could not be restored must not re-enter the
+// native administrative pool with foreign-key validation disabled.
+func resetRestoreConnection(conn *sql.Conn) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := conn.ExecContext(ctx, "set foreign_key_checks=1"); err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	_ = conn.Close()
+}
+
+// PreparedRestore owns a validated, private row spool. Preparation never opens a
+// destination connection, so offline callers can reject corrupt/unknown snapshots
+// before an implicitly committing schema upgrade. Close must be called on every
+// outcome, including an upgrade failure. The spool also avoids reopening mutable
+// snapshot payloads after validation.
+type PreparedRestore struct {
+	header BackupHeader
+	rows   *os.File
+}
+
+func (p *PreparedRestore) Close() {
+	if p.rows != nil {
+		name := p.rows.Name()
+		_ = p.rows.Close()
+		_ = os.Remove(name)
+		p.rows = nil
+	}
+}
+
+// PrepareRestore checks the supported header/layout and the entire recoverable
+// stream (row widths, encoding, physical marker, counts and EOF). Database value
+// constraints and foreign keys are still checked by the restoring transaction.
+func PrepareRestore(ctx context.Context, input io.Reader) (*PreparedRestore, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	dec := json.NewDecoder(input)
 	dec.DisallowUnknownFields()
 	var h BackupHeader
 	if err := dec.Decode(&h); err != nil {
 		return nil, err
 	}
+	if err := validateBackupLayout(h); err != nil {
+		return nil, err
+	}
+	for _, table := range h.Tables {
+		if table.Name == "manager_schema_version" && table.Rows != 1 {
+			return nil, errors.New("backup physical schema marker is missing")
+		}
+	}
+	rows, err := prepareRestoreRows(ctx, &h, dec)
+	if err != nil {
+		return nil, err
+	}
+	return &PreparedRestore{header: h, rows: rows}, nil
+}
+
+// BeginRestore validates the complete stream before any destination DDL, and all
+// foreign keys before the caller can commit. Existing rows are replaced in one
+// InnoDB transaction. AUTO_INCREMENT is only advanced, never rewound, even if a
+// restore rolls back. Offline schema-upgrading callers use PrepareRestore first.
+func BeginRestore(ctx context.Context, db *sql.DB, input io.Reader) (*RestoreTransaction, error) {
+	prepared, err := PrepareRestore(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	defer prepared.Close()
+	return prepared.BeginRestore(ctx, db)
+}
+
+func (p *PreparedRestore) BeginRestore(ctx context.Context, db *sql.DB) (result *RestoreTransaction, returnErr error) {
+	if p.rows == nil {
+		return nil, errors.New("prepared MySQL restore is closed")
+	}
+	if _, err := p.rows.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	h := p.header
+	dec := json.NewDecoder(p.rows)
 	current, err := backupLayout(ctx, db)
 	if err != nil {
 		return nil, err
 	}
-	if h.Version != 1 || h.SchemaVersion != current.SchemaVersion || len(h.Tables) != len(current.Tables) {
-		return nil, errors.New("backup schema does not match this Manager version")
+	if current.SchemaVersion != schemaVersion {
+		return nil, errors.New("upgrade the MySQL destination before restoring a backup")
 	}
-	for i, t := range h.Tables {
-		c := current.Tables[i]
-		if t.Name != c.Name || !reflect.DeepEqual(t.Columns, c.Columns) || t.Rows < 0 || t.NextID < 0 {
-			return nil, errors.New("backup table layout does not match the target database")
-		}
+	destination := make(map[string]BackupTable, len(current.Tables))
+	for _, table := range current.Tables {
+		destination[table.Name] = table
 	}
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -177,12 +286,11 @@ func BeginRestore(ctx context.Context, db *sql.DB, input io.Reader) (result *Res
 	}
 	defer func() {
 		if returnErr != nil {
-			_, _ = conn.ExecContext(context.Background(), "set foreign_key_checks=1")
-			_ = conn.Close()
+			resetRestoreConnection(conn)
 		}
 	}()
-	for i, t := range h.Tables {
-		if t.NextID > current.Tables[i].NextID {
+	for _, t := range h.Tables {
+		if t.NextID > destination[t.Name].NextID {
 			if _, err := conn.ExecContext(ctx, fmt.Sprintf("alter table %s auto_increment=%d", QuoteIdentifier(t.Name), t.NextID)); err != nil {
 				return nil, err
 			}
@@ -200,7 +308,12 @@ func BeginRestore(ctx context.Context, db *sql.DB, input io.Reader) (result *Res
 			_ = tx.Rollback()
 		}
 	}()
-	for _, t := range h.Tables {
+	// Clear destination-only acceleration rows as well. Never downgrade the
+	// physical schema marker by copying its old backup row.
+	for _, t := range current.Tables {
+		if t.Name == "manager_schema_version" {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, "delete from "+QuoteIdentifier(t.Name)); err != nil {
 			return nil, err
 		}
@@ -227,6 +340,13 @@ func BeginRestore(ctx context.Context, db *sql.DB, input io.Reader) (result *Res
 					args[i] = v
 				}
 			}
+			if t.Name == "manager_schema_version" {
+				if t.Rows != 1 || string(values[0]) != "1" || string(values[1]) != fmt.Sprint(h.SchemaVersion) {
+					stmt.Close()
+					return nil, errors.New("backup physical schema marker is invalid")
+				}
+				continue
+			}
 			if _, err := stmt.ExecContext(ctx, args...); err != nil {
 				stmt.Close()
 				return nil, fmt.Errorf("restore %s row %d: %w", t.Name, n, err)
@@ -240,10 +360,97 @@ func BeginRestore(ctx context.Context, db *sql.DB, input io.Reader) (result *Res
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return nil, errors.New("backup has trailing or corrupt data")
 	}
+	if h.SchemaVersion < 2 {
+		if _, err := tx.ExecContext(ctx, "delete from usage_monitoring_rollup_state where rollup_name in ('stats_hourly_v1','metadata_hourly_v1')"); err != nil {
+			return nil, err
+		}
+	}
+	if err := EnsureAccelerationState(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := validateForeignKeys(ctx, tx); err != nil {
 		return nil, err
 	}
 	return &RestoreTransaction{Tx: tx, conn: conn}, nil
+}
+
+// prepareRestoreRows validates each row, retaining the stream on a 0600 temporary
+// file rather than in memory. V1 writers used cached AUTO_INCREMENT values, so
+// recover their usage_events lower bound from retained IDs/checkpoints as well.
+// The caller deletes the spool on every outcome, including failed destination DDL.
+func prepareRestoreRows(ctx context.Context, h *BackupHeader, dec *json.Decoder) (file *os.File, err error) {
+	file, err = os.CreateTemp("", fmt.Sprintf("cpamp-mysql-v%d-restore-*", h.SchemaVersion))
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			file.Close()
+			os.Remove(file.Name())
+		}
+	}()
+	enc := json.NewEncoder(file)
+	var highest int64
+	for _, table := range h.Tables {
+		for n := int64(0); n < table.Rows; n++ {
+			if err = ctx.Err(); err != nil {
+				return file, err
+			}
+			var values [][]byte
+			if err = dec.Decode(&values); err != nil {
+				return file, err
+			}
+			if len(values) != len(table.Columns) {
+				return file, errors.New("backup row width mismatch")
+			}
+			if table.Name == "manager_schema_version" && (string(values[0]) != "1" || string(values[1]) != strconv.Itoa(h.SchemaVersion)) {
+				return file, errors.New("backup physical schema marker is invalid")
+			}
+			for i, col := range table.Columns {
+				if h.SchemaVersion != 1 || values[i] == nil || !legacyEventSequenceColumn(table.Name, col) {
+					continue
+				}
+				id, parseErr := strconv.ParseInt(string(values[i]), 10, 64)
+				if parseErr != nil {
+					return file, fmt.Errorf("invalid event sequence evidence in %s.%s", table.Name, col)
+				}
+				if id > highest {
+					highest = id
+				}
+			}
+			if err = enc.Encode(values); err != nil {
+				return file, err
+			}
+		}
+	}
+	var extra any
+	if err = dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return file, errors.New("backup has trailing or corrupt data")
+	}
+	if highest == math.MaxInt64 {
+		return file, errors.New("backup event sequence is exhausted")
+	}
+	for i := range h.Tables {
+		if h.SchemaVersion == 1 && h.Tables[i].Name == "usage_events" && h.Tables[i].NextID <= highest {
+			h.Tables[i].NextID = highest + 1
+		}
+	}
+	_, err = file.Seek(0, io.SeekStart)
+	return file, err
+}
+
+func legacyEventSequenceColumn(table, column string) bool {
+	if table == "usage_events" && column == "id" {
+		return true
+	}
+	if !strings.HasPrefix(table, "usage_") {
+		return false
+	}
+	switch column {
+	case "event_id", "raw_event_id", "first_event_id", "last_event_id", "target_event_id", "backfill_last_event_id", "coverage_event_id", "last_archived_event_id", "last_deleted_event_id":
+		return true
+	}
+	return false
 }
 
 func validateForeignKeys(ctx context.Context, tx *sql.Tx) error {

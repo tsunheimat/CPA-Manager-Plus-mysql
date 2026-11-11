@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
@@ -78,6 +77,7 @@ type AnalyticsFilter = usageevent.AnalyticsFilter
 type TimelinePoint = usageevent.TimelinePoint
 type LatencyPercentiles = usageevent.LatencyPercentiles
 type LatencySummary = usageevent.LatencySummary
+type LatencyMetrics = usageevent.LatencyMetrics
 type HourlyPoint = usageevent.HourlyPoint
 type FilterOptionValues = usageevent.FilterOptionValues
 type FilterSelectorValues = usageevent.FilterSelectorValues
@@ -146,7 +146,8 @@ type UsagePricingAccountSnapshot struct {
 
 type Store struct {
 	db            *sql.DB
-	modelPricesMu sync.RWMutex
+	modelPricesMu priceGate
+	mysqlOptions  MySQLOptions
 
 	Settings         setting.Repository
 	UsageEvents      usageevent.Repository
@@ -178,7 +179,11 @@ func OpenConfigured(ctx context.Context, cfg config.Config, protector ...*securi
 	if err != nil {
 		return nil, err
 	}
-	return New(db, protector...), nil
+	return newWithMySQLOptions(db, MySQLOptions{
+		AnalyticsEnabled: cfg.MySQLAnalyticsEnabled,
+		BulkEnabled:      cfg.MySQLBulkEnabled,
+		HourlyEnabled:    cfg.MySQLHourlyEnabled,
+	}, protector...), nil
 }
 
 func (s *Store) DatabaseDriver() string {
@@ -189,10 +194,15 @@ func (s *Store) DatabaseDriver() string {
 }
 
 func New(db *sql.DB, protector ...*security.Protector) *Store {
+	return newWithMySQLOptions(db, MySQLOptions{}, protector...)
+}
+
+func newWithMySQLOptions(db *sql.DB, options MySQLOptions, protector ...*security.Protector) *Store {
 	return &Store{
 		db:               db,
+		mysqlOptions:     options,
 		Settings:         setting.New(db, protector...),
-		UsageEvents:      usageevent.New(db),
+		UsageEvents:      usageevent.New(db, usageevent.WithMySQLAnalytics(options.AnalyticsEnabled), usageevent.WithMySQLBulk(options.BulkEnabled)),
 		DeadLetters:      deadletter.New(db),
 		ModelPrices:      modelprice.New(db),
 		APIKeyAliases:    apikeyalias.New(db),
@@ -202,9 +212,9 @@ func New(db *sql.DB, protector ...*security.Protector) *Store {
 		QuotaCooldowns:   quotacooldown.New(db),
 		QuotaSnapshots:   quotasnapshot.New(db),
 		UsageAggregates:  usageaggregate.New(db),
-		UsageArchives:    usagearchive.New(db),
+		UsageArchives:    usagearchive.New(db, usagearchive.WithMySQLBulk(options.BulkEnabled)),
 		UsagePricing:     usagepricing.New(db),
-		UsageMonitoring:  usagemonitoring.New(db),
+		UsageMonitoring:  usagemonitoring.New(db, usagemonitoring.WithMySQLHourly(options.HourlyEnabled)),
 		UsageRollups:     usagerollup.New(db),
 	}
 }
@@ -312,22 +322,37 @@ func (s *Store) LoadModelPrices(ctx context.Context) (map[string]ModelPrice, err
 }
 
 func (s *Store) SaveModelPrices(ctx context.Context, prices map[string]ModelPrice) error {
-	s.modelPricesMu.Lock()
-	defer s.modelPricesMu.Unlock()
+	release, err := s.modelPricesMu.acquire(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return s.ModelPrices.ReplaceAll(ctx, prices)
 }
 
 func (s *Store) UpsertSyncedModelPrices(ctx context.Context, prices map[string]ModelPrice) (ModelPriceSyncResult, error) {
-	s.modelPricesMu.Lock()
-	defer s.modelPricesMu.Unlock()
+	release, err := s.modelPricesMu.acquire(ctx, true)
+	if err != nil {
+		return ModelPriceSyncResult{}, err
+	}
+	defer release()
 	return s.ModelPrices.UpsertSynced(ctx, prices)
 }
 
 // WithModelPriceSnapshot prevents model-price mutations while a service reads
 // usage bands and applies the corresponding price book across multiple queries.
 func (s *Store) WithModelPriceSnapshot(read func() error) error {
-	s.modelPricesMu.RLock()
-	defer s.modelPricesMu.RUnlock()
+	return s.WithModelPriceSnapshotContext(context.Background(), read)
+}
+
+// WithModelPriceSnapshotContext includes the price admission wait in the caller's
+// deadline while retaining the same multi-query price-book consistency.
+func (s *Store) WithModelPriceSnapshotContext(ctx context.Context, read func() error) error {
+	release, err := s.modelPricesMu.acquire(ctx, false)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return read()
 }
 
@@ -713,7 +738,13 @@ func (s *Store) LoadUsageHourlyPricingSnapshot(
 		return UsageHourlyPricingSnapshot{}, err
 	}
 	pricingRows, pricingState, pricingAvailable, pricingErr := s.UsagePricing.LoadHourlyRowsTx(ctx, tx, pricingFilter)
-	if aggregateAvailable && (pricingErr != nil || !pricingAvailable || !hourlyPricingCoverageMatches(aggregateRows, pricingRows)) {
+	// Unavailable/stale coverage may be recovered, but a failed query is terminal.
+	// Retrying after cancellation, a connection error or invalid SQL hides the
+	// original failure and spends the request's remaining budget twice.
+	if pricingErr != nil {
+		return UsageHourlyPricingSnapshot{}, pricingErr
+	}
+	if aggregateAvailable && (!pricingAvailable || !hourlyPricingCoverageMatches(aggregateRows, pricingRows)) {
 		pricingRows, err = s.UsagePricing.LoadHourlyRowsFromEventsTx(ctx, tx, pricingFilter)
 		if err != nil {
 			if errors.Is(err, ErrUsagePricingCoverageIncomplete) {
@@ -725,8 +756,6 @@ func (s *Store) LoadUsageHourlyPricingSnapshot(
 			return UsageHourlyPricingSnapshot{}, ErrUsagePricingCoverageIncomplete
 		}
 		pricingAvailable = true
-	} else if pricingErr != nil {
-		return UsageHourlyPricingSnapshot{}, pricingErr
 	}
 	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
 	if err != nil {
@@ -992,6 +1021,10 @@ func (s *Store) LatencyPercentilesWithFilter(ctx context.Context, filter Analyti
 
 func (s *Store) LatencySummaryWithFilter(ctx context.Context, filter AnalyticsFilter) (LatencySummary, error) {
 	return s.UsageEvents.LatencySummaryWithFilter(ctx, filter)
+}
+
+func (s *Store) LatencyMetricsWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location, needSummary, needBuckets bool) (LatencyMetrics, error) {
+	return s.UsageEvents.LatencyMetricsWithFilter(ctx, filter, granularity, location, needSummary, needBuckets)
 }
 
 func (s *Store) HourlyDistributionWithFilter(ctx context.Context, filter AnalyticsFilter, location *time.Location) ([]HourlyPoint, error) {

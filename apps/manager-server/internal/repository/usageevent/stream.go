@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -390,6 +392,25 @@ func (r *repository) WriteExportJSONL(ctx context.Context, writer io.Writer, lim
 // snapshot boundary. It intentionally has no UI/query limit: the caller is
 // the data-lifecycle export path, not the bounded analytics endpoint.
 func (r *repository) WriteFullExportJSONL(ctx context.Context, writer io.Writer) error {
+	if mysql.IsMySQL(r.db) {
+		// A read-only snapshot must not enter MySQL writer admission. Explicit
+		// repeatable-read also keeps every export batch on the same visibility
+		// boundary even when the server defaults to read committed.
+		tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		snapshot, err := r.captureFullUsageSnapshotOn(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if err := r.writeExportJSONLOn(ctx, writer, snapshot, tx); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
 	// Pin one deferred read transaction for the full export. SQLite WAL keeps
 	// writers non-blocking while this snapshot is open, and every batch closes
 	// its rows before writing to the network. That gives the export a stable

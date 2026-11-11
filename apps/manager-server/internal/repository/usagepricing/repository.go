@@ -10,8 +10,9 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
-	sqliteutil "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqliteutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
+	sqliteutil "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqliteutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -163,7 +164,7 @@ func (r *repository) CatchUp(ctx context.Context, limit int, nowMS int64) (Catch
 	}
 	defer r.releaseCatchUp()
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return CatchUpResult{}, err
 	}
@@ -369,7 +370,7 @@ func (r *repository) RecordFailure(ctx context.Context, rollupErr error, nowMS i
 	if sqliteutil.IsBusyError(rollupErr) {
 		return nil
 	}
-	_, err := r.db.ExecContext(ctx, `update usage_pricing_rollup_state set
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update usage_pricing_rollup_state set
 		status = case
 			when status in ('clearing', 'rebuilding') then status
 			when status = 'pending' and target_event_id > coverage_event_id then status
@@ -752,7 +753,7 @@ func upsertAccountBatch(ctx context.Context, tx *sql.Tx, source, revision string
 }
 
 func (r *repository) LoadHourlyRows(ctx context.Context, filter HourlyFilter) ([]HourlyRow, State, bool, error) {
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, State{}, false, err
 	}
@@ -1054,7 +1055,7 @@ func sortedHourlyRows(grouped map[hourlyKey]*HourlyRow) []HourlyRow {
 }
 
 func (r *repository) LoadAccountRows(ctx context.Context, accountKeys []string) ([]AccountRow, State, bool, error) {
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, State{}, false, err
 	}

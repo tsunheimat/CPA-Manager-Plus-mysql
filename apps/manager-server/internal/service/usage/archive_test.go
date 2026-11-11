@@ -22,6 +22,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagearchive"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -291,7 +292,7 @@ func TestUsageArchiveServiceTelemetryWriteFailureDoesNotFailSafeArchive(t *testi
 			if testdb.MySQL() {
 				query = `create trigger fail_archive_progress before update on usage_archive_runs for each row begin if new.progress_phase in ('archive_finalizing', 'archive_publishing') then signal sqlstate '45000' set message_text = 'telemetry unavailable'; end if; end`
 			}
-			_, err := rawDB.ExecContext(ctx, query)
+			_, err := testdb.Admin(t, rawDB).ExecContext(ctx, query)
 			return err
 		}
 		return nil
@@ -370,7 +371,7 @@ func TestUsageArchiveServiceRequiresCoverageReadyBeforeManualArchive(t *testing.
 			if _, err := st.InsertEvents(context.Background(), archiveTestServiceEvents(1)); err != nil {
 				t.Fatalf("insert archive test event: %v", err)
 			}
-			if _, err := rawDB.ExecContext(context.Background(), `update usage_data_migrations set
+			if _, err := sqlwrite.ExecContext(context.Background(), rawDB, `update usage_data_migrations set
 				status = ?, last_error = case when ? = 'failed' then 'test failure' else null end
 				where name = 'usage_cache_accounting_v2'`, migrationStatus, migrationStatus); err != nil {
 				t.Fatalf("set migration status: %v", err)
@@ -493,7 +494,7 @@ func TestUsageMaintenanceRejectsStaleHourlyAggregateState(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, _, rawDB, _ := newRawArchiveTestService(t, 1, 1)
-			if _, err := rawDB.ExecContext(context.Background(), test.updateSQL, test.updateArgs...); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), rawDB, test.updateSQL, test.updateArgs...); err != nil {
 				t.Fatalf("set stale aggregate state: %v", err)
 			}
 
@@ -575,7 +576,7 @@ func TestUsageArchiveServiceBackfillsMetadataBeforeManualArchive(t *testing.T) {
 	ctx := context.Background()
 	rawJSON := `{"response_headers":{"X-OAI-Request-ID":["req-readiness"],"X-Codex-Plan-Type":["plus"]}}`
 	eventHash := canonicalArchiveTestHash("archive-readiness-event")
-	if _, err := rawDB.ExecContext(ctx, `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model,
 		cache_input_mode, normalized_uncached_input_tokens, normalized_total_input_tokens,
 		normalized_cache_read_tokens, normalized_cache_creation_tokens,
@@ -595,7 +596,7 @@ func TestUsageArchiveServiceBackfillsMetadataBeforeManualArchive(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert legacy metadata event: %v", err)
 	}
-	if _, err := rawDB.ExecContext(ctx, `update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `update usage_data_migrations set
 		status = 'completed', last_error = null
 		where name = 'usage_cache_accounting_v2'`); err != nil {
 		t.Fatalf("mark migration completed: %v", err)
@@ -746,7 +747,7 @@ func TestUsageArchiveSegmentsRestoreEventDataIntoFreshStore(t *testing.T) {
 	sanitizedMetaBytes, _ := json.Marshal(decodedMeta)
 	sanitizedMeta := usageparser.SafeRawJSON(string(sanitizedMetaBytes))
 
-	if _, err := sourceDB.ExecContext(ctx, `update usage_events set
+	if _, err := sqlwrite.ExecContext(ctx, sourceDB, `update usage_events set
 		cache_input_mode = ?,
 		normalized_uncached_input_tokens = ?,
 		normalized_total_input_tokens = ?,
@@ -786,7 +787,7 @@ func TestUsageArchiveSegmentsRestoreEventDataIntoFreshStore(t *testing.T) {
 	rawJSONFixture := usageparser.SafeRawJSON(`{"future_extension":"preserve-me","request":{"model":"gpt-test"}}`)
 	failBodyFixture := "archived failure body"
 	failSummaryFixture := "archived failure summary"
-	if _, err := sourceDB.ExecContext(ctx, `update usage_events set
+	if _, err := sqlwrite.ExecContext(ctx, sourceDB, `update usage_events set
 		raw_json = ?, fail_body = ?, fail_summary = ? where event_hash = ?`,
 		rawJSONFixture,
 		failBodyFixture,
@@ -1662,7 +1663,7 @@ func TestUsageArchiveServiceCancelFailsWhenRawEventIsMissing(t *testing.T) {
 	}
 
 	// Simulate raw event data loss externally
-	if _, err := rawDB.ExecContext(ctx, `delete from usage_events where event_hash = ?`, events[0].EventHash); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `delete from usage_events where event_hash = ?`, events[0].EventHash); err != nil {
 		t.Fatalf("delete raw event: %v", err)
 	}
 
@@ -2429,7 +2430,7 @@ func TestManualArchiveReadinessRequiresResponseMetadataBackfill(t *testing.T) {
 	service, st, rawDB, archiveDirectory := newRawArchiveTestService(t, 2, 1)
 
 	rawJSON := `{"response_headers":{"Retry-After":["45"],"X-Codex-Plan-Type":["plus"],"X-OAI-Request-ID":["req-readiness"],"Set-Cookie":["session=secret"]}}`
-	if _, err := rawDB.ExecContext(ctx, `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, failed, fail_status_code,
 		cache_input_mode, normalized_uncached_input_tokens, normalized_total_input_tokens,
 		normalized_cache_read_tokens, normalized_cache_creation_tokens,
@@ -2598,7 +2599,7 @@ func TestUsageArchivePreflightRejectsLegacyNoncanonicalEventHash(t *testing.T) {
 
 	// Directly insert a legacy usage event with a noncanonical event_hash into usage_events.
 	// All other fields are valid and fully compliant with current schema and derived rules.
-	if _, err := rawDB.ExecContext(ctx, `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model,
 		input_tokens, output_tokens, total_tokens,
 		cache_input_mode,
@@ -2626,7 +2627,7 @@ func TestUsageArchivePreflightRejectsLegacyNoncanonicalEventHash(t *testing.T) {
 	}
 
 	// Ensure migration status is marked completed so readiness checks pass
-	if _, err := rawDB.ExecContext(ctx, `update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `update usage_data_migrations set
 		status = 'completed', last_error = null
 		where name = 'usage_cache_accounting_v2'`); err != nil {
 		t.Fatalf("mark migration completed: %v", err)

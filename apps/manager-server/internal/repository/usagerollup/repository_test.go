@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
@@ -143,7 +144,7 @@ func TestCatchUpAccountHistoryDistinguishesRebuildFromIncrementalCatchUp(t *test
 			values ('account_history', 2, 0)
 			on conflict(name) do update set target_event_id = excluded.target_event_id, updated_at_ms = 0`,
 	} {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, statement); err != nil {
 			t.Fatalf("prepare rebuild fixture: %v", err)
 		}
 	}
@@ -201,7 +202,7 @@ func TestAccountHistoryRowsRemainCompleteDuringRebuildAndRestart(t *testing.T) {
 	if _, err := events.InsertBatch(ctx, []usage.Event{first, second, third}); err != nil {
 		t.Fatalf("insert rebuild fixtures: %v", err)
 	}
-	if _, err := db.Exec(`delete from usage_account_model_rollups`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_account_model_rollups`); err != nil {
 		t.Fatalf("clear account rollups: %v", err)
 	}
 	scheduleRollupRebuildForTest(t, db, AccountHistoryCheckpointName, 3)
@@ -414,7 +415,7 @@ func TestCatchUpAccountHistoryFailureDoesNotAdvanceCheckpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert events: %v", err)
 	}
-	if _, err := db.Exec(`drop table usage_account_model_rollups`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `drop table usage_account_model_rollups`); err != nil {
 		t.Fatalf("drop rollup table: %v", err)
 	}
 	if _, err := repo.CatchUpAccountHistory(ctx, 10, 1_700_000_010_000); err == nil {
@@ -509,11 +510,11 @@ func TestCatchUpAccountHistoryWaitsForConcurrentWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latest event id: %v", err)
 	}
-	if _, err := db.Exec(`create table rollup_write_lock_test (id integer primary key)`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `create table rollup_write_lock_test (id integer primary key)`); err != nil {
 		t.Fatalf("create write lock fixture: %v", err)
 	}
 
-	lockingTx, err := db.BeginTx(ctx, nil)
+	lockingTx, err := sqlwrite.BeginTx(ctx, db, nil)
 	if err != nil {
 		t.Fatalf("begin competing write: %v", err)
 	}
@@ -628,7 +629,7 @@ func TestCatchUpAccountHistoryRebuildSeparatesCodexWorkspaceMembers(t *testing.T
 	if _, err := events.InsertBatch(ctx, []usage.Event{alice, bob}); err != nil {
 		t.Fatalf("insert Codex team events: %v", err)
 	}
-	if _, err := db.Exec(`delete from usage_account_model_rollups`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_account_model_rollups`); err != nil {
 		t.Fatalf("clear account rollups: %v", err)
 	}
 	scheduleRollupRebuildForTest(t, db, AccountHistoryCheckpointName, 2)
@@ -777,10 +778,10 @@ func rollupTestFileAccountKey(authFileSnapshot, accountSnapshot, authIndex strin
 
 func scheduleRollupRebuildForTest(t *testing.T, db *sql.DB, name string, targetEventID int64) {
 	t.Helper()
-	if _, err := db.Exec(`delete from usage_rollup_checkpoints where name = ?`, name); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_rollup_checkpoints where name = ?`, name); err != nil {
 		t.Fatalf("delete %s checkpoint: %v", name, err)
 	}
-	if _, err := db.Exec(`insert into usage_rollup_rebuild_state (name, target_event_id, updated_at_ms)
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_rollup_rebuild_state (name, target_event_id, updated_at_ms)
 		values (?, ?, 0)
 		on conflict(name) do update set target_event_id = excluded.target_event_id, updated_at_ms = 0`, name, targetEventID); err != nil {
 		t.Fatalf("schedule %s rebuild: %v", name, err)

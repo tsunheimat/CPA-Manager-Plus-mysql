@@ -13,6 +13,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagerollup"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
@@ -20,7 +21,7 @@ func TestDiscoverUsageCacheAccountingCompletesEmptyDatabaseWithoutResettingRollu
 	db := openMigrationTestDB(t)
 	insertRollupFixtures(t, db)
 	insertPricingRollupFixtures(t, db, 9, 9, 9)
-	if _, err := db.Exec(`insert into usage_rollup_rebuild_state (name, target_event_id, updated_at_ms)
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_rollup_rebuild_state (name, target_event_id, updated_at_ms)
 		values ('zero-target', 0, 0)`); err != nil {
 		t.Fatalf("insert zero-target rebuild state: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestUsageCacheAccountingMigratesInBatchesExcludesNewRowsAndInvalidatesAtCom
 	assertCount(t, db, "usage_pricing_account_rollups_v1", 1)
 	assertPricingAggregateState(t, db, "backfilling", 1, 1, 3)
 
-	if _, err := db.Exec(`insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, model, cache_input_mode,
 		input_tokens, cached_tokens, normalized_uncached_input_tokens,
 		normalized_total_input_tokens, normalized_cache_read_tokens,
@@ -217,7 +218,7 @@ func TestUsageCacheAccountingReadersUseCorrectedRawRowsDuringBoundedClearing(t *
 	ctx := context.Background()
 	db := openMigrationTestDB(t)
 	insertLegacyUsageEvent(t, db, "legacy-reader-fallback", "anthropic", "", "claude-sonnet", 100, 30, 20, 10, 0, "")
-	if _, err := db.Exec(`update usage_events set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_events set
 		timestamp_ms = ?, timestamp = '2026-08-15T01:00:00Z',
 		account_snapshot = 'reader@example.com', auth_label_snapshot = 'Reader',
 		auth_index = 'auth-reader'
@@ -406,7 +407,7 @@ func TestUsageCacheAccountingFailurePreservesCheckpointAndResumes(t *testing.T) 
 	}
 	assertNormalizedTotalNull(t, db, "legacy-1")
 	assertCount(t, db, "usage_cache_accounting_v2_changes", 1)
-	if _, err := db.Exec(testdb.SQL(db, `create trigger reject_second_usage_stage before insert on usage_cache_accounting_v2_changes
+	if _, err := testdb.Admin(t, db).ExecContext(context.Background(), testdb.SQL(db, `create trigger reject_second_usage_stage before insert on usage_cache_accounting_v2_changes
 		when new.event_id = 2 begin select raise(abort, 'blocked'); end`, `create trigger reject_second_usage_stage before insert on usage_cache_accounting_v2_changes for each row begin if new.event_id=2 then signal sqlstate '45000' set message_text='blocked'; end if; end`)); err != nil {
 		t.Fatalf("create failure trigger: %v", err)
 	}
@@ -464,7 +465,7 @@ func TestUsageCacheAccountingFailurePreservesCheckpointAndResumes(t *testing.T) 
 		t.Fatalf("resumed state after applied batch = %#v", resumedAfterApply)
 	}
 	assertCount(t, db, "usage_cache_accounting_v2_changes", 0)
-	if _, err := db.Exec(`drop trigger reject_second_usage_stage`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `drop trigger reject_second_usage_stage`); err != nil {
 		t.Fatalf("drop failure trigger: %v", err)
 	}
 	scanned, err := repo.RunUsageCacheAccountingBatch(context.Background(), 1)
@@ -484,7 +485,7 @@ func TestUsageCacheAccountingFailurePreservesCheckpointAndResumes(t *testing.T) 
 
 func TestUsageCacheAccountingEmptyApplyBatchResumesIncompleteScan(t *testing.T) {
 	db := openMigrationTestDB(t)
-	if _, err := db.Exec(`update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_data_migrations set
 		status = ?, last_event_id = 1, target_event_id = 2,
 		processed_rows = 1, changed_rows = 1, applied_rows = 1,
 		started_at_ms = 1, updated_at_ms = 1, finished_at_ms = null, last_error = null
@@ -513,7 +514,7 @@ func TestUsageCacheAccountingEmptyApplyBatchResumesIncompleteScan(t *testing.T) 
 func TestUsageCacheAccountingScansOnlyCandidates(t *testing.T) {
 	db := openMigrationTestDB(t)
 	for index := 0; index < 25; index++ {
-		if _, err := db.Exec(`insert into usage_events (
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events (
 			event_hash, timestamp_ms, timestamp, provider, model, cache_input_mode,
 			input_tokens, normalized_uncached_input_tokens, normalized_total_input_tokens,
 			normalized_cache_read_tokens, normalized_cache_creation_tokens, total_tokens, created_at_ms
@@ -577,7 +578,7 @@ func TestUsageCacheAccountingClearingFailurePreservesAppliedRowsAndResumes(t *te
 	if secondApply.State.Status != StatusClearing || secondApply.State.AppliedRows != 2 {
 		t.Fatalf("second apply batch = %#v", secondApply)
 	}
-	if _, err := db.Exec(testdb.SQL(db, `create trigger reject_rollup_delete before delete on usage_account_model_rollups
+	if _, err := sqlwrite.ExecContext(context.Background(), db, testdb.SQL(db, `create trigger reject_rollup_delete before delete on usage_account_model_rollups
 		begin select raise(abort, 'blocked'); end`, `create trigger reject_rollup_delete before delete on usage_account_model_rollups for each row signal sqlstate '45000' set message_text='blocked'`)); err != nil {
 		t.Fatalf("create clearing failure trigger: %v", err)
 	}
@@ -602,7 +603,7 @@ func TestUsageCacheAccountingClearingFailurePreservesAppliedRowsAndResumes(t *te
 	if err := repo.RecordUsageCacheAccountingFailure(context.Background(), clearingErr); err != nil {
 		t.Fatalf("record failure: %v", err)
 	}
-	if _, err := db.Exec(`drop trigger reject_rollup_delete`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `drop trigger reject_rollup_delete`); err != nil {
 		t.Fatalf("drop finalization failure trigger: %v", err)
 	}
 	resumed, err := repo.DiscoverUsageCacheAccounting(context.Background())
@@ -622,7 +623,7 @@ func TestUsageCacheAccountingClearingFailurePreservesAppliedRowsAndResumes(t *te
 
 func TestUsageCacheAccountingRejectsUnknownState(t *testing.T) {
 	db := openMigrationTestDB(t)
-	if _, err := db.Exec(`update usage_data_migrations set status = 'future-state'
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_data_migrations set status = 'future-state'
 		where name = ?`, UsageCacheAccountingMigrationName); err != nil {
 		t.Fatalf("set unknown migration state: %v", err)
 	}
@@ -681,7 +682,7 @@ func openMigrationTestDB(t *testing.T) *sql.DB {
 
 func insertLegacyUsageEvent(t *testing.T, db *sql.DB, hash, provider, executor, model string, input, cached, cacheRead, cacheCreation, total int64, rawJSON string) {
 	t.Helper()
-	if _, err := db.Exec(`insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, executor_type, model, input_tokens,
 		cached_tokens, cache_read_tokens, cache_creation_tokens, total_tokens, raw_json, created_at_ms
 	) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, hash, input, hash, provider, executor, model, input, cached, cacheRead, cacheCreation, total, rawJSON, input); err != nil {
@@ -691,7 +692,7 @@ func insertLegacyUsageEvent(t *testing.T, db *sql.DB, hash, provider, executor, 
 
 func insertAccountingEvent(t *testing.T, db *sql.DB, fixture accountingFixture) {
 	t.Helper()
-	if _, err := db.Exec(`insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, provider, executor_type, auth_provider_snapshot,
 		resolved_model, requested_model, model,
 		input_tokens, output_tokens, reasoning_tokens, cached_tokens,
@@ -742,7 +743,7 @@ func insertRollupFixtures(t *testing.T, db *sql.DB) {
 			values ('unrelated', 9, 9, 'old')`,
 	}
 	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, statement); err != nil {
 			t.Fatalf("insert rollup fixture: %v", err)
 		}
 	}
@@ -789,7 +790,7 @@ func insertPermanentAggregateFixture(t *testing.T, db *sql.DB, eventHash string)
 		},
 	}
 	for _, statement := range statements {
-		if _, err := db.Exec(statement.query, statement.args...); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, statement.query, statement.args...); err != nil {
 			t.Fatalf("insert permanent aggregate fixture: %v", err)
 		}
 	}
@@ -824,7 +825,7 @@ func insertPricingRollupFixtures(t *testing.T, db *sql.DB, checkpoint, coverage,
 		},
 	}
 	for _, statement := range statements {
-		if _, err := db.Exec(statement.query, statement.args...); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, statement.query, statement.args...); err != nil {
 			t.Fatalf("insert pricing rollup fixture: %v", err)
 		}
 	}
@@ -832,7 +833,7 @@ func insertPricingRollupFixtures(t *testing.T, db *sql.DB, checkpoint, coverage,
 
 func markMigrationDiscovering(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_data_migrations set
 		status = 'discovering', last_event_id = 0, target_event_id = 0,
 		processed_rows = 0, changed_rows = 0, applied_rows = 0, started_at_ms = null, updated_at_ms = 0,
 		finished_at_ms = null, last_error = null
@@ -1027,11 +1028,11 @@ func assertAccounting(t *testing.T, db *sql.DB, hash, mode string, uncached, tot
 
 func markMigrationCompleted(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_data_migrations set
 		status = 'completed', last_event_id = 10, target_event_id = 10,
 		processed_rows = 10, changed_rows = 0, applied_rows = 0,
 		started_at_ms = 1, updated_at_ms = 1, finished_at_ms = 1, last_error = null
-	where name = '` + UsageCacheAccountingMigrationName + `'`); err != nil {
+	where name = '`+UsageCacheAccountingMigrationName+`'`); err != nil {
 		t.Fatalf("mark migration completed: %v", err)
 	}
 }
@@ -1174,13 +1175,13 @@ func TestUsageCacheAccountingSemanticsRevision18_4_UnappliedStagingCleared(t *te
 	})
 
 	// 设置 running，applied_rows = 0，并在 changes 表中插入旧 staging
-	if _, err := db.Exec(`update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_data_migrations set
 		status = 'running', last_event_id = 0, target_event_id = 1,
 		processed_rows = 1, changed_rows = 1, applied_rows = 0
-	where name = '` + UsageCacheAccountingMigrationName + `'`); err != nil {
+	where name = '`+UsageCacheAccountingMigrationName+`'`); err != nil {
 		t.Fatalf("setup running state: %v", err)
 	}
-	if _, err := db.Exec(`insert into usage_cache_accounting_v2_changes (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_cache_accounting_v2_changes (
 		event_id, cache_input_mode, normalized_uncached_input_tokens,
 		normalized_total_input_tokens, normalized_cache_read_tokens,
 		normalized_cache_creation_tokens, total_tokens
@@ -1221,10 +1222,10 @@ func TestUsageCacheAccountingSemanticsRevision18_5_AppliedMigrationNotResetMidwa
 	})
 
 	// 设置 applied_rows = 1, status = applying, revision 为空
-	if _, err := db.Exec(`update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_data_migrations set
 		status = 'applying', last_event_id = 1, target_event_id = 1,
 		processed_rows = 1, changed_rows = 1, applied_rows = 1
-	where name = '` + UsageCacheAccountingMigrationName + `'`); err != nil {
+	where name = '`+UsageCacheAccountingMigrationName+`'`); err != nil {
 		t.Fatalf("setup applying state: %v", err)
 	}
 
@@ -1334,14 +1335,14 @@ func TestUsageCacheAccountingSemanticsRevision18_7_ActiveStatePersistsRevisionWi
 
 			// 模拟 migration 处于活跃状态，且 revision 尚未设置
 			nowMS := time.Now().UnixMilli()
-			if _, err := db.Exec(`update usage_data_migrations set
+			if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_data_migrations set
 				status = ?, last_event_id = 1, target_event_id = 10,
 				processed_rows = 5, changed_rows = 5, applied_rows = ?,
 				updated_at_ms = ?
 			where name = ?`, tc.status, tc.appliedRows, nowMS, UsageCacheAccountingMigrationName); err != nil {
 				t.Fatalf("setup active migration state: %v", err)
 			}
-			if _, err := db.Exec(`delete from settings where key = ?`, UsageCacheAccountingSemanticsRevisionKey); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from settings where key = ?`, UsageCacheAccountingSemanticsRevisionKey); err != nil {
 				t.Fatalf("clear revision setting: %v", err)
 			}
 
@@ -1441,7 +1442,7 @@ func TestUsageCacheAccountingSemanticsRevision18_8_HistoricalDevinPredicates(t *
 			insertAccountingEvent(t, db, tt.fixture)
 
 			// 此时 revision 尚未设为 3
-			if _, err := db.Exec(`delete from settings where key = ?`, UsageCacheAccountingSemanticsRevisionKey); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from settings where key = ?`, UsageCacheAccountingSemanticsRevisionKey); err != nil {
 				t.Fatalf("clear revision: %v", err)
 			}
 
@@ -1554,7 +1555,7 @@ func TestUsageCacheAccountingSemanticsRevision3CanonicalV2Unknown(t *testing.T) 
 			db := openMigrationTestDB(t)
 			markMigrationCompleted(t, db)
 			insertAccountingEvent(t, db, tt.fixture)
-			if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values (?, '2', 1)
+			if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into settings(key, value, updated_at_ms) values (?, '2', 1)
 				on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
 				UsageCacheAccountingSemanticsRevisionKey); err != nil {
 				t.Fatalf("set revision 2: %v", err)
@@ -1617,7 +1618,7 @@ func TestUsageCacheAccountingSemanticsRevision3SkipsCanonicalSeparateRows(t *tes
 			}
 		}`,
 	})
-	if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values (?, '2', 1)
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into settings(key, value, updated_at_ms) values (?, '2', 1)
 		on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
 		UsageCacheAccountingSemanticsRevisionKey); err != nil {
 		t.Fatalf("set revision 2: %v", err)
@@ -1652,7 +1653,7 @@ func TestUsageCacheAccountingSemanticsRevision3MalformedRawJSONFailsClosed(t *te
 		Total:            110,
 		RawJSON:          "{",
 	})
-	if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values (?, '2', 1)
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into settings(key, value, updated_at_ms) values (?, '2', 1)
 		on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
 		UsageCacheAccountingSemanticsRevisionKey); err != nil {
 		t.Fatalf("set revision 2: %v", err)
@@ -1701,7 +1702,7 @@ func TestUsageCacheAccountingSemanticsRevision3RejectsCanonicalTokenMismatch(t *
 			}
 		}`,
 	})
-	if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values (?, '2', 1)
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into settings(key, value, updated_at_ms) values (?, '2', 1)
 		on conflict(key) do update set value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
 		UsageCacheAccountingSemanticsRevisionKey); err != nil {
 		t.Fatalf("set revision 2: %v", err)

@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"strings"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
@@ -47,7 +49,7 @@ func CleanupDerivedBatch(ctx context.Context, db *sql.DB, limit int) (int64, err
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, db, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -59,9 +61,12 @@ func CleanupDerivedBatch(ctx context.Context, db *sql.DB, limit int) (int64, err
 		{"usage_pricing_account_rollups_v1", "usage_pricing_rollup_state", "pricing_v1", "structure_revision", ""},
 		{"usage_monitoring_account_daily_rollups_v1", "usage_monitoring_rollup_state", "stats_v1", "structure_revision", ""},
 		{"usage_monitoring_api_key_daily_rollups_v1", "usage_monitoring_rollup_state", "stats_v1", "structure_revision", ""},
+		{"usage_monitoring_account_hourly_rollups_v1", "usage_monitoring_rollup_state", "stats_hourly_v1", "structure_revision", ""},
+		{"usage_monitoring_api_key_hourly_rollups_v1", "usage_monitoring_rollup_state", "stats_hourly_v1", "structure_revision", ""},
+		{"usage_monitoring_selector_hourly_rollups_v1", "usage_monitoring_rollup_state", "metadata_hourly_v1", "model_format_revision", ""},
 	} {
 		if target.state != "" {
-			err := tx.QueryRowContext(ctx, "select trim(structure_revision) from "+target.state+" where rollup_name=?", target.name).Scan(&target.revision)
+			err := tx.QueryRowContext(ctx, "select structure_revision from "+target.state+" where rollup_name=?", target.name).Scan(&target.revision)
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
@@ -72,11 +77,16 @@ func CleanupDerivedBatch(ctx context.Context, db *sql.DB, limit int) (int64, err
 		if target.revision == "" {
 			continue
 		}
-		result, err := tx.ExecContext(ctx, "delete from "+target.table+" where "+target.column+"<>? limit ?", target.revision, limit-int(removed))
-		if err != nil {
-			return 0, err
+		var count int64
+		if strings.HasPrefix(target.table, "usage_monitoring_") && strings.Contains(target.table, "_hourly_") {
+			count, _, err = CleanupHourlyRevisionBatch(ctx, tx, target.table, target.revision, limit-int(removed))
+		} else {
+			var result sql.Result
+			result, err = tx.ExecContext(ctx, "delete from "+target.table+" where "+target.column+"<>? limit ?", target.revision, limit-int(removed))
+			if err == nil {
+				count, err = result.RowsAffected()
+			}
 		}
-		count, err := result.RowsAffected()
 		if err != nil {
 			return 0, err
 		}

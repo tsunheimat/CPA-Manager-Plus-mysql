@@ -358,6 +358,7 @@ func TestNormalizeCollectorMode(t *testing.T) {
 
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
+	clearAnalyticsEnv(t)
 	for _, key := range []string{
 		configEnvKey,
 		"HTTP_ADDR",

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -122,16 +123,16 @@ func TestPricingRollupRebuildsFromRetainedProjectionAfterRawDeletion(t *testing.
 		events[1].EventHash).Scan(&deletedID, &deletedTimestamp); err != nil {
 		t.Fatalf("resolve deleted event: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, testdb.SQL(db, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, db, testdb.SQL(db, `pragma foreign_keys = off`, `set foreign_key_checks=0`)); err != nil {
 		t.Fatalf("disable foreign keys: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, `insert into usage_archive_event_refs(
+	if _, err := sqlwrite.ExecContext(ctx, db, `insert into usage_archive_event_refs(
 		event_hash, run_id, segment_sequence, raw_event_id, timestamp_ms, archived_at_ms, raw_deleted_at_ms
 	) values(?, 'retained-pricing-run', 1, ?, ?, 11000, 12000)`,
 		events[1].EventHash, deletedID, deletedTimestamp); err != nil {
 		t.Fatalf("insert retained archive ref: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, `delete from usage_events where id = ?`, deletedID); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, db, `delete from usage_events where id = ?`, deletedID); err != nil {
 		t.Fatalf("delete highest raw event: %v", err)
 	}
 

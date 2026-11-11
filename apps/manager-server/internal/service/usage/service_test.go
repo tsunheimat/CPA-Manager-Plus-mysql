@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	storepkg "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -188,7 +189,7 @@ func TestImportRoundTripCanonicalizesLegacyExportWithoutDuplicatingUpgradedDatab
 		t.Fatalf("open legacy database: %v", err)
 	}
 	t.Cleanup(func() { _ = legacyDB.Close() })
-	if _, err := legacyDB.ExecContext(ctx, `insert into usage_events (
+	if _, err := sqlwrite.ExecContext(ctx, legacyDB, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, created_at_ms
 	) values (?, ?, ?, ?, ?)`, legacyHash, int64(1), "2026-01-01T00:00:00Z", "gpt-test", int64(1)); err != nil {
 		t.Fatalf("seed pre-#749 legacy event: %v", err)

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -37,13 +38,13 @@ func TestStoreCompatModelPricesAcceptsNumericConfiguredFlagStorage(t *testing.T)
 		t.Fatalf("save model prices: %v", err)
 	}
 
-	if _, err := db.db.Exec(`update model_prices set cache_read_configured = 12.5 where model = 'legacy-model'`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `update model_prices set cache_read_configured = 12.5 where model = 'legacy-model'`); err != nil {
 		t.Fatalf("seed base REAL configured flag: %v", err)
 	}
-	if _, err := db.db.Exec(`update model_price_context_tiers set cache_read_configured = 6.25 where model = 'legacy-model'`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `update model_price_context_tiers set cache_read_configured = 6.25 where model = 'legacy-model'`); err != nil {
 		t.Fatalf("seed context tier REAL configured flag: %v", err)
 	}
-	if _, err := db.db.Exec(`update model_price_service_tiers set cache_read_configured = 1.84375 where model = 'legacy-model'`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db.db, `update model_price_service_tiers set cache_read_configured = 1.84375 where model = 'legacy-model'`); err != nil {
 		t.Fatalf("seed service tier REAL configured flag: %v", err)
 	}
 
@@ -103,7 +104,7 @@ func TestStoreCompatModelPricesRejectsInvalidConfiguredFlagStorage(t *testing.T)
 			}); err != nil {
 				t.Fatalf("save model prices: %v", err)
 			}
-			if _, err := db.db.Exec(`update model_prices set cache_read_configured = ? where model = 'corrupt-model'`, tt.value); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db.db, `update model_prices set cache_read_configured = ? where model = 'corrupt-model'`, tt.value); err != nil {
 				t.Fatalf("seed invalid configured flag: %v", err)
 			}
 
@@ -128,7 +129,7 @@ func TestStoreCompatMigratesLegacyCodexInspectionOwnershipIdentity(t *testing.T)
 	if err != nil {
 		t.Fatalf("open raw sqlite: %v", err)
 	}
-	if _, err := raw.Exec(`create table codex_inspection_disable_ownership (
+	if _, err := sqlwrite.ExecContext(context.Background(), raw, `create table codex_inspection_disable_ownership (
 		file_name text primary key,
 		provider text not null default 'codex',
 		auth_index text,
@@ -139,7 +140,7 @@ func TestStoreCompatMigratesLegacyCodexInspectionOwnershipIdentity(t *testing.T)
 		_ = raw.Close()
 		t.Fatalf("create legacy ownership table: %v", err)
 	}
-	if _, err := raw.Exec(`insert into codex_inspection_disable_ownership (
+	if _, err := sqlwrite.ExecContext(context.Background(), raw, `insert into codex_inspection_disable_ownership (
 		file_name, provider, auth_index, account_id, disabled_at_ms, updated_at_ms
 	) values ('shared.json', 'codex', 'auth-1', 'account-1', 10, 20)`); err != nil {
 		_ = raw.Close()
@@ -178,7 +179,7 @@ func TestStoreCompatMigratesLegacyUsageEventSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open raw sqlite: %v", err)
 	}
-	if _, err := raw.Exec(`create table usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), raw, `create table usage_events (
 		id integer primary key autoincrement,
 		request_id text,
 		event_hash text not null unique,
@@ -208,7 +209,7 @@ func TestStoreCompatMigratesLegacyUsageEventSchema(t *testing.T) {
 		_ = raw.Close()
 		t.Fatalf("create legacy usage_events: %v", err)
 	}
-	if _, err := raw.Exec(`insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), raw, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, endpoint, input_tokens, output_tokens, total_tokens, created_at_ms
 	) values (
 		'pre-migration-event', 1777999999000, '2026-05-05T23:59:59Z', 'gpt-old', 'POST /v1/chat/completions', 1, 2, 3, 1777999999001

@@ -13,6 +13,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/cpaconnection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -528,7 +529,7 @@ func writeRawSetting(t testing.TB, dbPath string, key string, value string) erro
 		return err
 	}
 	defer db.Close()
-	_, err = db.Exec("insert into settings (key, value, updated_at_ms) values (?, ?, 1) "+
+	_, err = sqlwrite.ExecContext(context.Background(), db, "insert into settings (key, value, updated_at_ms) values (?, ?, 1) "+
 		"on conflict(key) do update set value = excluded.value", key, value)
 	return err
 }
@@ -689,7 +690,7 @@ func upsertRawBootstrapState(t testing.TB, dbPath string, value string) error {
 		return err
 	}
 	defer db.Close()
-	_, err = db.Exec(`insert into settings (key, value, updated_at_ms) values ('bootstrap_state_v1', ?, 1)
+	_, err = sqlwrite.ExecContext(context.Background(), db, `insert into settings (key, value, updated_at_ms) values ('bootstrap_state_v1', ?, 1)
 		on conflict(key) do update set value = excluded.value`, value)
 	return err
 }
@@ -710,7 +711,7 @@ func blockSetupWrites(t testing.TB, dbPath string) {
 		if testdb.MySQL() {
 			statement = strings.ReplaceAll(statement, "when new.key = 'setup' begin select raise(abort, 'setup write blocked'); end", "for each row begin if new.`key` = 'setup' then signal sqlstate '45000' set message_text = 'setup write blocked'; end if; end")
 		}
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := testdb.Admin(t, db).ExecContext(context.Background(), statement); err != nil {
 			t.Fatalf("install setup write blocker: %v", err)
 		}
 	}
@@ -727,7 +728,7 @@ func unblockSetupWrites(t testing.TB, dbPath string) {
 		`drop trigger if exists block_bootstrap_setup_insert`,
 		`drop trigger if exists block_bootstrap_setup_update`,
 	} {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, statement); err != nil {
 			t.Fatalf("remove setup write blocker: %v", err)
 		}
 	}

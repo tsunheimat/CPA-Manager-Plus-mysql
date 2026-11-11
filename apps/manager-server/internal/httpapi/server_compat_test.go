@@ -23,6 +23,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagearchive"
 	usagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -480,7 +481,7 @@ func TestServerCompatStatusAuthAndCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open migration state database: %v", err)
 	}
-	if _, err := rawDB.Exec(`update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(context.Background(), rawDB, `update usage_data_migrations set
 		status = 'failed', last_error = 'secret migration detail'
 		where name = 'usage_cache_accounting_v2'`); err != nil {
 		_ = rawDB.Close()
@@ -1037,7 +1038,7 @@ func TestServerCompatUsageArchiveLifecycleAndSanitizedResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open archive status DB: %v", err)
 	}
-	if _, err := rawDB.ExecContext(ctx, `update usage_archive_runs set last_error = ? where id = ?`, internalError, status.Run.ID); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `update usage_archive_runs set last_error = ? where id = ?`, internalError, status.Run.ID); err != nil {
 		_ = rawDB.Close()
 		t.Fatalf("set internal archive error: %v", err)
 	}
@@ -1258,7 +1259,7 @@ func TestServerCompatUsageMaintenanceRejectsStaleAggregateState(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open aggregate state: %v", err)
 			}
-			if _, err := rawDB.Exec(test.updateSQL, test.updateArgs...); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), rawDB, test.updateSQL, test.updateArgs...); err != nil {
 				_ = rawDB.Close()
 				t.Fatalf("set stale aggregate state: %v", err)
 			}

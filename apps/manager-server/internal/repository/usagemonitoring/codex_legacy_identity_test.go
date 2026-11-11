@@ -12,7 +12,9 @@ import (
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
@@ -69,7 +71,7 @@ func TestCodexLegacyIdentityEvidenceRollupCommitsCheckpointAtomically(t *testing
 				signal sqlstate '45000' set message_text = 'checkpoint failure';
 			end if; end`
 	}
-	if _, err := db.Exec(trigger); err != nil {
+	if _, err := testdb.Admin(t, db).ExecContext(ctx, trigger); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.CatchUpCodexLegacyIdentityEvidence(ctx, 1000, 1); err == nil {
@@ -83,7 +85,7 @@ func TestCodexLegacyIdentityEvidenceRollupCommitsCheckpointAtomically(t *testing
 	if err := db.QueryRow("select count(*) from " + usageevent.CodexLegacyIdentityEvidenceTable).Scan(&groups); err != nil || groups != 0 {
 		t.Fatalf("uncommitted evidence survived = %d err=%v", groups, err)
 	}
-	if _, err := db.Exec("drop trigger fail_identity_checkpoint"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "drop trigger fail_identity_checkpoint"); err != nil {
 		t.Fatal(err)
 	}
 	finishCodexEvidenceRollup(t, st, 1)
@@ -96,10 +98,10 @@ func TestCodexLegacyIdentityEvidenceRevisionClearsInBoundedBatches(t *testing.T)
 	db, st := newMonitoringRepositoryStore(t)
 	seedCodexLegacyIdentityEvents(t, db, 5)
 	finishCodexEvidenceRollup(t, st, 1000)
-	if _, err := db.Exec("update " + usageevent.CodexLegacyIdentityEvidenceTable + " set structure_revision = 'old', auth_account_id_snapshot = auth_account_id_snapshot || '-conflict'"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "update "+usageevent.CodexLegacyIdentityEvidenceTable+" set structure_revision = 'old', auth_account_id_snapshot = auth_account_id_snapshot || '-conflict'"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("update usage_monitoring_rollup_state set structure_revision = 'old' where rollup_name = 'codex_legacy_identity_v1'"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "update usage_monitoring_rollup_state set structure_revision = 'old' where rollup_name = 'codex_legacy_identity_v1'"); err != nil {
 		t.Fatal(err)
 	}
 	var before int
@@ -136,7 +138,7 @@ func TestCodexLegacyIdentityEvidenceMigrationRecoversMissingDerivation(t *testin
 			if missing == "state" {
 				query = "delete from usage_monitoring_rollup_state where rollup_name = 'codex_legacy_identity_v1'"
 			}
-			if _, err := db.Exec(query); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db, query); err != nil {
 				t.Fatal(err)
 			}
 			if err := db.Close(); err != nil {
@@ -172,7 +174,7 @@ func seedCodexLegacyIdentityEvents(t testing.TB, db *sql.DB, count int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`with ids(id) as (
+	_, err = sqlwrite.ExecContext(context.Background(), db, `with ids(id) as (
 		select value from json_each(?)
 	) insert into usage_events (
 		id, event_hash, timestamp_ms, timestamp, model, created_at_ms,
@@ -264,7 +266,7 @@ func TestCodexLegacyIdentityEvidenceSurvivesRawDeletionAndCatchUp(t *testing.T) 
 	}
 
 	// 4. delete all usage_events
-	if _, err := db.Exec("delete from usage_events"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "delete from usage_events"); err != nil {
 		t.Fatalf("delete all usage_events: %v", err)
 	}
 
@@ -328,7 +330,7 @@ func TestCodexLegacyIdentityEvidenceSurvivesRawDeletionAndCatchUp(t *testing.T) 
 	}
 
 	// 8. 验证 new raw tail 仍正常工作
-	if _, err := db.Exec(`insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events (
 		id, event_hash, timestamp_ms, timestamp, model, created_at_ms,
 		provider, auth_provider_snapshot, auth_file_snapshot, source,
 		auth_index, auth_account_id_snapshot, account_snapshot
@@ -361,7 +363,7 @@ func TestCodexLegacyIdentityRollupDecoupledSchemaVersion(t *testing.T) {
 	db, st := newMonitoringRepositoryStore(t)
 	seedCodexLegacyIdentityEvents(t, db, 5)
 
-	if _, err := db.Exec("update usage_monitoring_rollup_state set schema_version = ? where rollup_name = ?",
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "update usage_monitoring_rollup_state set schema_version = ? where rollup_name = ?",
 		usageidentity.CodexLegacyIdentityEvidenceSchemaVersion+1, usageevent.CodexLegacyIdentityRollupName); err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +373,7 @@ func TestCodexLegacyIdentityRollupDecoupledSchemaVersion(t *testing.T) {
 		t.Fatalf("expected ErrUnsupportedSchema when schema_version is drifted, got %v", err)
 	}
 
-	if _, err := db.Exec("update usage_monitoring_rollup_state set schema_version = ? where rollup_name = ?",
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "update usage_monitoring_rollup_state set schema_version = ? where rollup_name = ?",
 		usageidentity.CodexLegacyIdentityEvidenceSchemaVersion, usageevent.CodexLegacyIdentityRollupName); err != nil {
 		t.Fatal(err)
 	}

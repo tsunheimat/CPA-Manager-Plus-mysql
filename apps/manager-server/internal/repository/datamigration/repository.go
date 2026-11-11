@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
 
@@ -114,7 +115,7 @@ func (r *repository) UsageCacheAccountingState(ctx context.Context) (State, bool
 }
 
 func (r *repository) DiscoverUsageCacheAccounting(ctx context.Context) (State, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return State{}, err
 	}
@@ -225,7 +226,7 @@ func (r *repository) RunUsageCacheAccountingBatch(ctx context.Context, batchSize
 	if batchSize <= 0 {
 		batchSize = 1000
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return BatchResult{}, err
 	}
@@ -338,7 +339,7 @@ func (r *repository) RecordUsageCacheAccountingFailure(ctx context.Context, migr
 	if migrationErr != nil {
 		message = migrationErr.Error()
 	}
-	_, err := r.db.ExecContext(ctx, `update usage_data_migrations set
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update usage_data_migrations set
 		status = ?, updated_at_ms = ?, last_error = ?
 	where name = ? and status in (?, ?, ?, ?, ?, ?)`,
 		StatusFailed,
@@ -690,9 +691,9 @@ func invalidateDerivedDataInTx(ctx context.Context, tx *sql.Tx, state State) err
 	).Scan(&aggregateRevision); err != nil {
 		return err
 	}
-	marker := fmt.Sprintf(":cache-accounting-v2-%d-%d", state.StartedAtMS, state.TargetEventID)
-	if !strings.HasSuffix(aggregateRevision, marker) {
-		aggregateRevision += marker
+	aggregateRevision, err := usageaggregate.CacheAccountingStructureRevision(aggregateRevision, state.StartedAtMS, state.TargetEventID)
+	if err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `update usage_hourly_aggregate_state set
 		structure_revision = ?, status = 'clearing',
@@ -723,7 +724,7 @@ func invalidateDerivedDataInTx(ctx context.Context, tx *sql.Tx, state State) err
 		backfill_last_event_id = 0, coverage_event_id = 0, target_event_id = ?,
 		processed_events = 0, last_run_started_at_ms = null, updated_at_ms = 0,
 		finished_at_ms = null, last_error = null
-	where rollup_name = 'stats_v1' and schema_version = 1`, status, latestEventID); err != nil {
+	where rollup_name in ('stats_v1', 'stats_hourly_v1') and schema_version = 1`, status, latestEventID); err != nil {
 		return err
 	}
 	return nil
@@ -830,7 +831,7 @@ func finishClearingInTx(ctx context.Context, tx *sql.Tx, state State) (State, er
 		target_event_id = ?, processed_events = 0,
 		last_run_started_at_ms = null, updated_at_ms = 0,
 		finished_at_ms = null, last_error = null
-	where rollup_name = 'stats_v1' and schema_version = 1`, status, latestEventID); err != nil {
+	where rollup_name in ('stats_v1', 'stats_hourly_v1') and schema_version = 1`, status, latestEventID); err != nil {
 		return State{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `delete from usage_cache_accounting_v2_changes`); err != nil {

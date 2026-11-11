@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -90,7 +91,7 @@ func (r *repository) LoadAccountStats(ctx context.Context, filter AnalyticsFilte
 	if !SupportsEventProjectionFilter(filter) {
 		return nil, State{}, false, nil
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, State{}, false, err
 	}
@@ -105,8 +106,8 @@ func (r *repository) LoadAccountStats(ctx context.Context, filter AnalyticsFilte
 	}
 
 	grouped := map[accountStatKey]*accountStatAccumulator{}
-	if dailyAvailable && SupportsStatsFilter(filter) {
-		err = loadAccountRange(ctx, tx, state, projectionState.CoverageEventID, projectionComplete, revision, filter, grouped)
+	if SupportsStatsFilter(filter) {
+		err = r.loadAccountComposed(ctx, tx, state, dailyAvailable, projectionState, projectionComplete, revision, filter, grouped)
 	} else {
 		err = mergeProjectedAccountStats(ctx, tx, projectionState.CoverageEventID, projectionComplete, filter, eventSourceOptions{}, grouped)
 	}
@@ -123,7 +124,7 @@ func (r *repository) LoadAPIKeyStats(ctx context.Context, filter AnalyticsFilter
 	if !SupportsEventProjectionFilter(filter) {
 		return nil, State{}, false, nil
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, State{}, false, err
 	}
@@ -138,8 +139,8 @@ func (r *repository) LoadAPIKeyStats(ctx context.Context, filter AnalyticsFilter
 	}
 
 	grouped := map[apiKeyStatKey]*apiKeyStatAccumulator{}
-	if dailyAvailable && SupportsStatsFilter(filter) {
-		err = loadAPIKeyRange(ctx, tx, state, projectionState.CoverageEventID, projectionComplete, revision, filter, grouped)
+	if SupportsStatsFilter(filter) {
+		err = r.loadAPIKeyComposed(ctx, tx, state, dailyAvailable, projectionState, projectionComplete, revision, filter, grouped)
 	} else {
 		err = mergeProjectedAPIKeyStats(ctx, tx, projectionState.CoverageEventID, projectionComplete, filter, 0, false, grouped)
 	}
@@ -180,12 +181,26 @@ func loadAccountRange(
 	filter AnalyticsFilter,
 	grouped map[accountStatKey]*accountStatAccumulator,
 ) error {
-	fullStartMS := ceilDayMS(filter.FromMS)
-	fullEndMS := floorDayMS(filter.ToMS)
+	return loadAccountGranularRange(ctx, tx, state, projectionCoverageEventID, projectionComplete, revision, filter, grouped, "usage_monitoring_account_daily_rollups_v1", dayMS)
+}
+
+func loadAccountGranularRange(
+	ctx context.Context,
+	tx *sql.Tx,
+	state State,
+	projectionCoverageEventID int64,
+	projectionComplete bool,
+	revision string,
+	filter AnalyticsFilter,
+	grouped map[accountStatKey]*accountStatAccumulator,
+	table string, grain int64,
+) error {
+	fullStartMS := ceilIntervalMS(filter.FromMS, grain)
+	fullEndMS := floorIntervalMS(filter.ToMS, grain)
 	if fullStartMS >= fullEndMS {
 		return mergeProjectedAccountStats(ctx, tx, projectionCoverageEventID, projectionComplete, filter, eventSourceOptions{}, grouped)
 	}
-	if err := mergeStoredAccountStats(ctx, tx, revision, filter, fullStartMS, fullEndMS, grouped); err != nil {
+	if err := mergeStoredAccountTableStats(ctx, tx, revision, filter, fullStartMS, fullEndMS, grouped, table); err != nil {
 		return err
 	}
 	tailFilter := filter
@@ -236,12 +251,26 @@ func loadAPIKeyRange(
 	filter AnalyticsFilter,
 	grouped map[apiKeyStatKey]*apiKeyStatAccumulator,
 ) error {
-	fullStartMS := ceilDayMS(filter.FromMS)
-	fullEndMS := floorDayMS(filter.ToMS)
+	return loadAPIKeyGranularRange(ctx, tx, state, projectionCoverageEventID, projectionComplete, revision, filter, grouped, "usage_monitoring_api_key_daily_rollups_v1", dayMS)
+}
+
+func loadAPIKeyGranularRange(
+	ctx context.Context,
+	tx *sql.Tx,
+	state State,
+	projectionCoverageEventID int64,
+	projectionComplete bool,
+	revision string,
+	filter AnalyticsFilter,
+	grouped map[apiKeyStatKey]*apiKeyStatAccumulator,
+	table string, grain int64,
+) error {
+	fullStartMS := ceilIntervalMS(filter.FromMS, grain)
+	fullEndMS := floorIntervalMS(filter.ToMS, grain)
 	if fullStartMS >= fullEndMS {
 		return mergeProjectedAPIKeyStats(ctx, tx, projectionCoverageEventID, projectionComplete, filter, 0, false, grouped)
 	}
-	if err := mergeStoredAPIKeyStats(ctx, tx, revision, filter, fullStartMS, fullEndMS, grouped); err != nil {
+	if err := mergeStoredAPIKeyTableStats(ctx, tx, revision, filter, fullStartMS, fullEndMS, grouped, table); err != nil {
 		return err
 	}
 	tailFilter := filter
@@ -275,7 +304,20 @@ func mergeStoredAccountStats(
 	fromMS, toMS int64,
 	grouped map[accountStatKey]*accountStatAccumulator,
 ) error {
-	conditions, args := storedStatsConditions(filter, revision, fromMS, toMS)
+	return mergeStoredAccountTableStats(ctx, tx, revision, filter, fromMS, toMS, grouped, "usage_monitoring_account_daily_rollups_v1")
+}
+
+func mergeStoredAccountTableStats(
+	ctx context.Context,
+	tx *sql.Tx,
+	revision string,
+	filter AnalyticsFilter,
+	fromMS, toMS int64,
+	grouped map[accountStatKey]*accountStatAccumulator,
+	table string,
+) error {
+	conditions, args := storedTableStatsConditions(filter, revision, fromMS, toMS, table)
+
 	rows, err := tx.QueryContext(ctx, `select
 		account_snapshot,
 		auth_label_snapshot,
@@ -308,7 +350,7 @@ func mergeStoredAccountStats(
 		max(last_seen_ms),
 		sum(latency_sum_ms),
 		sum(latency_samples)
-	from usage_monitoring_account_daily_rollups_v1
+	from `+table+`
 	where `+strings.Join(conditions, " and ")+`
 	group by account_snapshot, auth_label_snapshot,
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_account_id_snapshot, auth_index,
@@ -418,7 +460,20 @@ func mergeStoredAPIKeyStats(
 	fromMS, toMS int64,
 	grouped map[apiKeyStatKey]*apiKeyStatAccumulator,
 ) error {
-	conditions, args := storedStatsConditions(filter, revision, fromMS, toMS)
+	return mergeStoredAPIKeyTableStats(ctx, tx, revision, filter, fromMS, toMS, grouped, "usage_monitoring_api_key_daily_rollups_v1")
+}
+
+func mergeStoredAPIKeyTableStats(
+	ctx context.Context,
+	tx *sql.Tx,
+	revision string,
+	filter AnalyticsFilter,
+	fromMS, toMS int64,
+	grouped map[apiKeyStatKey]*apiKeyStatAccumulator,
+	table string,
+) error {
+	conditions, args := storedTableStatsConditions(filter, revision, fromMS, toMS, table)
+
 	rows, err := tx.QueryContext(ctx, `select
 		api_key_hash,
 		account_snapshot,
@@ -450,7 +505,7 @@ func mergeStoredAPIKeyStats(
 		max(last_seen_ms),
 		sum(latency_sum_ms),
 		sum(latency_samples)
-	from usage_monitoring_api_key_daily_rollups_v1
+	from `+table+`
 	where `+strings.Join(conditions, " and ")+`
 	group by api_key_hash, account_snapshot, auth_label_snapshot,
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_account_id_snapshot, auth_index,

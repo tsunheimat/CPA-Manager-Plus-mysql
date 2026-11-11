@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 type Repository interface {
@@ -56,7 +57,7 @@ func (r *repository) UpsertActive(ctx context.Context, cooldown model.QuotaCoold
 		return model.QuotaCooldown{}, errors.New("quota cooldown observed_enabled_at_ms must not exceed disabled_at_ms")
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return model.QuotaCooldown{}, err
 	}
@@ -290,19 +291,19 @@ func (r *repository) MarkRecovered(ctx context.Context, id int64, recoveredAtMS 
 	if recoveredAtMS <= 0 {
 		recoveredAtMS = time.Now().UnixMilli()
 	}
-	_, err := r.db.ExecContext(ctx, `update quota_cooldowns set status = ?, recovered_at_ms = ?, last_error = null, updated_at_ms = ? where id = ?`, model.QuotaCooldownStatusRecovered, recoveredAtMS, recoveredAtMS, id)
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update quota_cooldowns set status = ?, recovered_at_ms = ?, last_error = null, updated_at_ms = ? where id = ?`, model.QuotaCooldownStatusRecovered, recoveredAtMS, recoveredAtMS, id)
 	return err
 }
 
 func (r *repository) MarkSkipped(ctx context.Context, id int64, reason string) error {
 	now := time.Now().UnixMilli()
-	_, err := r.db.ExecContext(ctx, `update quota_cooldowns set status = ?, last_error = ?, updated_at_ms = ? where id = ?`, model.QuotaCooldownStatusSkipped, nullString(reason), now, id)
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update quota_cooldowns set status = ?, last_error = ?, updated_at_ms = ? where id = ?`, model.QuotaCooldownStatusSkipped, nullString(reason), now, id)
 	return err
 }
 
 func (r *repository) RecordFailure(ctx context.Context, id int64, reason string) error {
 	now := time.Now().UnixMilli()
-	_, err := r.db.ExecContext(ctx, `update quota_cooldowns set last_error = ?, updated_at_ms = ? where id = ? and status = ?`, nullString(reason), now, id, model.QuotaCooldownStatusActive)
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update quota_cooldowns set last_error = ?, updated_at_ms = ? where id = ? and status = ?`, nullString(reason), now, id, model.QuotaCooldownStatusActive)
 	return err
 }
 

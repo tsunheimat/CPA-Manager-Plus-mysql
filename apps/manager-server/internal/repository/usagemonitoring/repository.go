@@ -6,23 +6,29 @@ import (
 	"errors"
 	"fmt"
 
-	sqliteutil "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqliteutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
+	sqliteutil "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqliteutil"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 const (
-	StatsRollupName      = "stats_v1"
-	MetadataRollupName   = "metadata_v1"
-	ProjectionRollupName = "projection_v1"
-	SchemaVersion        = 1
-	defaultBatchLimit    = 1000
+	StatsRollupName          = "stats_v1"
+	HourlyStatsRollupName    = "stats_hourly_v1"
+	HourlyMetadataRollupName = "metadata_hourly_v1"
+	MetadataRollupName       = "metadata_v1"
+	ProjectionRollupName     = "projection_v1"
+	SchemaVersion            = 1
+	defaultBatchLimit        = 1000
 )
 
 var ErrUnsupportedSchema = errors.New("unsupported usage monitoring rollup schema")
 
 type Repository interface {
+	CatchUpHourlyStats(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error)
+	CatchUpHourlyMetadata(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error)
 	CatchUpProjection(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error)
 	CatchUpStats(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error)
 	CatchUpMetadata(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error)
@@ -68,31 +74,46 @@ type CatchUpResult struct {
 
 type repository struct {
 	db          *sql.DB
+	mysqlHourly bool
 	catchUpGate chan struct{}
 }
 
-func New(db *sql.DB) Repository {
-	return &repository{db: db, catchUpGate: make(chan struct{}, 1)}
+type Option func(*repository)
+
+// WithMySQLHourly enables the optional MySQL-only hourly read models. SQLite
+// never creates or requires these tables, even when this option is supplied.
+func WithMySQLHourly(enabled bool) Option {
+	return func(r *repository) { r.mysqlHourly = enabled && mysql.IsMySQL(r.db) }
+}
+
+func New(db *sql.DB, options ...Option) Repository {
+	r := &repository{db: db, catchUpGate: make(chan struct{}, 1)}
+	for _, option := range options {
+		if option != nil {
+			option(r)
+		}
+	}
+	return r
 }
 
 func (r *repository) CatchUpProjection(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error) {
-	return r.catchUp(ctx, ProjectionRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, _ string, afterID, throughID, updatedAtMS int64) error {
+	return r.catchUp(ctx, ProjectionRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, _, _ string, afterID, throughID, updatedAtMS int64) error {
 		return usageprojection.UpsertEventRange(ctx, tx, afterID, throughID, updatedAtMS)
 	})
 }
 
 func (r *repository) CatchUpStats(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error) {
-	return r.catchUp(ctx, StatsRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, revision string, afterID, throughID, updatedAtMS int64) error {
-		if err := upsertAccountDailyBatch(ctx, tx, revision, afterID, throughID, updatedAtMS); err != nil {
+	return r.catchUp(ctx, StatsRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, revision, eventSource string, afterID, throughID, updatedAtMS int64) error {
+		if err := upsertAccountDailyBatch(ctx, tx, revision, eventSource, afterID, throughID, updatedAtMS); err != nil {
 			return err
 		}
-		return upsertAPIKeyDailyBatch(ctx, tx, revision, afterID, throughID, updatedAtMS)
+		return upsertAPIKeyDailyBatch(ctx, tx, revision, eventSource, afterID, throughID, updatedAtMS)
 	})
 }
 
 func (r *repository) CatchUpMetadata(ctx context.Context, limit int, nowMS int64) (CatchUpResult, error) {
-	return r.catchUp(ctx, MetadataRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, _ string, afterID, throughID, updatedAtMS int64) error {
-		if err := upsertSelectorDailyBatch(ctx, tx, afterID, throughID, updatedAtMS); err != nil {
+	return r.catchUp(ctx, MetadataRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, _, eventSource string, afterID, throughID, updatedAtMS int64) error {
+		if err := upsertSelectorDailyBatch(ctx, tx, eventSource, afterID, throughID, updatedAtMS); err != nil {
 			return err
 		}
 		return usageprojection.UpsertHeaderRange(ctx, tx, afterID, throughID, updatedAtMS)
@@ -103,12 +124,12 @@ func (r *repository) CatchUpCodexLegacyIdentityEvidence(ctx context.Context, lim
 	if limit <= 0 || limit > defaultBatchLimit {
 		limit = defaultBatchLimit
 	}
-	return r.catchUp(ctx, usageevent.CodexLegacyIdentityRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, revision string, afterID, throughID, _ int64) error {
+	return r.catchUp(ctx, usageevent.CodexLegacyIdentityRollupName, limit, nowMS, func(ctx context.Context, tx *sql.Tx, revision, _ string, afterID, throughID, _ int64) error {
 		return usageevent.UpsertCodexLegacyIdentityEvidenceRange(ctx, tx, revision, afterID, throughID)
 	})
 }
 
-type batchUpserter func(context.Context, *sql.Tx, string, int64, int64, int64) error
+type batchUpserter func(context.Context, *sql.Tx, string, string, int64, int64, int64) error
 
 func (r *repository) catchUp(
 	ctx context.Context,
@@ -128,7 +149,7 @@ func (r *repository) catchUp(
 	}
 	defer r.releaseCatchUp()
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return CatchUpResult{}, err
 	}
@@ -146,7 +167,16 @@ func (r *repository) catchUp(
 	if state.SchemaVersion != expectedSchema {
 		return CatchUpResult{}, fmt.Errorf("%w: %s got %d, want %d", ErrUnsupportedSchema, rollupName, state.SchemaVersion, expectedSchema)
 	}
-	latestID, err := latestEventID(ctx, tx)
+	eventSource := "usage_events"
+	var latestID int64
+	if rollupName == StatsRollupName || rollupName == MetadataRollupName || rollupName == HourlyStatsRollupName || rollupName == HourlyMetadataRollupName {
+		// Use one verified source for target discovery, bounded enumeration and
+		// aggregation. Recheck retained coverage even below the saved cursor;
+		// a watermark alone cannot prove that retained rows still exist.
+		eventSource, latestID, err = usageprojection.VerifiedRetainedEventSourceTx(ctx, tx)
+	} else {
+		latestID, err = latestEventID(ctx, tx)
+	}
 	if err != nil {
 		return CatchUpResult{}, err
 	}
@@ -154,7 +184,7 @@ func (r *repository) catchUp(
 	revision := state.StructureRevision
 	rebuilt := state.CoverageEventID < state.TargetEventID &&
 		(state.Status == "pending" || state.Status == "rebuilding" || state.Status == "clearing")
-	if rollupName == StatsRollupName {
+	if rollupName == StatsRollupName || rollupName == HourlyStatsRollupName {
 		revision, err = currentStructureRevision(ctx, tx)
 	} else if rollupName == ProjectionRollupName {
 		revision = usageidentity.MonitoringProjectionStructureRevision()
@@ -186,7 +216,7 @@ func (r *repository) catchUp(
 		if rollupName == usageevent.CodexLegacyIdentityRollupName {
 			pending, err = usageevent.ClearCodexLegacyIdentityEvidenceBatch(ctx, tx, limit)
 		} else {
-			pending, err = clearStatsRevisionRowsBatch(ctx, tx, revision, limit)
+			pending, err = clearRollupRevisionRowsBatch(ctx, tx, rollupName, revision, limit, mysql.IsMySQL(r.db))
 		}
 		if err != nil {
 			return CatchUpResult{}, err
@@ -224,7 +254,7 @@ func (r *repository) catchUp(
 		}
 	}
 
-	ids, err := eventIDsThrough(ctx, tx, state.CoverageEventID, targetID, limit)
+	ids, err := eventIDsThrough(ctx, tx, eventSource, state.CoverageEventID, targetID, limit)
 	if err != nil {
 		return CatchUpResult{}, err
 	}
@@ -252,6 +282,13 @@ func (r *repository) catchUp(
 		if err := setSearchIndexReady(ctx, tx, rollupName, !pending, nowMS); err != nil {
 			return CatchUpResult{}, err
 		}
+		cleanupPending := false
+		if !pending {
+			cleanupPending, err = cleanupHourlyRevisionRows(ctx, tx, rollupName, revision, limit, mysql.IsMySQL(r.db))
+			if err != nil {
+				return CatchUpResult{}, err
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return CatchUpResult{}, err
 		}
@@ -259,13 +296,14 @@ func (r *repository) catchUp(
 			LastEventID:     coverageID,
 			CoverageEventID: coverageID,
 			TargetEventID:   targetID,
-			Pending:         pending,
+			Pending:         pending || cleanupPending,
+			ContinueSoon:    cleanupPending,
 			Rebuilt:         rebuilt,
 		}, nil
 	}
 
 	lastEventID := ids[len(ids)-1]
-	if err := upsertBatch(ctx, tx, revision, state.CoverageEventID, lastEventID, nowMS); err != nil {
+	if err := upsertBatch(ctx, tx, revision, eventSource, state.CoverageEventID, lastEventID, nowMS); err != nil {
 		return CatchUpResult{}, err
 	}
 	pending := lastEventID < targetID || latestID > lastEventID
@@ -290,6 +328,13 @@ func (r *repository) catchUp(
 	if err := setSearchIndexReady(ctx, tx, rollupName, !pending, nowMS); err != nil {
 		return CatchUpResult{}, err
 	}
+	cleanupPending := false
+	if !pending {
+		cleanupPending, err = cleanupHourlyRevisionRows(ctx, tx, rollupName, revision, limit, mysql.IsMySQL(r.db))
+		if err != nil {
+			return CatchUpResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return CatchUpResult{}, err
 	}
@@ -298,7 +343,8 @@ func (r *repository) catchUp(
 		LastEventID:     lastEventID,
 		CoverageEventID: lastEventID,
 		TargetEventID:   targetID,
-		Pending:         pending,
+		Pending:         pending || cleanupPending,
+		ContinueSoon:    cleanupPending,
 		Rebuilt:         rebuilt,
 	}, nil
 }
@@ -307,13 +353,13 @@ func (r *repository) RecordFailure(ctx context.Context, rollupName string, rollu
 	if rollupErr == nil || nowMS <= 0 {
 		return nil
 	}
-	if rollupName != StatsRollupName && rollupName != MetadataRollupName && rollupName != ProjectionRollupName && rollupName != usageevent.CodexLegacyIdentityRollupName {
+	if rollupName != HourlyStatsRollupName && rollupName != HourlyMetadataRollupName && rollupName != StatsRollupName && rollupName != MetadataRollupName && rollupName != ProjectionRollupName && rollupName != usageevent.CodexLegacyIdentityRollupName {
 		return fmt.Errorf("unknown usage monitoring rollup %q", rollupName)
 	}
 	if sqliteutil.IsBusyError(rollupErr) {
 		return nil
 	}
-	_, err := r.db.ExecContext(ctx, `update usage_monitoring_rollup_state set
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update usage_monitoring_rollup_state set
 		status = case
 			when status in ('clearing', 'rebuilding') then status
 			when status = 'pending' and target_event_id > coverage_event_id then status
@@ -385,11 +431,11 @@ func latestEventID(ctx context.Context, tx *sql.Tx) (int64, error) {
 	return id, nil
 }
 
-func eventIDsThrough(ctx context.Context, tx *sql.Tx, afterID, throughID int64, limit int) ([]int64, error) {
+func eventIDsThrough(ctx context.Context, tx *sql.Tx, eventSource string, afterID, throughID int64, limit int) ([]int64, error) {
 	if throughID <= afterID {
 		return []int64{}, nil
 	}
-	rows, err := tx.QueryContext(ctx, `select id from usage_events
+	rows, err := tx.QueryContext(ctx, `select id from `+eventSource+` e
 		where id > ? and id <= ? order by id limit ?`, afterID, throughID, limit)
 	if err != nil {
 		return nil, err
@@ -424,22 +470,34 @@ func resetForRevision(ctx context.Context, tx *sql.Tx, rollupName, revision stri
 }
 
 func revisionResetStatus(rollupName string) string {
-	if rollupName == StatsRollupName || rollupName == usageevent.CodexLegacyIdentityRollupName {
+	if rollupName == HourlyStatsRollupName || rollupName == HourlyMetadataRollupName || rollupName == StatsRollupName || rollupName == usageevent.CodexLegacyIdentityRollupName {
 		return "clearing"
 	}
 	return "rebuilding"
 }
 
 func clearStatsRevisionRowsBatch(ctx context.Context, tx *sql.Tx, revision string, limit int) (bool, error) {
+	return clearRollupRevisionRowsBatch(ctx, tx, StatsRollupName, revision, limit, false)
+}
+
+func clearRollupRevisionRowsBatch(ctx context.Context, tx *sql.Tx, rollupName, revision string, limit int, native bool) (bool, error) {
 	remaining := limit
-	for _, tableName := range []string{
-		"usage_monitoring_account_daily_rollups_v1",
-		"usage_monitoring_api_key_daily_rollups_v1",
-	} {
+	tables := []string{"usage_monitoring_account_daily_rollups_v1", "usage_monitoring_api_key_daily_rollups_v1"}
+	revisionColumn := "structure_revision"
+	if rollupName == HourlyStatsRollupName {
+		tables = []string{"usage_monitoring_account_hourly_rollups_v1", "usage_monitoring_api_key_hourly_rollups_v1"}
+	}
+	if rollupName == HourlyMetadataRollupName {
+		tables = []string{"usage_monitoring_selector_hourly_rollups_v1"}
+		revisionColumn = "model_format_revision"
+	}
+	for _, tableName := range tables {
 		if remaining > 0 {
-			result, err := tx.ExecContext(ctx, `delete from `+tableName+` where rowid in (
-				select rowid from `+tableName+` where structure_revision = ? limit ?
-			)`, revision, remaining)
+			query := `delete from ` + tableName + ` where rowid in (select rowid from ` + tableName + ` where ` + revisionColumn + ` = ? limit ?)`
+			if native && (rollupName == HourlyStatsRollupName || rollupName == HourlyMetadataRollupName) {
+				query = mysql.Native(`delete from ` + tableName + ` where ` + revisionColumn + ` = ? limit ?`)
+			}
+			result, err := tx.ExecContext(ctx, query, revision, remaining)
 			if err != nil {
 				return false, fmt.Errorf("clear stats revision rows %s: %w", tableName, err)
 			}
@@ -451,7 +509,7 @@ func clearStatsRevisionRowsBatch(ctx context.Context, tx *sql.Tx, revision strin
 		}
 		var pending int
 		if err := tx.QueryRowContext(ctx, `select exists(
-			select 1 from `+tableName+` where structure_revision = ? limit 1
+			select 1 from `+tableName+` where `+revisionColumn+` = ? limit 1
 		)`, revision).Scan(&pending); err != nil {
 			return false, fmt.Errorf("inspect remaining stats revision rows %s: %w", tableName, err)
 		}

@@ -4474,6 +4474,15 @@
     "method_not_allowed": "当前接口不支持该操作。"
   },
   "usage_analytics": {
+    "section_core": "核心用量分析",
+    "section_exact": "精确延迟指标",
+    "section_dimensions": "维度排行",
+    "section_selectors": "筛选选项",
+    "section_metadata": "显示元数据",
+    "section_unavailable": "暂不可用",
+    "section_missing": "服务器未返回此分区，请重试加载。",
+    "section_stale": "上次数据已过期。",
+    "section_retry": "重试此分区",
     "title": "用量分析",
     "subtitle": "全面了解 API 使用情况，分析趋势与成本，优化资源配置。",
     "tabs_label": "用量分析分区",
@@ -4688,6 +4697,7 @@
     "health_trend_title": "请求健康趋势",
     "anomaly_points_title": "异常时间点",
     "anomaly_points_hint": "根据请求、成本、Token、缓存、失败率和延迟变化识别出的异常时段。",
+    "bucket_drilldown_unavailable": "由于时区变更，无法确认单个连续时间范围能准确对应此时间桶。请求预览和详情跳转不可用；汇总统计保持不变。",
     "drilldown_preview_title": "请求样本预览",
     "drilldown_preview_hint": "选中时间段后展示该时间段内的真实请求样本。",
     "drilldown_preview_empty": "点击趋势图中的时间段查看请求样本。",

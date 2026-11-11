@@ -42,6 +42,8 @@ import type { ModelPrice } from '@/utils/usage';
 
 const USAGE_SERVICE_ERROR_CODES = new Set([
   'request_failed',
+  'analytics_overloaded',
+  'analytics_deadline_exceeded',
   'connection_env_managed',
   'cpa_connection_required',
   'cpa_connection_required_for_monitoring',
@@ -94,6 +96,8 @@ export interface UsageServiceApiError extends Error {
 }
 
 export interface UsageServiceInfo {
+  /** Explicit capability; an absent value means legacy analytics includes. */
+  analyticsSectionsVersion?: number;
   service?: string;
   mode?: string;
   startedAt?: number;
@@ -1039,6 +1043,9 @@ export interface MonitoringAnalyticsInclude {
   summary_percentiles?: boolean;
   summary_comparison?: boolean;
   timeline?: boolean;
+  /** Omitted preserves the full legacy timeline, including exact percentiles. */
+  timeline_profile?: 'core' | 'full';
+  percentiles?: { summary?: boolean; timeline?: boolean };
   hourly_distribution?: boolean;
   model_share?: boolean;
   channel_share?: boolean;
@@ -1523,9 +1530,17 @@ export interface MonitoringAnalyticsSummaryComparison {
   total_cost: number;
 }
 
+export interface MonitoringAnalyticsBucketInterval {
+  from_ms: number;
+  to_ms: number;
+}
+
 export interface MonitoringAnalyticsTimelinePoint {
   bucket_ms: number;
   bucket_end_ms?: number;
+  // Absent on legacy servers. False means the start/end pair is not exact membership.
+  bucket_range_exact?: boolean;
+  bucket_intervals?: MonitoringAnalyticsBucketInterval[];
   label: string;
   calls: number;
   tokens: number;
@@ -1584,6 +1599,9 @@ export type MonitoringAnalyticsAnomalySeverity = 'low' | 'medium' | 'high' | str
 export interface MonitoringAnalyticsAnomalyPoint {
   bucket_ms: number;
   bucket_end_ms: number;
+  // Same exact half-open UTC membership contract as timeline points.
+  bucket_range_exact?: boolean;
+  bucket_intervals?: MonitoringAnalyticsBucketInterval[];
   label: string;
   severity: MonitoringAnalyticsAnomalySeverity;
   metric_keys: string[];
@@ -2129,7 +2147,16 @@ export interface MonitoringAnalyticsCoverage {
   fidelity_limitations: string[];
 }
 
+export interface MonitoringAnalyticsPercentileValues {
+  p95_latency_ms: number | null;
+  p95_ttft_ms: number | null;
+}
+
 export interface MonitoringAnalyticsResponse {
+  percentiles?: {
+    summary?: MonitoringAnalyticsPercentileValues;
+    timeline?: Array<MonitoringAnalyticsPercentileValues & { bucket_ms: number }>;
+  };
   generated_at_ms: number;
   granularity: 'hour' | 'day' | string;
   coverage?: MonitoringAnalyticsCoverage;

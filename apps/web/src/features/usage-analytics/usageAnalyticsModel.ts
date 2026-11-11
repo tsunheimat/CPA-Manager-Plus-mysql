@@ -105,9 +105,15 @@ export type UsageMetricDefinition = {
   axis: 'requests' | 'tokens' | 'cost';
 };
 
-export type UsageTimelinePoint = {
+export type UsageBucketRange = {
   bucketMs: number;
   bucketEndMs: number;
+  // Undefined preserves legacy contiguous-range behavior; false must never drill down as one range.
+  bucketRangeExact?: boolean;
+  bucketIntervals?: Array<{ fromMs: number; toMs: number }>;
+};
+
+export type UsageTimelinePoint = UsageBucketRange & {
   label: string;
   requestCount: number;
   totalTokens: number;
@@ -405,9 +411,7 @@ export type UsageHeatmapHighlights = {
   failureRisks: UsageHeatmapHighlight[];
 };
 
-export type UsageServerAnomaly = {
-  bucketMs: number;
-  bucketEndMs: number;
+export type UsageServerAnomaly = UsageBucketRange & {
   label: string;
   severity: 'low' | 'medium' | 'high' | string;
   metricKeys: string[];
@@ -435,7 +439,7 @@ export type UsageDrilldownEvent = {
   provider: string;
   endpoint: string;
   totalTokens: number;
-  estimatedCost: number;
+  estimatedCost: number | null;
   latencyMs: number | null;
   ttftMs: number | null;
   failed: boolean;
@@ -592,7 +596,8 @@ const toNumber = (value: unknown): number => {
 
 const toNullableNumber = (value: unknown): number | null => {
   if (value === null || value === undefined) return null;
-  const parsed = toNumber(value);
+  if (typeof value !== 'number' && (typeof value !== 'string' || value.trim() === '')) return null;
+  const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
 
@@ -881,9 +886,6 @@ export const buildUsageSummary = (
   tpm30m: toNumber(summary?.tpm_30m),
 });
 
-const getBucketSizeMs = (granularity: UsageAnalyticsResolvedGranularity) =>
-  granularity === 'day' ? DAY_MS : HOUR_MS;
-
 export const computeCacheHitRate = (tokens: {
   modelName?: string;
   inputTokens: number;
@@ -951,7 +953,15 @@ export const buildUsageTimeline = (
     const bucketMs = toNumber(point.bucket_ms);
     return {
       bucketMs,
-      bucketEndMs: toNumber(point.bucket_end_ms) || bucketMs + getBucketSizeMs(granularity),
+      bucketEndMs:
+        toNumber(point.bucket_end_ms) > bucketMs
+          ? toNumber(point.bucket_end_ms)
+          : getNextUsageBucketStartMs(bucketMs, granularity),
+      bucketRangeExact: point.bucket_range_exact,
+      bucketIntervals: point.bucket_intervals?.map((interval) => ({
+        fromMs: interval.from_ms,
+        toMs: interval.to_ms,
+      })),
       label: formatLocalBucketLabel(bucketMs, granularity),
       requestCount,
       totalTokens,
@@ -990,7 +1000,7 @@ const buildEmptyUsageTimelinePoint = (
   granularity: UsageAnalyticsResolvedGranularity
 ): UsageTimelinePoint => ({
   bucketMs,
-  bucketEndMs: bucketMs + getBucketSizeMs(granularity),
+  bucketEndMs: getNextUsageBucketStartMs(bucketMs, granularity),
   label: formatLocalBucketLabel(bucketMs, granularity),
   requestCount: 0,
   totalTokens: 0,
@@ -1030,29 +1040,26 @@ export const fillUsageTimelineBuckets = (
     return sortedTimeline;
   }
 
-  const pointsByBucket = new Map<number, UsageTimelinePoint[]>();
-  timeline.forEach((point) => {
-    const bucketKey = getLocalBucketStartMs(point.bucketMs, granularity);
-    const points = pointsByBucket.get(bucketKey);
-    if (points) {
-      points.push(point);
-    } else {
-      pointsByBucket.set(bucketKey, [point]);
-    }
-  });
+  const populatedBuckets = new Set(
+    timeline.map((point) => getLocalBucketStartMs(point.bucketMs, granularity))
+  );
 
-  const filledTimeline: UsageTimelinePoint[] = [];
+  // Authoritative bucket IDs may lie outside the range even when some members lie inside it.
+  // Always retain server points and their totals/metadata; fill only missing calendar slots.
+  const filledTimeline = [...sortedTimeline];
+  const hasNonExactBuckets = timeline.some((point) => !canDrilldownUsageBucket(point));
   const firstBucketMs = getLocalBucketStartMs(bounds.fromMs, granularity);
   for (
     let bucketMs = firstBucketMs;
     bucketMs < bounds.toMs;
     bucketMs = getNextUsageBucketStartMs(bucketMs, granularity)
   ) {
-    const points = pointsByBucket.get(bucketMs);
-    if (points) {
-      filledTimeline.push(...points);
-    } else {
-      filledTimeline.push(buildEmptyUsageTimelinePoint(bucketMs, granularity));
+    if (!populatedBuckets.has(bucketMs)) {
+      const point = buildEmptyUsageTimelinePoint(bucketMs, granularity);
+      // In a non-exact calendar response, synthetic gaps have no authoritative membership.
+      // Keep their zero totals, but conservatively withhold single-range drilldowns too.
+      if (hasNonExactBuckets) point.bucketRangeExact = false;
+      filledTimeline.push(point);
     }
   }
 
@@ -2433,6 +2440,11 @@ export const buildServerAnomalyPoints = (
   points.map((point) => ({
     bucketMs: toNumber(point.bucket_ms),
     bucketEndMs: toNumber(point.bucket_end_ms),
+    bucketRangeExact: point.bucket_range_exact,
+    bucketIntervals: point.bucket_intervals?.map((interval) => ({
+      fromMs: interval.from_ms,
+      toMs: interval.to_ms,
+    })),
     label: point.label || formatLocalBucketLabel(toNumber(point.bucket_ms), 'hour'),
     severity: point.severity,
     metricKeys: point.metric_keys ?? [],
@@ -2474,7 +2486,7 @@ export const buildDrilldownPreview = (
   const modelCostPerToken = new Map(
     modelRows.map((row) => [
       row.model || row.label,
-      row.totalTokens > 0 ? row.estimatedCost / row.totalTokens : 0,
+      row.totalTokens > 0 ? row.estimatedCost / row.totalTokens : null,
     ])
   );
   return rows.map((row) => {
@@ -2482,7 +2494,7 @@ export const buildDrilldownPreview = (
     const model =
       row.analytics_model || normalizeAnalyticsModel(requestedModel) || row.resolved_model || '-';
     const totalTokens = toNumber(row.total_tokens);
-    const costPerToken = modelCostPerToken.get(model) ?? 0;
+    const costPerToken = modelCostPerToken.get(model);
     return {
       requestId: row.request_id || '',
       eventHash: row.event_hash,
@@ -2495,7 +2507,7 @@ export const buildDrilldownPreview = (
       provider: row.auth_provider_snapshot || row.source || '',
       endpoint: row.endpoint || row.path || '',
       totalTokens,
-      estimatedCost: totalTokens * costPerToken,
+      estimatedCost: costPerToken == null ? null : totalTokens * costPerToken,
       latencyMs: row.latency_ms ?? null,
       ttftMs: row.ttft_ms ?? null,
       failed: Boolean(row.failed),
@@ -2745,8 +2757,11 @@ export const buildUsageAnomalyCauseKeys = (
   return causes.slice(0, 4);
 };
 
+export const canDrilldownUsageBucket = (point: UsageBucketRange | null | undefined): boolean =>
+  Boolean(point) && point?.bucketRangeExact !== false;
+
 export const buildMonitoringDetailUrl = (
-  point: UsageTimelinePoint | Pick<UsageServerAnomaly, 'bucketMs' | 'bucketEndMs'>,
+  point: UsageBucketRange,
   filters: Partial<
     Pick<
       UsageAnalyticsFiltersState,
@@ -2764,6 +2779,8 @@ export const buildMonitoringDetailUrl = (
     requestType?: string;
   }
 ) => {
+  // Request Monitor accepts one interval only; never link an envelope as exact membership.
+  if (!canDrilldownUsageBucket(point)) return '';
   const params = new URLSearchParams();
   params.set('from_ms', String(point.bucketMs));
   params.set('to_ms', String(point.bucketEndMs));

@@ -184,7 +184,7 @@ func newAnalyticsPreaggregationRepo(t *testing.T) *repository {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return &repository{db: db}
+	return New(db).(*repository)
 }
 
 func insertAnalyticsPreaggregationEvents(t *testing.T, ctx context.Context, repo *repository, base time.Time) {

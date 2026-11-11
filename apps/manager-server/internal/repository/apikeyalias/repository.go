@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 type Repository interface {
@@ -78,7 +79,7 @@ func (r *repository) UpsertMany(ctx context.Context, aliases []model.APIKeyAlias
 		}
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return err
 	}
@@ -159,7 +160,7 @@ func (r *repository) Delete(ctx context.Context, apiKeyHash string) error {
 	if !validAPIKeyHash(hash) {
 		return errors.New("valid apiKeyHash is required")
 	}
-	_, err := r.db.ExecContext(ctx, `delete from api_key_aliases where api_key_hash = ?`, hash)
+	_, err := sqlwrite.ExecContext(ctx, r.db, `delete from api_key_aliases where api_key_hash = ?`, hash)
 	return err
 }
 

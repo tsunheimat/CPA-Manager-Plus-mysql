@@ -12,6 +12,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/database"
 	mysqlrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
@@ -24,7 +25,7 @@ func TestMySQLSnapshotRoundTripAndIntegrity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec("insert into settings(`key`,value,updated_at_ms) values('test','before',0)"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "insert into settings(`key`,value,updated_at_ms) values('test','before',0)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(cfg.DataKeyPath, []byte("original-key"), 0600); err != nil {
@@ -42,7 +43,7 @@ func TestMySQLSnapshotRoundTripAndIntegrity(t *testing.T) {
 	if err := runMySQL(ctx, options{Action: "create", SnapshotDir: snapshot}, cfg, &out); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("update settings set value='after' where `key`='test'"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "update settings set value='after' where `key`='test'"); err != nil {
 		t.Fatal(err)
 	}
 	os.WriteFile(cfg.DataKeyPath, []byte("changed-key"), 0600)
@@ -107,7 +108,7 @@ func TestMySQLRestoreJournalRecoversCommittedAndRolledBackFiles(t *testing.T) {
 				t.Fatal("startup ignored interrupted restore")
 			}
 			if committed {
-				if _, err := db.Exec("insert into settings(`key`,value,updated_at_ms) values(?,?,0)", restoreTokenKey, j.Token); err != nil {
+				if _, err := sqlwrite.ExecContext(context.Background(), db, "insert into settings(`key`,value,updated_at_ms) values(?,?,0)", restoreTokenKey, j.Token); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -140,7 +141,7 @@ func TestMySQLSnapshotRestoresEmptyDatabaseAndDeletedHighWaterMark(t *testing.T)
 		"delete from usage_events",
 		"insert into settings(`key`,value,updated_at_ms) values('restore-test','你好',0)",
 	} {
-		if _, err := db.Exec(query); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, query); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -164,7 +165,7 @@ func TestMySQLSnapshotRestoresEmptyDatabaseAndDeletedHighWaterMark(t *testing.T)
 		t.Fatal(err)
 	}
 	defer restored.Close()
-	result, err := restored.Exec("insert into usage_events(event_hash,timestamp_ms,timestamp,model,created_at_ms) values('new',0,'time','model',0)")
+	result, err := sqlwrite.ExecContext(ctx, restored, "insert into usage_events(event_hash,timestamp_ms,timestamp,model,created_at_ms) values('new',0,'time','model',0)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +197,7 @@ func TestMySQLSnapshotOwnershipLossRollsBackFilesAndRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec("insert into settings(`key`,value,updated_at_ms) values('state','backup',0)"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "insert into settings(`key`,value,updated_at_ms) values('state','backup',0)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(cfg.DataKeyPath, []byte("backup-key"), 0600); err != nil {
@@ -219,7 +220,7 @@ func TestMySQLSnapshotOwnershipLossRollsBackFilesAndRows(t *testing.T) {
 	if err := createMySQL(ctx, db, cfg, snapshot, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("update settings set value='current' where `key`='state'"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "update settings set value='current' where `key`='state'"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(cfg.DataKeyPath, []byte("current-key"), 0600); err != nil {

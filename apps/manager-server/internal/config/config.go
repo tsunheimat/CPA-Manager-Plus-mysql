@@ -54,6 +54,14 @@ type Config struct {
 	AccountActionsEnabled        bool
 	AccountActionsAutoDisable    bool
 	DashboardHourlyRollupEnabled bool
+	MySQLAnalyticsEnabled        bool
+	MySQLBulkEnabled             bool
+	MySQLHourlyEnabled           bool
+	AnalyticsProgressiveEnabled  bool
+	AnalyticsTimeout             time.Duration
+	AnalyticsMaxConcurrent       int
+	AnalyticsQueueSize           int
+	AnalyticsAdmissionTimeout    time.Duration
 	UsageImportChunkBytes        int64
 	UsageImportDiskQuotaBytes    int64
 	UsageImportMaxSessions       int
@@ -101,6 +109,14 @@ type fileConfig struct {
 	UsageImportTTLMinutes        int      `json:"usageImportSessionTTLMinutes,omitempty"`
 	UsageArchiveRetentionEnabled bool     `json:"usageArchiveRetentionEnabled,omitempty"`
 	UsageArchiveRetentionDays    *int64   `json:"usageArchiveRetentionDays,omitempty"`
+	MySQLAnalyticsEnabled        bool     `json:"mysqlAnalyticsEnabled,omitempty"`
+	MySQLBulkEnabled             bool     `json:"mysqlBulkEnabled,omitempty"`
+	MySQLHourlyEnabled           bool     `json:"mysqlHourlyEnabled,omitempty"`
+	AnalyticsProgressiveEnabled  *bool    `json:"analyticsProgressiveEnabled,omitempty"`
+	AnalyticsTimeoutMS           *int     `json:"analyticsTimeoutMs,omitempty"`
+	AnalyticsMaxConcurrent       *int     `json:"analyticsMaxConcurrent,omitempty"`
+	AnalyticsQueueSize           *int     `json:"analyticsQueueSize,omitempty"`
+	AnalyticsAdmissionTimeoutMS  *int     `json:"analyticsAdmissionTimeoutMs,omitempty"`
 }
 
 func Load() (Config, error) {
@@ -175,7 +191,19 @@ func LoadWithOptions(options LoadOptions) (Config, error) {
 		dataKeyPath = filepath.Join(dataDir, "data.key")
 	}
 
+	analytics, err := loadAnalyticsConfig(cfgFile)
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
+		MySQLAnalyticsEnabled:        analytics.MySQLAnalyticsEnabled,
+		MySQLBulkEnabled:             analytics.MySQLBulkEnabled,
+		MySQLHourlyEnabled:           analytics.MySQLHourlyEnabled,
+		AnalyticsProgressiveEnabled:  analytics.AnalyticsProgressiveEnabled,
+		AnalyticsTimeout:             analytics.AnalyticsTimeout,
+		AnalyticsMaxConcurrent:       analytics.AnalyticsMaxConcurrent,
+		AnalyticsQueueSize:           analytics.AnalyticsQueueSize,
+		AnalyticsAdmissionTimeout:    analytics.AnalyticsAdmissionTimeout,
 		HTTPAddr:                     env("HTTP_ADDR", stringFallback(cfgFile.HTTPAddr, "0.0.0.0:18317")),
 		DataDir:                      dataDir,
 		DBPath:                       dbPath,

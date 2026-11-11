@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -14,7 +15,7 @@ func (r *repository) LoadAggregate(ctx context.Context, filter AnalyticsFilter) 
 	if !SupportsEventProjectionFilter(filter) {
 		return Aggregate{}, State{}, false, nil
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return Aggregate{}, State{}, false, err
 	}
@@ -27,11 +28,11 @@ func (r *repository) LoadAggregate(ctx context.Context, filter AnalyticsFilter) 
 	if err != nil {
 		return Aggregate{}, state, false, err
 	}
-	if dailyAvailable && SupportsStatsFilter(filter) {
-		aggregate, err := loadDailyAggregate(
+	if SupportsStatsFilter(filter) {
+		aggregate, err := r.loadComposedAggregate(
 			ctx,
 			tx,
-			statsState,
+			statsState, dailyAvailable,
 			state.CoverageEventID,
 			projectionComplete,
 			revision,
@@ -102,7 +103,7 @@ func (r *repository) LoadModelStats(ctx context.Context, filter AnalyticsFilter)
 	if !SupportsEventProjectionFilter(filter) {
 		return nil, State{}, false, nil
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, State{}, false, err
 	}
@@ -115,11 +116,11 @@ func (r *repository) LoadModelStats(ctx context.Context, filter AnalyticsFilter)
 	if err != nil {
 		return nil, state, false, err
 	}
-	if dailyAvailable && SupportsStatsFilter(filter) {
-		stats, err := loadDailyModelStats(
+	if SupportsStatsFilter(filter) {
+		stats, err := r.loadComposedModelStats(
 			ctx,
 			tx,
-			statsState,
+			statsState, dailyAvailable,
 			state.CoverageEventID,
 			projectionComplete,
 			revision,

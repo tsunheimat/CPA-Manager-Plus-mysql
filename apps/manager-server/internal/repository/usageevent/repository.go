@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -40,6 +42,7 @@ type Repository interface {
 	TimelineWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]TimelinePoint, error)
 	LatencyPercentilesWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]LatencyPercentiles, error)
 	LatencySummaryWithFilter(ctx context.Context, filter AnalyticsFilter) (LatencySummary, error)
+	LatencyMetricsWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location, needSummary, needBuckets bool) (LatencyMetrics, error)
 	HourlyDistributionWithFilter(ctx context.Context, filter AnalyticsFilter, location *time.Location) ([]HourlyPoint, error)
 	FilterOptionValuesWithFilter(ctx context.Context, filter AnalyticsFilter) (FilterOptionValues, error)
 	FilterSelectorValuesWithFilter(ctx context.Context, filter AnalyticsFilter) (FilterSelectorValues, error)
@@ -63,11 +66,34 @@ type Repository interface {
 }
 
 type repository struct {
-	db *sql.DB
+	db             *sql.DB
+	mysqlBackend   bool // The connector's dialect is fixed for the lifetime of db.
+	mysqlAnalytics bool
+	mysqlBulk      bool
 }
 
-func New(db *sql.DB) Repository {
-	return &repository{db: db}
+// Option configures optional repository acceleration. All options default off.
+type Option func(*repository)
+
+// WithMySQLAnalytics opts into combined SQL-window percentiles and SQL-grouped
+// raw analytics on MySQL. Disabled MySQL percentiles use bounded-memory sorted
+// sample streams; SQLite's portable readers are unaffected by this option.
+// Keep disabled until native MySQL acceptance has been completed for the deployment.
+func WithMySQLAnalytics(enabled bool) Option {
+	return func(r *repository) { r.mysqlAnalytics = enabled }
+}
+
+// WithMySQLBulk enables strict set-based ingestion on the MySQL adapter only.
+func WithMySQLBulk(enabled bool) Option { return func(r *repository) { r.mysqlBulk = enabled } }
+
+func New(db *sql.DB, options ...Option) Repository {
+	r := &repository{db: db, mysqlBackend: mysql.IsMySQL(db)}
+	for _, option := range options {
+		if option != nil {
+			option(r)
+		}
+	}
+	return r
 }
 
 type preparedUsageEvent struct {
@@ -367,8 +393,12 @@ func (r *repository) InsertBatch(ctx context.Context, events []model.UsageEvent)
 		preparedList = append(preparedList, prepared)
 	}
 
-	// Phase 5: SQLite write transaction - strictly short atomic DB writes only
-	tx, err := r.db.BeginTx(ctx, nil)
+	if r.mysqlBulk && mysql.IsMySQL(r.db) {
+		return r.insertPreparedBulk(ctx, preparedList, result)
+	}
+
+	// Phase 5: Reference write transaction - strictly short atomic DB writes only
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return model.InsertResult{}, err
 	}
@@ -413,20 +443,7 @@ func (r *repository) InsertBatch(ctx context.Context, events []model.UsageEvent)
 	}
 	defer attachExistingLedgerStmt.Close()
 
-	stmt, err := tx.PrepareContext(ctx, `insert or ignore into usage_events (
-		request_id, event_hash, timestamp_ms, timestamp, provider, executor_type, model, endpoint, method, path,
-		client_ip, x_forwarded_for, user_agent,
-		auth_type, auth_index, source, source_hash, api_key_hash,
-		account_snapshot, auth_label_snapshot, auth_file_snapshot, auth_provider_snapshot, auth_account_id_snapshot, auth_project_id_snapshot, auth_snapshot_at_ms,
-		requested_model, resolved_model, reasoning_effort, service_tier, request_service_tier, response_service_tier, cache_input_mode,
-		input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_tokens, cache_read_tokens, cache_creation_tokens,
-		normalized_uncached_input_tokens, normalized_total_input_tokens, normalized_cache_read_tokens, normalized_cache_creation_tokens, total_tokens,
-		latency_ms, ttft_ms, failed, fail_status_code, fail_summary,
-		response_metadata_json, header_quota_recover_at_ms, header_quota_used_percent, header_quota_plan_type, header_error_kind, header_error_code, header_trace_id,
-		fail_body, raw_json,
-		response_model, session_id, parent_session_id, access_token_sha256, generate, stream,
-		created_at_ms
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.PrepareContext(ctx, `insert or ignore into usage_events (`+usageInsertColumns+`) values (`+strings.TrimRight(strings.Repeat("?,", 65), ",")+`)`)
 	if err != nil {
 		return model.InsertResult{}, err
 	}
@@ -451,74 +468,7 @@ func (r *repository) InsertBatch(ctx context.Context, events []model.UsageEvent)
 			continue
 		}
 
-		res, err := stmt.ExecContext(
-			ctx,
-			nullString(ev.RequestID),
-			ev.EventHash,
-			ev.TimestampMS,
-			ev.Timestamp,
-			nullString(ev.Provider),
-			nullString(ev.ExecutorType),
-			ev.Model,
-			nullString(ev.Endpoint),
-			nullString(ev.Method),
-			nullString(ev.Path),
-			nullString(ev.ClientIP),
-			nullString(ev.XForwardedFor),
-			nullString(ev.UserAgent),
-			nullString(ev.AuthType),
-			nullString(ev.AuthIndex),
-			nullString(ev.Source),
-			nullString(ev.SourceHash),
-			nullString(ev.APIKeyHash),
-			nullString(ev.AccountSnapshot),
-			nullString(ev.AuthLabelSnapshot),
-			nullString(ev.AuthFileSnapshot),
-			nullString(ev.AuthProviderSnapshot),
-			nullString(ev.AuthAccountIDSnapshot),
-			nullString(ev.AuthProjectIDSnapshot),
-			nullPositiveInt64(ev.AuthSnapshotAtMS),
-			nullString(ev.RequestedModel),
-			nullString(ev.ResolvedModel),
-			nullString(ev.ReasoningEffort),
-			nullString(ev.ServiceTier),
-			nullString(ev.RequestServiceTier),
-			nullString(ev.ResponseServiceTier),
-			nullString(ev.CacheInputMode),
-			ev.InputTokens,
-			ev.OutputTokens,
-			ev.ReasoningTokens,
-			ev.CachedTokens,
-			ev.CacheTokens,
-			ev.CacheReadTokens,
-			ev.CacheCreationTokens,
-			ev.NormalizedUncachedInputTokens,
-			ev.NormalizedTotalInputTokens,
-			ev.NormalizedCacheReadTokens,
-			ev.NormalizedCacheCreationTokens,
-			ev.TotalTokens,
-			nullInt(ev.LatencyMS),
-			nullInt(ev.TTFTMS),
-			prep.failed,
-			nullPositiveInt64(int64(ev.FailStatusCode)),
-			nullString(prep.failSummary),
-			nullString(prep.metadataJSON),
-			nullPositiveInt64(prep.quotaRecoverAtMS),
-			nullFloat(prep.quotaUsedPercent),
-			nullString(prep.quotaPlanType),
-			nullString(prep.errorKind),
-			nullString(prep.errorCode),
-			nullString(prep.traceID),
-			nullString(ev.FailBody),
-			nullString(prep.rawJSON),
-			nullString(ev.ResponseModel),
-			nullString(ev.SessionID),
-			nullString(ev.ParentSessionID),
-			nullString(ev.AccessTokenSHA256),
-			nullBool(ev.Generate),
-			nullBool(ev.Stream),
-			ev.CreatedAtMS,
-		)
+		res, err := stmt.ExecContext(ctx, preparedInsertArgs(prep)...)
 		if err != nil {
 			return model.InsertResult{}, err
 		}

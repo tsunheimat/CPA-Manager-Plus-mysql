@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
-
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -155,11 +155,11 @@ func runSQLiteSegmentBaseline(t *testing.T, directory string, count int) archive
 	if err != nil {
 		t.Fatalf("open archive sqlite: %v", err)
 	}
-	if _, err := db.Exec(`pragma journal_mode = delete; pragma synchronous = full; pragma temp_store = memory`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `pragma journal_mode = delete; pragma synchronous = full; pragma temp_store = memory`); err != nil {
 		_ = db.Close()
 		t.Fatalf("configure archive sqlite: %v", err)
 	}
-	if _, err := db.Exec(`create table archive_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `create table archive_events (
 		event_id integer primary key,
 		event_hash text not null unique,
 		timestamp_ms integer not null,
@@ -168,7 +168,7 @@ func runSQLiteSegmentBaseline(t *testing.T, directory string, count int) archive
 		_ = db.Close()
 		t.Fatalf("create archive table: %v", err)
 	}
-	tx, err := db.BeginTx(context.Background(), nil)
+	tx, err := sqlwrite.BeginTx(context.Background(), db, nil)
 	if err != nil {
 		_ = db.Close()
 		t.Fatalf("begin archive transaction: %v", err)
@@ -204,7 +204,7 @@ func runSQLiteSegmentBaseline(t *testing.T, directory string, count int) archive
 		_ = db.Close()
 		t.Fatalf("commit archive sqlite: %v", err)
 	}
-	if _, err := db.Exec(`pragma optimize`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `pragma optimize`); err != nil {
 		_ = db.Close()
 		t.Fatalf("optimize archive sqlite: %v", err)
 	}

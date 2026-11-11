@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagearchive"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 func TestArchiveJobContinuesAfterWaitingRequestIsCancelled(t *testing.T) {
@@ -87,7 +88,7 @@ func TestArchiveBackgroundRecoveryRetriesTransientReadiness(t *testing.T) {
 	if _, err := st.InsertEvents(ctx, archiveTestServiceEvents(1)); err != nil {
 		t.Fatalf("insert archive event: %v", err)
 	}
-	if _, err := rawDB.ExecContext(ctx, `update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `update usage_data_migrations set
 		status = 'pending', last_error = null
 		where name = 'usage_cache_accounting_v2'`); err != nil {
 		t.Fatalf("mark migration pending: %v", err)
@@ -114,7 +115,7 @@ func TestArchiveBackgroundRecoveryRetriesTransientReadiness(t *testing.T) {
 		t.Fatalf("transient readiness cleared background request: %#v", pending.Run)
 	}
 
-	if _, err := rawDB.ExecContext(ctx, `update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `update usage_data_migrations set
 		status = 'completed', last_error = null
 		where name = 'usage_cache_accounting_v2'`); err != nil {
 		t.Fatalf("mark migration completed: %v", err)
@@ -135,7 +136,7 @@ func TestArchiveSynchronousSubmissionDoesNotRetryAfterReadinessFailure(t *testin
 	if _, err := st.InsertEvents(ctx, archiveTestServiceEvents(1)); err != nil {
 		t.Fatalf("insert archive event: %v", err)
 	}
-	if _, err := rawDB.ExecContext(ctx, `update usage_data_migrations set
+	if _, err := sqlwrite.ExecContext(ctx, rawDB, `update usage_data_migrations set
 		status = 'pending', last_error = null
 		where name = 'usage_cache_accounting_v2'`); err != nil {
 		t.Fatalf("mark migration pending: %v", err)

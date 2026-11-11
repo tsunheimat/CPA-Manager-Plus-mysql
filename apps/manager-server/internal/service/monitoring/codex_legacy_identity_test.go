@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
@@ -46,7 +47,7 @@ func TestCodexLegacyEvidencePreservesHistoryAndWindowResponses(t *testing.T) {
 		}
 	}
 	// The same evidence reader must also serve the raw analytics fallback.
-	if _, err := db.Exec("update usage_monitoring_rollup_state set structure_revision = 'unavailable' where rollup_name = 'projection_v1'"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "update usage_monitoring_rollup_state set structure_revision = 'unavailable' where rollup_name = 'projection_v1'"); err != nil {
 		t.Fatal(err)
 	}
 	window, err := service.AccountWindowUsage(ctx, windowRequest)
@@ -180,7 +181,7 @@ func newCodexLegacyServiceFixture(t testing.TB, count int, payload string) (*sql
 			values = append(values, id, fmt.Sprintf("identity-%d", id), ts, fmt.Sprint(ts), "gpt-test", "gpt-test", ts, "codex", "codex", file, file, fmt.Sprintf("auth-%d", credential), account, fmt.Sprintf("member-%d@example.com", credential), 100, 20, 120, payload)
 			rows = append(rows, "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 		}
-		if _, err := db.Exec(`insert into usage_events(id,event_hash,timestamp_ms,timestamp,model,requested_model,created_at_ms,provider,auth_provider_snapshot,auth_file_snapshot,source,auth_index,auth_account_id_snapshot,account_snapshot,input_tokens,output_tokens,total_tokens,raw_json) values `+strings.Join(rows, ","), values...); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events(id,event_hash,timestamp_ms,timestamp,model,requested_model,created_at_ms,provider,auth_provider_snapshot,auth_file_snapshot,source,auth_index,auth_account_id_snapshot,account_snapshot,input_tokens,output_tokens,total_tokens,raw_json) values `+strings.Join(rows, ","), values...); err != nil {
 			t.Fatal(err)
 		}
 	}

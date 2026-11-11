@@ -6,9 +6,9 @@ import (
 	"errors"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
+	_ "modernc.org/sqlite"
 )
 
 func TestSearchIndexLikePatternKeepsExactFallbackBoundary(t *testing.T) {
@@ -64,7 +64,7 @@ func TestVerifyRetainedEdgeTx(t *testing.T) {
 				event_id int
 			);
 		`
-		if _, err := db.Exec(schema); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, schema); err != nil {
 			t.Fatalf("create schema: %v", err)
 		}
 		return db
@@ -74,7 +74,7 @@ func TestVerifyRetainedEdgeTx(t *testing.T) {
 
 	t.Run("missing projection state", func(t *testing.T) {
 		db := setupDB(t)
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, db, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,10 +87,10 @@ func TestVerifyRetainedEdgeTx(t *testing.T) {
 
 	t.Run("incompatible schema version", func(t *testing.T) {
 		db := setupDB(t)
-		if _, err := db.Exec(`insert into usage_monitoring_rollup_state values ('projection_v1', 0, ?, 'ready', 10)`, currentRevision); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_monitoring_rollup_state values ('projection_v1', 0, ?, 'ready', 10)`, currentRevision); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, db, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -103,10 +103,10 @@ func TestVerifyRetainedEdgeTx(t *testing.T) {
 
 	t.Run("incompatible structure revision", func(t *testing.T) {
 		db := setupDB(t)
-		if _, err := db.Exec(`insert into usage_monitoring_rollup_state values ('projection_v1', 1, 'obsolete', 'ready', 10)`); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_monitoring_rollup_state values ('projection_v1', 1, 'obsolete', 'ready', 10)`); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, db, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -119,10 +119,10 @@ func TestVerifyRetainedEdgeTx(t *testing.T) {
 
 	t.Run("clearing status", func(t *testing.T) {
 		db := setupDB(t)
-		if _, err := db.Exec(`insert into usage_monitoring_rollup_state values ('projection_v1', 1, ?, 'clearing', 10)`, currentRevision); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_monitoring_rollup_state values ('projection_v1', 1, ?, 'clearing', 10)`, currentRevision); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, db, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -135,13 +135,13 @@ func TestVerifyRetainedEdgeTx(t *testing.T) {
 
 	t.Run("missing deleted edge event in projection", func(t *testing.T) {
 		db := setupDB(t)
-		if _, err := db.Exec(`insert into usage_monitoring_rollup_state values ('projection_v1', 1, ?, 'ready', 10)`, currentRevision); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_monitoring_rollup_state values ('projection_v1', 1, ?, 'ready', 10)`, currentRevision); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`insert into usage_archive_event_refs values (5, 1500, 1500)`); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_archive_event_refs values (5, 1500, 1500)`); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, db, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,16 +154,16 @@ func TestVerifyRetainedEdgeTx(t *testing.T) {
 
 	t.Run("edge event beyond coverage ID", func(t *testing.T) {
 		db := setupDB(t)
-		if _, err := db.Exec(`insert into usage_monitoring_rollup_state values ('projection_v1', 1, ?, 'ready', 5)`, currentRevision); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_monitoring_rollup_state values ('projection_v1', 1, ?, 'ready', 5)`, currentRevision); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`insert into usage_archive_event_refs values (10, 1500, 1500)`); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_archive_event_refs values (10, 1500, 1500)`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`insert into usage_monitoring_event_projection_v1 values (10)`); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_monitoring_event_projection_v1 values (10)`); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, db, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -176,16 +176,16 @@ func TestVerifyRetainedEdgeTx(t *testing.T) {
 
 	t.Run("complete retained edge", func(t *testing.T) {
 		db := setupDB(t)
-		if _, err := db.Exec(`insert into usage_monitoring_rollup_state values ('projection_v1', 1, ?, 'ready', 10)`, currentRevision); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_monitoring_rollup_state values ('projection_v1', 1, ?, 'ready', 10)`, currentRevision); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`insert into usage_archive_event_refs values (5, 1500, 1500)`); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_archive_event_refs values (5, 1500, 1500)`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`insert into usage_monitoring_event_projection_v1 values (5)`); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_monitoring_event_projection_v1 values (5)`); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, db, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -198,10 +198,10 @@ func TestVerifyRetainedEdgeTx(t *testing.T) {
 
 	t.Run("real SQL query error does not return ErrRetainedCoverageIncomplete", func(t *testing.T) {
 		db := setupDB(t)
-		if _, err := db.Exec(`drop table usage_monitoring_rollup_state`); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `drop table usage_monitoring_rollup_state`); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, db, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

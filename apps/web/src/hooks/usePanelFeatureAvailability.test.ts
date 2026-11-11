@@ -287,6 +287,22 @@ describe('panel feature availability', () => {
     });
   });
 
+  it('defaults absent and invalid analytics capability versions to legacy', () => {
+    for (const analyticsSectionsVersion of [undefined, 0, NaN, -1]) {
+      const availability = resolvePanelFeatureAvailability({
+        analyticsSectionsVersion,
+        panelHostConfirmed: true,
+        panelHostedByUsageService: true,
+        panelBase: 'https://manager.test',
+        managerServiceBase: 'https://manager.test',
+        managerConfig: buildManagerConfig(),
+        hasManagerCandidate: true,
+        managementKey: 'test',
+      });
+      expect(availability.analyticsSectionsVersion).toBe(0);
+    }
+  });
+
   it('shares one feature detection request across concurrent hook consumers', async () => {
     const getInfoSpy = vi.spyOn(usageServiceApi, 'getInfo').mockImplementation(async (base) => ({
       service: base === 'http://manager.local:18317' ? 'cpa-manager-plus' : 'cli-proxy-api',
@@ -339,6 +355,7 @@ describe('panel feature availability', () => {
   it('confirms a Manager-hosted panel after a successful Manager probe', async () => {
     const getInfoSpy = vi.spyOn(usageServiceApi, 'getInfo').mockResolvedValue({
       service: 'cpa-manager-plus',
+      analyticsSectionsVersion: 1,
     });
     const getManagerConfigSpy = vi
       .spyOn(usageServiceApi, 'getManagerConfig')
@@ -347,6 +364,7 @@ describe('panel feature availability', () => {
     try {
       const availability = await renderDetectedAvailability('probe-manager-success-key');
 
+      expect(availability.analyticsSectionsVersion).toBe(1);
       expect(availability).toMatchObject({
         checking: false,
         panelHostConfirmed: true,

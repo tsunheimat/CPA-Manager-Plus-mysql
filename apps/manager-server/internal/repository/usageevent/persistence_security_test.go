@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
@@ -67,7 +68,7 @@ func TestEventHashPersistenceBoundary(t *testing.T) {
 	// 4. Historical noncanonical duplicate: if historical row exists, it must be recognized as duplicate
 	historicalHash := "legacy-noncanonical-raw-hash-12345"
 	// Seed historical row directly into usage_events table
-	_, err = db.ExecContext(ctx, `insert into usage_events (event_hash, timestamp_ms, timestamp, model, total_tokens, created_at_ms)
+	_, err = sqlwrite.ExecContext(ctx, db, `insert into usage_events (event_hash, timestamp_ms, timestamp, model, total_tokens, created_at_ms)
 		values (?, 4000, '2026-01-01T00:00:04Z', 'gpt-test', 10, 4000)`, historicalHash)
 	if err != nil {
 		t.Fatalf("seed historical event: %v", err)

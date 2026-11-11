@@ -67,6 +67,13 @@ func TestMySQLMigrationPreservesDataAndSequenceWithoutChangingSource(t *testing.
 		t.Fatal(err)
 	}
 	defer target.Close()
+	for _, name := range []string{"stats_hourly_v1", "metadata_hourly_v1"} {
+		var status, revision string
+		var backfill, coverage, targetID, processed int64
+		if err := target.QueryRow(`select status,structure_revision,backfill_last_event_id,coverage_event_id,target_event_id,processed_events from usage_monitoring_rollup_state where rollup_name=?`, name).Scan(&status, &revision, &backfill, &coverage, &targetID, &processed); err != nil || status != "pending" || revision != "" || backfill != 0 || coverage != 0 || targetID != 0 || processed != 0 {
+			t.Fatalf("destination-only state lost or inherited coverage: %s %s %s %d %d %d %d %v", name, status, revision, backfill, coverage, targetID, processed, err)
+		}
+	}
 	migrated := store.New(target, key)
 	setup, ok, err := migrated.LoadSetup(ctx)
 	if err != nil || !ok || setup.ManagementKey != "secret" {

@@ -4,13 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
-func monitoringBandedEventsCTE(whereClause string) string {
+func monitoringBandedEventsCTE(eventSource, whereClause string) string {
 	requestedModelExpression := usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")
 	analyticsModelExpression := usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")
 	return fmt.Sprintf(`with base_events as (
@@ -26,7 +27,7 @@ func monitoringBandedEventsCTE(whereClause string) string {
 				max(coalesce(e.cache_creation_tokens, 0), 0),
 				0
 			) as compatible_cached_tokens_value
-		from usage_events e
+		from %s e
 		where %s
 	), priced_events as (
 		select
@@ -51,7 +52,7 @@ func monitoringBandedEventsCTE(whereClause string) string {
 					and priced_events.normalized_input_tokens_value > tier.threshold_tokens
 			), %d) as context_threshold_tokens_value
 		from priced_events
-	)`, requestedModelExpression, analyticsModelExpression, analyticsModelExpression, whereClause, model.ModelPriceBaseContextThreshold)
+	)`, requestedModelExpression, analyticsModelExpression, analyticsModelExpression, eventSource, whereClause, model.ModelPriceBaseContextThreshold)
 }
 
 // codexAccountDailyExcludedSQL identifies Codex events whose legacy Workspace
@@ -73,8 +74,12 @@ func codexAccountDailyExcludedSQL(alias string) string {
 	return provider + " = 'codex' and substr(" + project + ", 1, length('codex-account-id:v1:')) = 'codex-account-id:v1:'"
 }
 
-func upsertAccountDailyBatch(ctx context.Context, tx *sql.Tx, revision string, afterID, throughID, nowMS int64) error {
-	query := monitoringBandedEventsCTE("e.id > ? and e.id <= ? and not ("+codexAccountDailyExcludedSQL("e")+")") + fmt.Sprintf(`
+func upsertAccountDailyBatch(ctx context.Context, tx *sql.Tx, revision, eventSource string, afterID, throughID, nowMS int64) error {
+	return upsertAccountBatch(ctx, tx, "usage_monitoring_account_daily_rollups_v1", dayMS, revision, eventSource, afterID, throughID, nowMS)
+}
+
+func upsertAccountBatch(ctx context.Context, tx *sql.Tx, table string, bucketSize int64, revision, eventSource string, afterID, throughID, nowMS int64) error {
+	query := monitoringBandedEventsCTE(eventSource, "e.id > ? and e.id <= ? and not ("+codexAccountDailyExcludedSQL("e")+")") + fmt.Sprintf(`
 	insert into usage_monitoring_account_daily_rollups_v1 (
 		structure_revision, bucket_ms, account_snapshot, auth_label_snapshot,
 		provider, auth_provider_snapshot, auth_account_id_snapshot, auth_index, source, source_hash,
@@ -125,7 +130,13 @@ func upsertAccountDailyBatch(ctx context.Context, tx *sql.Tx, revision string, a
 		max(timestamp_ms),
 		?
 	from banded_events
-	group by 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+	group by timestamp_ms - (timestamp_ms %% %d),
+		coalesce(account_snapshot, ''), coalesce(auth_label_snapshot, ''),
+		coalesce(provider, ''), coalesce(auth_provider_snapshot, ''), coalesce(auth_account_id_snapshot, ''),
+		coalesce(auth_index, ''), coalesce(source, ''), coalesce(source_hash, ''),
+		coalesce(auth_file_snapshot, ''), coalesce(api_key_hash, ''), coalesce(executor_type, ''),
+		analytics_model_value, billing_model_value, pricing_model_value,
+		coalesce(service_tier, ''), context_threshold_tokens_value, failed
 	on conflict(
 		structure_revision, bucket_ms, account_snapshot, auth_label_snapshot,
 		provider, auth_provider_snapshot, auth_account_id_snapshot, auth_index, source, source_hash,
@@ -150,19 +161,25 @@ func upsertAccountDailyBatch(ctx context.Context, tx *sql.Tx, revision string, a
 		latency_samples = usage_monitoring_account_daily_rollups_v1.latency_samples + excluded.latency_samples,
 		last_seen_ms = max(usage_monitoring_account_daily_rollups_v1.last_seen_ms, excluded.last_seen_ms),
 		updated_at_ms = excluded.updated_at_ms`,
-		dayMS,
+		bucketSize,
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
+		bucketSize,
 	)
+	query = strings.ReplaceAll(query, "usage_monitoring_account_daily_rollups_v1", table)
 	_, err := tx.ExecContext(ctx, query, afterID, throughID, revision, nowMS)
 	return err
 }
 
-func upsertAPIKeyDailyBatch(ctx context.Context, tx *sql.Tx, revision string, afterID, throughID, nowMS int64) error {
-	query := monitoringBandedEventsCTE("e.id > ? and e.id <= ?") + fmt.Sprintf(`
+func upsertAPIKeyDailyBatch(ctx context.Context, tx *sql.Tx, revision, eventSource string, afterID, throughID, nowMS int64) error {
+	return upsertAPIKeyBatch(ctx, tx, "usage_monitoring_api_key_daily_rollups_v1", dayMS, revision, eventSource, afterID, throughID, nowMS)
+}
+
+func upsertAPIKeyBatch(ctx context.Context, tx *sql.Tx, table string, bucketSize int64, revision, eventSource string, afterID, throughID, nowMS int64) error {
+	query := monitoringBandedEventsCTE(eventSource, "e.id > ? and e.id <= ?") + fmt.Sprintf(`
 	insert into usage_monitoring_api_key_daily_rollups_v1 (
 		structure_revision, bucket_ms, api_key_hash, account_snapshot,
 		auth_label_snapshot, provider, auth_provider_snapshot, auth_account_id_snapshot, auth_index,
@@ -213,7 +230,13 @@ func upsertAPIKeyDailyBatch(ctx context.Context, tx *sql.Tx, revision string, af
 		max(timestamp_ms),
 		?
 	from banded_events
-	group by 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+	group by timestamp_ms - (timestamp_ms %% %d),
+		coalesce(account_snapshot, ''), coalesce(auth_label_snapshot, ''),
+		coalesce(provider, ''), coalesce(auth_provider_snapshot, ''), coalesce(auth_account_id_snapshot, ''),
+		coalesce(auth_index, ''), coalesce(source, ''), coalesce(source_hash, ''),
+		coalesce(auth_file_snapshot, ''), coalesce(api_key_hash, ''), coalesce(executor_type, ''),
+		analytics_model_value, billing_model_value, pricing_model_value,
+		coalesce(service_tier, ''), context_threshold_tokens_value, failed
 	on conflict(
 		structure_revision, bucket_ms, api_key_hash, account_snapshot,
 		auth_label_snapshot, provider, auth_provider_snapshot, auth_account_id_snapshot, auth_index,
@@ -238,13 +261,15 @@ func upsertAPIKeyDailyBatch(ctx context.Context, tx *sql.Tx, revision string, af
 		latency_samples = usage_monitoring_api_key_daily_rollups_v1.latency_samples + excluded.latency_samples,
 		last_seen_ms = max(usage_monitoring_api_key_daily_rollups_v1.last_seen_ms, excluded.last_seen_ms),
 		updated_at_ms = excluded.updated_at_ms`,
-		dayMS,
+		bucketSize,
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
+		bucketSize,
 	)
+	query = strings.ReplaceAll(query, "usage_monitoring_api_key_daily_rollups_v1", table)
 	_, err := tx.ExecContext(ctx, query, afterID, throughID, revision, nowMS)
 	return err
 }

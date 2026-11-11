@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
@@ -22,7 +23,7 @@ func TestResponseMetadataBackfillCandidateNoOpDoesNotBlockReadiness(t *testing.T
 	// while $.rate_limit.requests.limit is null in metadata_json), but already has response_metadata_json = '{}'
 	// and raw_json doesn't actually contain valid response header structures.
 	rawJSON := `{"prompt":"User asked about X-Ratelimit-Limit-Requests"}`
-	_, err = db.ExecContext(ctx, `insert into usage_events (
+	_, err = sqlwrite.ExecContext(ctx, db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, raw_json, response_metadata_json, created_at_ms
 	) values ('hash-1', 1700000000000, '2023-11-14T22:13:20Z', 'gpt-4o', ?, '{}', 1700000000000)`, rawJSON)
 	if err != nil {
@@ -71,7 +72,7 @@ func TestResponseMetadataBackfillMatchesHeaderNamesIgnoringCase(t *testing.T) {
 	ctx := context.Background()
 	for _, header := range []string{"x-ratelimit-limit-requests", "X-RaTeLiMiT-LiMiT-ReQuEsTs"} {
 		raw := `{"response_headers":{"` + header + `":"123"}}`
-		if _, err := db.ExecContext(ctx, `insert into usage_events(event_hash,timestamp_ms,timestamp,model,raw_json,response_metadata_json,created_at_ms) values(?,0,'time','model',?,'{}',0)`, header, raw); err != nil {
+		if _, err := sqlwrite.ExecContext(ctx, db, `insert into usage_events(event_hash,timestamp_ms,timestamp,model,raw_json,response_metadata_json,created_at_ms) values(?,0,'time','model',?,'{}',0)`, header, raw); err != nil {
 			t.Fatal(err)
 		}
 	}

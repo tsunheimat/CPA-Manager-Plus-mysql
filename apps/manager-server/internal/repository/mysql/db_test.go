@@ -9,6 +9,7 @@ import (
 	"time"
 
 	mysqlrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -29,24 +30,24 @@ func TestMySQLStrictDeduplicationAndTransactions(t *testing.T) {
 	ctx := context.Background()
 	insert := `insert or ignore into usage_event_identity_ledger(event_hash, timestamp_ms, bucket_ms, aggregate_schema_version, first_seen_at_ms, updated_at_ms) values (?, ?, 0, 0, 0, 0)`
 	hash := strings.Repeat("a", 64)
-	result, err := db.Exec(insert, hash, 100)
+	result, err := sqlwrite.ExecContext(context.Background(), db, insert, hash, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := result.RowsAffected(); n != 1 {
 		t.Fatalf("insert count = %d", n)
 	}
-	result, err = db.Exec(insert, hash, 100)
+	result, err = sqlwrite.ExecContext(context.Background(), db, insert, hash, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := result.RowsAffected(); n != 0 {
 		t.Fatalf("duplicate count = %d", n)
 	}
-	if _, err := db.Exec(insert, strings.Repeat("b", 64), nil); err == nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, insert, strings.Repeat("b", 64), nil); err == nil {
 		t.Fatal("NOT NULL error was ignored")
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,13 +67,13 @@ func TestMySQLStrictDeduplicationAndTransactions(t *testing.T) {
 	// Bulk deduplication may ignore duplicate keys, but must roll back the
 	// entire statement on any other warning (including coerced NULLs).
 	bulk := `insert or ignore into usage_event_identity_ledger(event_hash, timestamp_ms, bucket_ms, aggregate_schema_version, first_seen_at_ms, updated_at_ms) select ?, ?, 0, 0, 0, 0 union all select ?, ?, 0, 0, 0, 0`
-	if _, err := db.Exec(bulk, strings.Repeat("d", 64), 300, strings.Repeat("e", 64), nil); err == nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, bulk, strings.Repeat("d", 64), 300, strings.Repeat("e", 64), nil); err == nil {
 		t.Fatal("invalid bulk row accepted")
 	}
 	if err := db.QueryRow("select count(*) from usage_event_identity_ledger").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("partial bulk data persisted: count=%d err=%v", count, err)
 	}
-	if _, err := db.Exec(bulk, hash, 100, strings.Repeat("d", 64), 300); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, bulk, hash, 100, strings.Repeat("d", 64), 300); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow("select count(*) from usage_event_identity_ledger").Scan(&count); err != nil || count != 2 {
@@ -84,7 +85,7 @@ func TestMySQLFullTextIdentityAndLiteralSafety(t *testing.T) {
 	db := openMySQL(t)
 	keys := []string{"Key", "key", "key ", strings.Repeat("x", 1000) + "a", strings.Repeat("x", 1000) + "b", "你好😀"}
 	for _, key := range keys {
-		if _, err := db.Exec(`insert into settings(key,value,updated_at_ms) values(?,?,0) on conflict(key) do update set value=excluded.value`, key, `on conflict(key) do nothing; ' ? \\ json_each`); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into settings(key,value,updated_at_ms) values(?,?,0) on conflict(key) do update set value=excluded.value`, key, `on conflict(key) do nothing; ' ? \\ json_each`); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -106,36 +107,37 @@ func TestMySQLFullTextIdentityAndLiteralSafety(t *testing.T) {
 func TestMySQLTruncatedBulkWarningsCannotHideInvalidRows(t *testing.T) {
 	db := openMySQL(t)
 	ctx := context.Background()
-	conn, err := db.Conn(ctx)
+	err := sqlwrite.WithConn(ctx, db, func(ctx context.Context, conn *sql.Conn) error {
+		// Only the test administrator changes this restricted variable. Runtime
+		// application connections work with the server's configured default.
+		if _, err := conn.ExecContext(ctx, "set max_error_count=1"); err != nil {
+			t.Fatal(err)
+		}
+		insert := `insert or ignore into usage_event_identity_ledger(event_hash,timestamp_ms,bucket_ms,aggregate_schema_version,first_seen_at_ms,updated_at_ms) `
+		if _, err := conn.ExecContext(ctx, insert+`values('existing',1,0,0,0,0)`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := conn.ExecContext(ctx, insert+`select 'existing',1,0,0,0,0 union all select 'valid',1,0,0,0,0 union all select 'invalid',null,0,0,0,0`)
+		if err == nil || !strings.Contains(err.Error(), "truncated bulk insert warnings") {
+			t.Fatalf("hidden warning accepted: %v", err)
+		}
+		var count int
+		if err := conn.QueryRowContext(ctx, "select count(*) from usage_event_identity_ledger").Scan(&count); err != nil || count != 1 {
+			t.Fatalf("partial bulk rows committed: %d %v", count, err)
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	defer conn.Close()
-	// Only the test administrator changes this restricted variable. Runtime
-	// application connections work with the server's configured default.
-	if _, err := conn.ExecContext(ctx, "set max_error_count=1"); err != nil {
-		t.Fatal(err)
-	}
-	insert := `insert or ignore into usage_event_identity_ledger(event_hash,timestamp_ms,bucket_ms,aggregate_schema_version,first_seen_at_ms,updated_at_ms) `
-	if _, err := conn.ExecContext(ctx, insert+`values('existing',1,0,0,0,0)`); err != nil {
-		t.Fatal(err)
-	}
-	_, err = conn.ExecContext(ctx, insert+`select 'existing',1,0,0,0,0 union all select 'valid',1,0,0,0,0 union all select 'invalid',null,0,0,0,0`)
-	if err == nil || !strings.Contains(err.Error(), "truncated bulk insert warnings") {
-		t.Fatalf("hidden warning accepted: %v", err)
-	}
-	var count int
-	if err := conn.QueryRowContext(ctx, "select count(*) from usage_event_identity_ledger").Scan(&count); err != nil || count != 1 {
-		t.Fatalf("partial bulk rows committed: %d %v", count, err)
 	}
 }
 
 func TestMySQLWriterCancellationAndReadSnapshot(t *testing.T) {
 	db := openMySQL(t)
-	if _, err := db.Exec(`insert into settings(key,value,updated_at_ms) values('snapshot','before',0)`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into settings(key,value,updated_at_ms) values('snapshot','before',0)`); err != nil {
 		t.Fatal(err)
 	}
-	reader, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	reader, err := sqlwrite.BeginTx(context.Background(), db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,14 +146,14 @@ func TestMySQLWriterCancellationAndReadSnapshot(t *testing.T) {
 	if err := reader.QueryRow("select value from settings where key='snapshot'").Scan(&value); err != nil {
 		t.Fatal(err)
 	}
-	writer, err := db.Begin()
+	writer, err := sqlwrite.BeginTx(context.Background(), db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer writer.Rollback()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	if _, err := db.BeginTx(ctx, nil); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := sqlwrite.BeginTx(ctx, db, nil); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("blocked writer cancellation = %v", err)
 	}
 	if _, err := writer.Exec("update settings set value='after' where key='snapshot'"); err != nil {
@@ -172,7 +174,7 @@ func TestMySQLSchemaRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec("insert into settings(key,value,updated_at_ms) values('restart','kept',1) on conflict(key) do nothing"); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, "insert into settings(key,value,updated_at_ms) values('restart','kept',1) on conflict(key) do nothing"); err != nil {
 			t.Fatal(err)
 		}
 		db.Close()
@@ -225,7 +227,7 @@ func TestMySQLRefusesUnrelatedAndNewerSchemas(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer db.Close()
-		if _, err := db.Exec("create table unrelated(id bigint primary key)"); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, "create table unrelated(id bigint primary key)"); err != nil {
 			t.Fatal(err)
 		}
 		if opened, err := mysqlrepo.Open(ctx, dsn); err == nil {
@@ -243,7 +245,7 @@ func TestMySQLRefusesUnrelatedAndNewerSchemas(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec("update manager_schema_version set version=999"); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, "update manager_schema_version set version=999"); err != nil {
 			t.Fatal(err)
 		}
 		db.Close()
@@ -256,11 +258,11 @@ func TestMySQLRefusesUnrelatedAndNewerSchemas(t *testing.T) {
 
 func TestMySQLDerivedCleanupPreservesActiveRevisionAndBatchLimit(t *testing.T) {
 	db := openMySQL(t)
-	if _, err := db.Exec("update usage_pricing_rollup_state set structure_revision='active' where rollup_name='pricing_v1'"); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, "update usage_pricing_rollup_state set structure_revision='active' where rollup_name='pricing_v1'"); err != nil {
 		t.Fatal(err)
 	}
 	for _, row := range []struct{ revision, model string }{{"old", "a"}, {"old", "b"}, {"active", "a"}} {
-		if _, err := db.Exec(`insert into usage_pricing_hourly_rollups_v1
+		if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_pricing_hourly_rollups_v1
 		(structure_revision,bucket_ms,model,billing_model,pricing_model,service_tier,context_threshold_tokens,failed,updated_at_ms)
 		values(?,0,?,'billing','pricing','',0,0,0)`, row.revision, row.model); err != nil {
 			t.Fatal(err)

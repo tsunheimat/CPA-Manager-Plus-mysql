@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 	_ "modernc.org/sqlite"
 )
@@ -56,11 +57,11 @@ func retainedEventSourceFixture(t *testing.T) (context.Context, *sql.Tx) {
 			coverage_event_id integer not null
 		)`,
 	} {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), db, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(`insert into usage_monitoring_rollup_state(
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_monitoring_rollup_state(
 		rollup_name, schema_version, structure_revision, status, coverage_event_id
 	) values('projection_v1', 1, ?, 'ready', 100)`,
 		usageidentity.MonitoringProjectionStructureRevision()); err != nil {
@@ -68,7 +69,7 @@ func retainedEventSourceFixture(t *testing.T) (context.Context, *sql.Tx) {
 	}
 
 	ctx := context.Background()
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}

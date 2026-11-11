@@ -8,14 +8,18 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
+
+// Nine parameters per stored window stay below both backend placeholder limits.
+const accountWindowBatchSize = 100
 
 func (r *repository) LoadAccountWindowStats(ctx context.Context, windows []AccountWindowUsageQuery) ([]AccountWindowModelStat, State, bool, error) {
 	if len(windows) == 0 {
 		return []AccountWindowModelStat{}, State{}, true, nil
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, State{}, false, err
 	}
@@ -33,13 +37,52 @@ func (r *repository) LoadAccountWindowStats(ctx context.Context, windows []Accou
 		return nil, state, false, err
 	}
 	grouped := make(map[accountWindowStatKey]*AccountWindowModelStat)
-	if dailyAvailable {
-		if err := mergeStoredAccountWindowStats(ctx, tx, revision, windows, grouped); err != nil {
-			return nil, state, false, err
-		}
-	}
-	if err := mergeProjectedAccountWindowStats(ctx, tx, windows, state.CoverageEventID, projectionComplete, statsState.CoverageEventID, dailyAvailable, grouped); err != nil {
+	hourly, hourlyAvailable, err := r.hourlyReadState(ctx, tx, HourlyStatsRollupName, revision)
+	if err != nil {
 		return nil, state, false, err
+	}
+	if !hourlyAvailable {
+		// Preserve the batched SQLite/daily reader rather than issuing a query
+		// per credential when hourly acceleration is disabled or not ready.
+		for start := 0; start < len(windows); start += accountWindowBatchSize {
+			batch := windows[start:min(start+accountWindowBatchSize, len(windows))]
+			if dailyAvailable {
+				if err := mergeStoredAccountWindowStats(ctx, tx, revision, batch, grouped); err != nil {
+					return nil, state, false, err
+				}
+			}
+			if err := mergeProjectedAccountWindowStats(ctx, tx, batch, state.CoverageEventID, projectionComplete, statsState.CoverageEventID, dailyAvailable, grouped); err != nil {
+				return nil, state, false, err
+			}
+		}
+	} else {
+		// Group the disjoint pieces by their checkpoint/grain. This keeps the
+		// query count bounded by batches, not by accounts times time edges.
+		parts := make(map[int64][]AccountWindowUsageQuery, 3)
+		for _, window := range windows {
+			for _, span := range monitoringSpans(window.FromMS, window.ToMS, statsState, dailyAvailable, hourly, true) {
+				part := window
+				part.FromMS, part.ToMS = span.from, span.to
+				parts[span.grain] = append(parts[span.grain], part)
+			}
+		}
+		for _, grain := range []int64{0, hourMS, dayMS} {
+			table, coverageID := "usage_monitoring_account_daily_rollups_v1", statsState.CoverageEventID
+			if grain == hourMS {
+				table, coverageID = "usage_monitoring_account_hourly_rollups_v1", hourly.CoverageEventID
+			}
+			for start := 0; start < len(parts[grain]); start += accountWindowBatchSize {
+				batch := parts[grain][start:min(start+accountWindowBatchSize, len(parts[grain]))]
+				if grain != 0 {
+					if err := mergeStoredAccountWindowTableStats(ctx, tx, revision, batch, grouped, table, grain); err != nil {
+						return nil, state, false, err
+					}
+				}
+				if err := mergeProjectedAccountWindowGrainStats(ctx, tx, batch, state.CoverageEventID, projectionComplete, coverageID, grain != 0, grouped, max(grain, hourMS)); err != nil {
+					return nil, state, false, err
+				}
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, state, false, err
@@ -57,7 +100,11 @@ type accountWindowStatKey struct {
 }
 
 func mergeProjectedAccountWindowStats(ctx context.Context, tx *sql.Tx, windows []AccountWindowUsageQuery, projectionCoverageEventID int64, projectionComplete bool, statsCoverageEventID int64, dailyAvailable bool, grouped map[accountWindowStatKey]*AccountWindowModelStat) error {
-	source, args := accountWindowEventSourceSQL(windows, projectionCoverageEventID, projectionComplete, statsCoverageEventID, dailyAvailable)
+	return mergeProjectedAccountWindowGrainStats(ctx, tx, windows, projectionCoverageEventID, projectionComplete, statsCoverageEventID, dailyAvailable, grouped, dayMS)
+}
+
+func mergeProjectedAccountWindowGrainStats(ctx context.Context, tx *sql.Tx, windows []AccountWindowUsageQuery, projectionCoverageEventID int64, projectionComplete bool, statsCoverageEventID int64, dailyAvailable bool, grouped map[accountWindowStatKey]*AccountWindowModelStat, grain int64) error {
+	source, args := accountWindowEventSourceGrainSQL(windows, projectionCoverageEventID, projectionComplete, statsCoverageEventID, dailyAvailable, grain)
 	query := fmt.Sprintf(`%s
 		select request_index, analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, coalesce(service_tier, ''), count(*),
@@ -85,14 +132,18 @@ func mergeProjectedAccountWindowStats(ctx context.Context, tx *sql.Tx, windows [
 }
 
 func mergeStoredAccountWindowStats(ctx context.Context, tx *sql.Tx, revision string, windows []AccountWindowUsageQuery, grouped map[accountWindowStatKey]*AccountWindowModelStat) error {
+	return mergeStoredAccountWindowTableStats(ctx, tx, revision, windows, grouped, "usage_monitoring_account_daily_rollups_v1", dayMS)
+}
+
+func mergeStoredAccountWindowTableStats(ctx context.Context, tx *sql.Tx, revision string, windows []AccountWindowUsageQuery, grouped map[accountWindowStatKey]*AccountWindowModelStat, table string, grain int64) error {
 	values := make([]string, 0, len(windows))
 	args := make([]any, 0, len(windows)*8+1)
 	for _, window := range windows {
 		if !accountWindowCanUseDaily(window) {
 			continue
 		}
-		fullStartMS := ceilDayMS(window.FromMS)
-		fullEndMS := floorDayMS(window.ToMS)
+		fullStartMS := ceilIntervalMS(window.FromMS, grain)
+		fullEndMS := floorIntervalMS(window.ToMS, grain)
 		if fullStartMS >= fullEndMS {
 			continue
 		}
@@ -101,7 +152,7 @@ func mergeStoredAccountWindowStats(ctx context.Context, tx *sql.Tx, revision str
 			codexMember, _ = usageidentity.NormalizeCodexMemberSnapshot(window.AccountSnapshot)
 		}
 		accountKey, legacyAccountKey := accountWindowKeys(window)
-		values = append(values, "(?, ?, ?, ?, ?, ?, ?, ?)")
+		values = append(values, "(?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		args = append(args,
 			window.RequestIndex,
 			fullStartMS,
@@ -111,15 +162,23 @@ func mergeStoredAccountWindowStats(ctx context.Context, tx *sql.Tx, revision str
 			accountKey,
 			legacyAccountKey,
 			codexMember,
+			framedScopeDigest(strings.TrimSpace(window.AuthFileSnapshot), strings.TrimSpace(window.AuthIndex)),
 		)
 	}
 	if len(values) == 0 {
 		return nil
 	}
 	args = append(args, revision)
+	revisionScope, credentialScope, legacyScope := "", "", ""
+	if strings.Contains(table, "_hourly_") {
+		revisionScope = " and d._revision_hash = ?"
+		args = append(args, revisionDigest(revision))
+		credentialScope = " and d._credential_hash = w.credential_hash"
+		legacyScope = " and d._legacy_hash = w.credential_hash"
+	}
 	rows, err := tx.QueryContext(ctx, `with window_targets(
 	request_index, full_start_ms, full_end_ms, auth_file_snapshot, auth_index,
-	account_key, legacy_account_key, codex_member
+	account_key, legacy_account_key, codex_member, credential_hash
 ) as (values `+strings.Join(values, ",")+`)
 	select w.request_index, d.model, d.billing_model, d.pricing_model, d.context_threshold_tokens,
 		coalesce(d.service_tier, ''), coalesce(sum(d.calls), 0),
@@ -131,7 +190,7 @@ func mergeStoredAccountWindowStats(ctx context.Context, tx *sql.Tx, revision str
 		coalesce(sum(d.long_cached_tokens), 0), coalesce(sum(d.long_cache_read_tokens), 0),
 		coalesce(sum(d.long_cache_creation_tokens), 0), coalesce(sum(d.total_tokens), 0), max(d.last_seen_ms)
 	from window_targets w
-	join usage_monitoring_account_daily_rollups_v1 d on d.structure_revision = ?
+	join `+table+` d on d.structure_revision = ?`+revisionScope+`
 		and d.bucket_ms >= w.full_start_ms and d.bucket_ms < w.full_end_ms
 		and (
 			(
@@ -142,10 +201,10 @@ func mergeStoredAccountWindowStats(ctx context.Context, tx *sql.Tx, revision str
 				w.codex_member = ''
 				and trim(d.auth_index) = w.auth_index
 				and (
-					trim(d.auth_file_snapshot) = w.auth_file_snapshot
+					(trim(d.auth_file_snapshot) = w.auth_file_snapshot`+credentialScope+`)
 					or (
 						trim(d.auth_file_snapshot) = ''
-						and trim(d.source) = w.auth_file_snapshot
+						and trim(d.source) = w.auth_file_snapshot`+legacyScope+`
 						and trim(d.source) <> trim(d.account_snapshot)
 						and trim(d.source) <> trim(d.auth_label_snapshot)
 					)
@@ -222,12 +281,16 @@ func sortedAccountWindowStats(grouped map[accountWindowStatKey]*AccountWindowMod
 }
 
 func accountWindowEventSourceSQL(windows []AccountWindowUsageQuery, coverageEventID int64, projectionComplete bool, statsCoverageEventID int64, dailyAvailable bool) (string, []any) {
+	return accountWindowEventSourceGrainSQL(windows, coverageEventID, projectionComplete, statsCoverageEventID, dailyAvailable, dayMS)
+}
+
+func accountWindowEventSourceGrainSQL(windows []AccountWindowUsageQuery, coverageEventID int64, projectionComplete bool, statsCoverageEventID int64, dailyAvailable bool, grain int64) (string, []any) {
 	values := make([]string, 0, len(windows))
 	args := make([]any, 0, len(windows)*8+4)
 	for _, window := range windows {
 		accountKey, legacyAccountKey := accountWindowKeys(window)
 		values = append(values, "(?, ?, ?, ?, ?, ?, ?, ?)")
-		args = append(args, window.RequestIndex, window.FromMS, window.ToMS, ceilDayMS(window.FromMS), floorDayMS(window.ToMS), accountKey, legacyAccountKey, accountWindowCanUseDaily(window))
+		args = append(args, window.RequestIndex, window.FromMS, window.ToMS, ceilIntervalMS(window.FromMS, grain), floorIntervalMS(window.ToMS, grain), accountKey, legacyAccountKey, accountWindowCanUseDaily(window))
 	}
 	rawIdentity := usageidentity.SQLAccountKeyExpression("e")
 	query := `with window_targets(request_index, from_ms, to_ms, full_start_ms, full_end_ms, account_key, legacy_account_key, use_daily) as (values ` + strings.Join(values, ",") + `)

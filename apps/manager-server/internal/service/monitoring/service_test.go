@@ -22,6 +22,7 @@ import (
 	monitoringrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	usageservice "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usagehourly"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -622,8 +623,8 @@ func TestCacheHitRateMatchesWebClient(t *testing.T) {
 	if math.Abs(gpt56-151_000.0/152_600.0) > 1e-9 {
 		t.Fatalf("gpt-5.6 cache hit rate = %v, want %v", gpt56, 151_000.0/152_600.0)
 	}
-	timeline := buildTimeline([]store.TimelinePoint{{
-		BucketMS:            1_000,
+	timeline, err := buildTimeline(context.Background(), []store.TimelinePoint{{
+		BucketMS:            3_600_000,
 		Model:               "alias-fast",
 		BillingModel:        "openai/gpt-5.6-sol",
 		Calls:               1,
@@ -632,6 +633,9 @@ func TestCacheHitRateMatchesWebClient(t *testing.T) {
 		CacheReadTokens:     151_000,
 		CacheCreationTokens: 1_000,
 	}}, nil, "hour", time.UTC, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(timeline) != 1 || math.Abs(timeline[0].CacheHitRate-151_000.0/152_600.0) > 1e-9 {
 		t.Fatalf("gpt-5.6 timeline cache hit rate = %#v", timeline)
 	}
@@ -639,9 +643,9 @@ func TestCacheHitRateMatchesWebClient(t *testing.T) {
 
 func TestBuildTimelineIsIndependentOfPointOrder(t *testing.T) {
 	points := []store.TimelinePoint{
-		{BucketMS: 1_000, Model: "z-big", BillingModel: "z-big", Calls: 1, Success: 1, InputTokens: 10_000_000_000_000_000},
-		{BucketMS: 1_000, Model: "a-small", BillingModel: "a-small", Calls: 1, Success: 1, InputTokens: 1},
-		{BucketMS: 1_000, Model: "b-small", BillingModel: "b-small", Calls: 1, Success: 1, InputTokens: 1},
+		{BucketMS: 3_600_000, Model: "z-big", BillingModel: "z-big", Calls: 1, Success: 1, InputTokens: 10_000_000_000_000_000},
+		{BucketMS: 3_600_000, Model: "a-small", BillingModel: "a-small", Calls: 1, Success: 1, InputTokens: 1},
+		{BucketMS: 3_600_000, Model: "b-small", BillingModel: "b-small", Calls: 1, Success: 1, InputTokens: 1},
 	}
 	prices := map[string]store.ModelPrice{
 		"z-big":   {Prompt: 1_000_000},
@@ -649,8 +653,14 @@ func TestBuildTimelineIsIndependentOfPointOrder(t *testing.T) {
 		"b-small": {Prompt: 1_000_000},
 	}
 
-	forward := buildTimeline(points, nil, "hour", time.UTC, prices)
-	reverse := buildTimeline([]store.TimelinePoint{points[2], points[1], points[0]}, nil, "hour", time.UTC, prices)
+	forward, err := buildTimeline(context.Background(), points, nil, "hour", time.UTC, prices)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverse, err := buildTimeline(context.Background(), []store.TimelinePoint{points[2], points[1], points[0]}, nil, "hour", time.UTC, prices)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(forward, reverse) {
 		t.Fatalf("timeline changed with point order\nforward=%#v\nreverse=%#v", forward, reverse)
 	}
@@ -3819,7 +3829,7 @@ func BenchmarkAnalyticsArchived100kLongRange(b *testing.B) {
 	if err := db.SaveModelPrices(ctx, map[string]store.ModelPrice{"gpt-a": {Prompt: 2, Completion: 4}}); err != nil {
 		b.Fatal(err)
 	}
-	if _, err := sqlDB.Exec(`with digits(value) as (values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)),
+	if _, err := sqlwrite.ExecContext(context.Background(), sqlDB, `with digits(value) as (values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)),
 		numbers(value) as (
 			select a.value + 10*b.value + 100*c.value + 1000*d.value + 10000*e.value
 			from digits a cross join digits b cross join digits c cross join digits d cross join digits e
@@ -3888,7 +3898,7 @@ func BenchmarkAnalyticsArchived100kLongRange(b *testing.B) {
 			select timestamp_ms / 86400000, count(*), min(timestamp_ms), max(timestamp_ms)
 			from usage_archive_event_refs group by timestamp_ms / 86400000`,
 	} {
-		if _, err := sqlDB.Exec(statement); err != nil {
+		if _, err := sqlwrite.ExecContext(context.Background(), sqlDB, statement); err != nil {
 			b.Fatalf("prepare archived fixture: %v", err)
 		}
 	}
@@ -4049,7 +4059,7 @@ func TestAnalyticsReportsIndependentRollingAndDrilldownCoverage(t *testing.T) {
 		t.Fatalf("drilldown coverage = %#v range=%#v", drilldown.Coverage, drilldownRange)
 	}
 
-	if _, err := sqlDB.ExecContext(ctx, `update usage_monitoring_rollup_state set schema_version = 0
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `update usage_monitoring_rollup_state set schema_version = 0
 		where rollup_name = ?`, monitoringrepo.ProjectionRollupName); err != nil {
 		t.Fatalf("mark projection unavailable for rolling coverage: %v", err)
 	}
@@ -4097,7 +4107,7 @@ func TestAnalyticsReportsActualDerivedReaderFallbacksAfterArchivedDeletion(t *te
 	}
 	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
 	archiveMonitoringEventsThrough(t, ctx, db, fromMS+time.Hour.Milliseconds())
-	if _, err := sqlDB.ExecContext(ctx, `update usage_monitoring_rollup_state set schema_version = 0
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `update usage_monitoring_rollup_state set schema_version = 0
 		where rollup_name = ?`, monitoringrepo.ProjectionRollupName); err != nil {
 		t.Fatalf("mark projection unavailable: %v", err)
 	}
@@ -4151,7 +4161,7 @@ func TestAnalyticsPartialArchivedEdgeRepairsMissingProjectionBeforeDelete(t *tes
 	catchUpMonitoringArchiveDeleteReadiness(t, ctx, db)
 
 	missingHash := testCanonicalHash("partial-edge-in-range")
-	if _, err := sqlDB.ExecContext(ctx, `delete from usage_monitoring_event_projection_v1
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `delete from usage_monitoring_event_projection_v1
 		where event_id = (select id from usage_events where event_hash = ?)`, missingHash); err != nil {
 		t.Fatalf("remove partial-edge projection fixture: %v", err)
 	}

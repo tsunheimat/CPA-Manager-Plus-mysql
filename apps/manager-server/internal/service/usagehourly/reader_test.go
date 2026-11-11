@@ -389,7 +389,7 @@ func TestReaderClassifiesSnapshotErrors(t *testing.T) {
 	toMS := fromMS + 2*hourMS
 	filter := store.AnalyticsFilter{FromMS: fromMS, ToMS: toMS, IncludeFailed: true}
 
-	t.Run("ordinary snapshot error falls back without ReadError", func(t *testing.T) {
+	t.Run("ordinary snapshot error is terminal", func(t *testing.T) {
 		db, sqlDB := newReaderTestStoreWithDB(t)
 		reader := New(db, true)
 		if _, err := db.InsertEvents(ctx, []usage.Event{readerEvent("event-1", fromMS+1000, "m1", false, 10, 10, nil)}); err != nil {
@@ -403,8 +403,8 @@ func TestReaderClassifiesSnapshotErrors(t *testing.T) {
 		if ok {
 			t.Fatal("expected snapshot to be abandoned on dropped aggregate table")
 		}
-		if snapshot.ReadError != nil {
-			t.Fatalf("ordinary snapshot error must fallback without ReadError, got: %v", snapshot.ReadError)
+		if snapshot.ReadError == nil {
+			t.Fatal("ordinary snapshot error must not initiate raw fallback")
 		}
 	})
 

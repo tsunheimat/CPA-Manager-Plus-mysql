@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 )
 
 const (
@@ -98,7 +99,7 @@ func BackfillLegacySnapshotsBatch(ctx context.Context, db *sql.DB, maxGroupSize 
 	if maxGroupSize <= 0 {
 		maxGroupSize = 1000
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, db, nil)
 	if err != nil {
 		return LegacyBackfillResult{}, err
 	}
@@ -294,7 +295,7 @@ func updateLegacyBackfillState(ctx context.Context, db legacyBackfillStateWriter
 		status = "completed"
 		finishedAt = nowMS
 	}
-	_, err := db.ExecContext(ctx, `update usage_data_migrations set
+	_, err := sqlwrite.ExecContext(ctx, db, `update usage_data_migrations set
 		status = ?, last_event_id = max(last_event_id, ?),
 		target_event_id = max(target_event_id, coalesce((select max(id) from account_quota_snapshots), 0)),
 		processed_rows = processed_rows + ?, changed_rows = changed_rows + ?,
@@ -343,7 +344,7 @@ func RecordLegacyBackfillFailure(ctx context.Context, db *sql.DB, migrationErr e
 		status = "offline_required"
 		finishedAt = nil
 	}
-	_, err := db.ExecContext(ctx, `update usage_data_migrations set
+	_, err := sqlwrite.ExecContext(ctx, db, `update usage_data_migrations set
 		status = ?, started_at_ms = coalesce(started_at_ms, ?),
 		updated_at_ms = ?, finished_at_ms = ?, last_error = ? where name = ?`,
 		status,

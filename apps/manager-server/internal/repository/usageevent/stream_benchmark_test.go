@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
@@ -79,7 +80,7 @@ func openCompatibleUsageBenchmarkDB(b *testing.B) *sql.DB {
 
 func seedCompatibleUsageBenchmark(b *testing.B, ctx context.Context, db *sql.DB, count int) {
 	b.Helper()
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, db, nil)
 	if err != nil {
 		b.Fatalf("begin benchmark seed transaction: %v", err)
 	}

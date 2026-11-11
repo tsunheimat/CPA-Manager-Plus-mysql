@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -629,6 +630,9 @@ order by max(t.model_calls) desc, f.analytics_model_value, calls desc`
 }
 
 func (r *repository) TimelineWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]TimelinePoint, error) {
+	if result, available, err := r.groupedTimeline(ctx, filter, granularity, location); available || err != nil {
+		return result, err
+	}
 	where, args := analyticsWhere(filter)
 	query := fmt.Sprintf(pricingBandedUsageEventsCTE+`
 select
@@ -761,6 +765,9 @@ func (r *repository) APIKeyTimelineWithFilter(ctx context.Context, filter Analyt
 	if len(normalizeFilterValues(filter.APIKeyHashes)) == 0 && strings.TrimSpace(filter.SearchAPIKeyHash) == "" {
 		return nil, nil
 	}
+	if result, available, err := r.groupedAPIKeyTimeline(ctx, filter, granularity, location); available || err != nil {
+		return result, err
+	}
 	where, args := analyticsWhere(filter)
 	query := fmt.Sprintf(pricingBandedUsageEventsCTE+`
 select
@@ -882,68 +889,15 @@ order by timestamp_ms, api_key_hash, analytics_model_value`, where)
 }
 
 func (r *repository) LatencyPercentilesWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]LatencyPercentiles, error) {
-	where, args := analyticsWhere(filter)
-	query := fmt.Sprintf(`select
-	timestamp_ms,
-	coalesce(latency_ms, 0),
-	coalesce(ttft_ms, 0)
-from usage_events %s
-and (latency_ms > 0 or ttft_ms > 0)
-order by timestamp_ms`, where)
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	result := make([]LatencyPercentiles, 0)
-	var currentBucketMS int64
-	hasCurrentBucket := false
-	latencies := make([]float64, 0)
-	ttfts := make([]float64, 0)
-	flushBucket := func() {
-		if !hasCurrentBucket {
-			return
-		}
-		point := LatencyPercentiles{BucketMS: currentBucketMS}
-		if value, ok := percentile95(latencies); ok {
-			point.P95LatencyMS = sql.NullFloat64{Float64: value, Valid: true}
-		}
-		if value, ok := percentile95(ttfts); ok {
-			point.P95TTFTMS = sql.NullFloat64{Float64: value, Valid: true}
-		}
-		result = append(result, point)
-		latencies = latencies[:0]
-		ttfts = ttfts[:0]
-	}
-	for rows.Next() {
-		var timestampMS int64
-		var latencyMS int64
-		var ttftMS int64
-		if err := rows.Scan(&timestampMS, &latencyMS, &ttftMS); err != nil {
-			return nil, err
-		}
-		bucketMS := usage.AnalyticsBucketMS(timestampMS, granularity, location)
-		if !hasCurrentBucket || bucketMS != currentBucketMS {
-			flushBucket()
-			currentBucketMS = bucketMS
-			hasCurrentBucket = true
-		}
-		if latencyMS > 0 {
-			latencies = append(latencies, float64(latencyMS))
-		}
-		if ttftMS > 0 {
-			ttfts = append(ttfts, float64(ttftMS))
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	flushBucket()
-	return result, nil
+	metrics, err := r.LatencyMetricsWithFilter(ctx, filter, granularity, location, false, true)
+	return metrics.Timeline, err
 }
 
 func (r *repository) LatencySummaryWithFilter(ctx context.Context, filter AnalyticsFilter) (LatencySummary, error) {
+	if r.mysqlBackend {
+		metrics, err := r.LatencyMetricsWithFilter(ctx, filter, "hour", time.UTC, true, false)
+		return metrics.Summary, err
+	}
 	where, args := analyticsWhere(filter)
 	query := fmt.Sprintf(`with samples(kind, value) as (
 	select 'latency', latency_ms from usage_events %s and latency_ms > 0
@@ -994,7 +948,7 @@ func percentile95(values []float64) (float64, bool) {
 		return 0, false
 	}
 	sort.Float64s(values)
-	index := int(float64(len(values))*0.95+0.999999) - 1
+	index := (len(values)*95+99)/100 - 1
 	if index < 0 {
 		index = 0
 	}
@@ -1007,6 +961,9 @@ func percentile95(values []float64) (float64, bool) {
 func (r *repository) HourlyDistributionWithFilter(ctx context.Context, filter AnalyticsFilter, location *time.Location) ([]HourlyPoint, error) {
 	if location == nil {
 		location = time.UTC
+	}
+	if result, available, err := r.groupedHourlyDistribution(ctx, filter, location); available || err != nil {
+		return result, err
 	}
 	where, args := analyticsWhere(filter)
 	rows, err := r.db.QueryContext(ctx, `select timestamp_ms, total_tokens
@@ -1264,6 +1221,9 @@ order by value`, args...)
 }
 
 func (r *repository) HeatmapWithFilter(ctx context.Context, filter AnalyticsFilter, location *time.Location) ([]HeatmapPoint, error) {
+	if result, available, err := r.groupedHeatmap(ctx, filter, location); available || err != nil {
+		return result, err
+	}
 	where, args := analyticsWhere(filter)
 	rows, err := r.db.QueryContext(ctx, pricingBandedUsageEventsCTE+`
 select
@@ -1608,7 +1568,7 @@ func (r *repository) AccountWindowModelStats(ctx context.Context, windows []Acco
 	if len(windows) == 0 {
 		return []AccountWindowModelStat{}, nil
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
@@ -1970,6 +1930,9 @@ func (r *repository) CredentialTimelineWithFilter(ctx context.Context, filter An
 }
 
 func (r *repository) credentialTimelineRawWithFilter(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]CredentialTimelinePoint, error) {
+	if result, available, err := r.groupedCredentialTimeline(ctx, filter, granularity, location); available || err != nil {
+		return result, err
+	}
 	where, args := analyticsWhere(filter)
 	query := fmt.Sprintf(pricingBandedUsageEventsCTE+`
 select

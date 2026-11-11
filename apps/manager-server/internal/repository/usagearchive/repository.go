@@ -10,12 +10,14 @@ import (
 	"strings"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/datamigration"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagepricing"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagerollup"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -187,11 +189,25 @@ type MaintenanceCounts struct {
 }
 
 type Repository struct {
-	db *sql.DB
+	db        *sql.DB
+	mysqlBulk bool
 }
 
-func New(db *sql.DB) *Repository {
-	return &Repository{db: db}
+type Option func(*Repository)
+
+// WithMySQLBulk opts into bounded native publication/deletion on MySQL only.
+func WithMySQLBulk(enabled bool) Option {
+	return func(r *Repository) { r.mysqlBulk = enabled && mysql.IsMySQL(r.db) }
+}
+
+func New(db *sql.DB, options ...Option) *Repository {
+	r := &Repository{db: db}
+	for _, option := range options {
+		if option != nil {
+			option(r)
+		}
+	}
+	return r
 }
 
 func (r *Repository) Preview(ctx context.Context, cutoffTimestampMS int64) (Preview, error) {
@@ -214,7 +230,7 @@ func (r *Repository) createRun(ctx context.Context, id, mode string, cutoffTimes
 	if id == "" || (mode != RunModeManual && mode != RunModeRetention) || cutoffTimestampMS <= 0 || nowMS <= 0 {
 		return Run{}, fmt.Errorf("invalid usage archive run input")
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return Run{}, err
 	}
@@ -426,7 +442,7 @@ func (r *Repository) RequestStage(ctx context.Context, runID, stage string, nowM
 	if !validRequestedStage(stage) || nowMS <= 0 {
 		return Run{}, false, fmt.Errorf("%w: invalid requested archive stage", ErrInvalidState)
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return Run{}, false, err
 	}
@@ -477,12 +493,12 @@ func (r *Repository) ClearRequestedStage(ctx context.Context, runID, stage strin
 	if !validRequestedStage(stage) {
 		return fmt.Errorf("%w: invalid requested archive stage", ErrInvalidState)
 	}
-	_, err := r.db.ExecContext(ctx, `update usage_archive_runs set requested_stage = null where id = ? and requested_stage = ?`, runID, stage)
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update usage_archive_runs set requested_stage = null where id = ? and requested_stage = ?`, runID, stage)
 	return err
 }
 
 func (r *Repository) RecoverRequestedStages(ctx context.Context) error {
-	_, err := r.db.ExecContext(ctx, `update usage_archive_runs set requested_stage = status
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update usage_archive_runs set requested_stage = status
 		where requested_stage is null and status in (?, ?, ?)`,
 		StatusArchiving,
 		StatusVerifying,
@@ -584,7 +600,7 @@ func (r *Repository) RawCoverage(ctx context.Context, fromTimestampMS, toTimesta
 		FromTimestampMS: fromTimestampMS,
 		ToTimestampMS:   toTimestampMS,
 	}
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := sqlwrite.BeginTx(ctx, r.db, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return RawCoverage{}, err
 	}
@@ -674,7 +690,7 @@ func (r *Repository) CancelRun(ctx context.Context, runID string, nowMS int64) (
 	if nowMS <= 0 {
 		return Run{}, fmt.Errorf("nowMS must be greater than zero")
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return Run{}, err
 	}
@@ -775,7 +791,7 @@ func (r *Repository) beginStage(ctx context.Context, runID string, stage string,
 	if nowMS <= 0 {
 		return Run{}, fmt.Errorf("nowMS must be greater than zero")
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return Run{}, err
 	}
@@ -851,7 +867,7 @@ func (r *Repository) SetProgress(ctx context.Context, runID, expectedStatus, pha
 	if !valid || nowMS <= 0 || current < 0 || total < 0 {
 		return fmt.Errorf("invalid archive progress")
 	}
-	_, err := r.db.ExecContext(ctx, `update usage_archive_runs set
+	_, err := sqlwrite.ExecContext(ctx, r.db, `update usage_archive_runs set
 		progress_phase = ?, progress_current = ?, progress_total = ?, progress_unit = ?, progress_updated_at_ms = ?
 		where id = ? and status = ?`, phase, current, total, unit, nowMS, runID, expectedStatus)
 	return err
@@ -937,7 +953,7 @@ func (r *Repository) RecordSegment(ctx context.Context, runID string, segment Se
 			return Run{}, fmt.Errorf("invalid usage archive segment event references")
 		}
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return Run{}, err
 	}
@@ -986,8 +1002,13 @@ func (r *Repository) RecordSegment(ctx context.Context, runID string, segment Se
 	); err != nil {
 		return Run{}, err
 	}
-	for _, ref := range refs {
-		if _, err := tx.ExecContext(ctx, `insert or ignore into usage_event_identity_ledger (
+	if r.mysqlBulk {
+		if err := recordSegmentBulk(ctx, tx, runID, segment.Sequence, refs, nowMS); err != nil {
+			return Run{}, err
+		}
+	} else {
+		for _, ref := range refs {
+			if _, err := tx.ExecContext(ctx, `insert or ignore into usage_event_identity_ledger (
 			event_hash, raw_event_id, timestamp_ms, bucket_ms, aggregate_schema_version,
 			first_seen_at_ms, updated_at_ms
 		)
@@ -1001,56 +1022,57 @@ func (r *Repository) RecordSegment(ctx context.Context, runID string, segment Se
 			?
 		from usage_events e
 		where e.id = ? and e.event_hash = ?`, nowMS, nowMS, ref.EventID, ref.EventHash); err != nil {
-			return Run{}, err
-		}
-		result, err := tx.ExecContext(ctx, `update usage_event_identity_ledger set
+				return Run{}, err
+			}
+			result, err := tx.ExecContext(ctx, `update usage_event_identity_ledger set
 			raw_event_id = ?,
 			timestamp_ms = (select timestamp_ms from usage_events where id = ? and event_hash = ?),
 			bucket_ms = (select timestamp_ms - (timestamp_ms % 3600000)
 				from usage_events where id = ? and event_hash = ?),
 			updated_at_ms = ?
 		where event_hash = ? and (raw_event_id is null or raw_event_id = ?)`,
-			ref.EventID,
-			ref.EventID,
-			ref.EventHash,
-			ref.EventID,
-			ref.EventHash,
-			nowMS,
-			ref.EventHash,
-			ref.EventID,
-		)
-		if err != nil {
-			return Run{}, err
-		}
-		updated, err := result.RowsAffected()
-		if err != nil {
-			return Run{}, err
-		}
-		if updated != 1 {
-			return Run{}, fmt.Errorf("%w: identity ledger missing archive event %d", ErrCoverageIncomplete, ref.EventID)
-		}
-		result, err = tx.ExecContext(ctx, `insert into usage_archive_event_refs (
+				ref.EventID,
+				ref.EventID,
+				ref.EventHash,
+				ref.EventID,
+				ref.EventHash,
+				nowMS,
+				ref.EventHash,
+				ref.EventID,
+			)
+			if err != nil {
+				return Run{}, err
+			}
+			updated, err := result.RowsAffected()
+			if err != nil {
+				return Run{}, err
+			}
+			if updated != 1 {
+				return Run{}, fmt.Errorf("%w: identity ledger missing archive event %d", ErrCoverageIncomplete, ref.EventID)
+			}
+			result, err = tx.ExecContext(ctx, `insert into usage_archive_event_refs (
 			event_hash, run_id, segment_sequence, raw_event_id, timestamp_ms,
 			archived_at_ms, raw_deleted_at_ms
 		)
 		select event_hash, ?, ?, raw_event_id, timestamp_ms, ?, null
 		from usage_event_identity_ledger
 		where event_hash = ? and raw_event_id = ?`,
-			runID,
-			segment.Sequence,
-			nowMS,
-			ref.EventHash,
-			ref.EventID,
-		)
-		if err != nil {
-			return Run{}, err
-		}
-		inserted, err := result.RowsAffected()
-		if err != nil {
-			return Run{}, err
-		}
-		if inserted != 1 {
-			return Run{}, fmt.Errorf("%w: archive event reference missing event %d", ErrCoverageIncomplete, ref.EventID)
+				runID,
+				segment.Sequence,
+				nowMS,
+				ref.EventHash,
+				ref.EventID,
+			)
+			if err != nil {
+				return Run{}, err
+			}
+			inserted, err := result.RowsAffected()
+			if err != nil {
+				return Run{}, err
+			}
+			if inserted != 1 {
+				return Run{}, fmt.Errorf("%w: archive event reference missing event %d", ErrCoverageIncomplete, ref.EventID)
+			}
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `update usage_archive_runs set
@@ -1134,7 +1156,7 @@ func (r *Repository) MarkArchived(ctx context.Context, runID, archiveDigest, man
 	if nowMS <= 0 {
 		return Run{}, fmt.Errorf("nowMS must be greater than zero")
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return Run{}, err
 	}
@@ -1175,7 +1197,7 @@ func (r *Repository) MarkVerified(ctx context.Context, runID string, nowMS int64
 	if nowMS <= 0 {
 		return Run{}, fmt.Errorf("nowMS must be greater than zero")
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return Run{}, err
 	}
@@ -1222,7 +1244,7 @@ func (r *Repository) DeleteBatch(ctx context.Context, runID string, limit int, n
 	if nowMS <= 0 {
 		return DeleteBatchResult{}, fmt.Errorf("nowMS must be greater than zero")
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return DeleteBatchResult{}, err
 	}
@@ -1265,11 +1287,6 @@ func (r *Repository) DeleteBatch(ctx context.Context, runID string, limit int, n
 	)
 	if err != nil {
 		return DeleteBatchResult{}, err
-	}
-	type deleteCandidate struct {
-		ID          int64
-		EventHash   string
-		TimestampMS int64
 	}
 	candidates := make([]deleteCandidate, 0, min(limit, 1024))
 	for rows.Next() {
@@ -1350,54 +1367,61 @@ func (r *Repository) DeleteBatch(ctx context.Context, runID string, limit int, n
 	}
 	type dailyDeleted struct{ count, minMS, maxMS int64 }
 	daily := make(map[int64]dailyDeleted)
+	if r.mysqlBulk {
+		if err := deleteCandidatesBulk(ctx, tx, runID, candidates, nowMS); err != nil {
+			return DeleteBatchResult{}, err
+		}
+	}
 	for _, candidate := range candidates {
-		result, err := tx.ExecContext(ctx, `delete from usage_events
+		if !r.mysqlBulk {
+			result, err := tx.ExecContext(ctx, `delete from usage_events
 			where id = ? and event_hash = ?`, candidate.ID, candidate.EventHash)
-		if err != nil {
-			return DeleteBatchResult{}, err
-		}
-		deleted, err := result.RowsAffected()
-		if err != nil {
-			return DeleteBatchResult{}, err
-		}
-		if deleted != 1 {
-			return DeleteBatchResult{}, fmt.Errorf("%w: raw event %d disappeared during delete", ErrCoverageIncomplete, candidate.ID)
-		}
-		ledgerResult, err := tx.ExecContext(ctx, `update usage_event_identity_ledger set
+			if err != nil {
+				return DeleteBatchResult{}, err
+			}
+			deleted, err := result.RowsAffected()
+			if err != nil {
+				return DeleteBatchResult{}, err
+			}
+			if deleted != 1 {
+				return DeleteBatchResult{}, fmt.Errorf("%w: raw event %d disappeared during delete", ErrCoverageIncomplete, candidate.ID)
+			}
+			ledgerResult, err := tx.ExecContext(ctx, `update usage_event_identity_ledger set
 			raw_event_id = null, updated_at_ms = ?
 			where event_hash = ? and raw_event_id = ?`,
-			nowMS,
-			candidate.EventHash,
-			candidate.ID,
-		)
-		if err != nil {
-			return DeleteBatchResult{}, err
-		}
-		updatedLedger, err := ledgerResult.RowsAffected()
-		if err != nil {
-			return DeleteBatchResult{}, err
-		}
-		if updatedLedger != 1 {
-			return DeleteBatchResult{}, fmt.Errorf("%w: ledger event %d disappeared during delete", ErrCoverageIncomplete, candidate.ID)
-		}
-		refResult, err := tx.ExecContext(ctx, `update usage_archive_event_refs set
+				nowMS,
+				candidate.EventHash,
+				candidate.ID,
+			)
+			if err != nil {
+				return DeleteBatchResult{}, err
+			}
+			updatedLedger, err := ledgerResult.RowsAffected()
+			if err != nil {
+				return DeleteBatchResult{}, err
+			}
+			if updatedLedger != 1 {
+				return DeleteBatchResult{}, fmt.Errorf("%w: ledger event %d disappeared during delete", ErrCoverageIncomplete, candidate.ID)
+			}
+			refResult, err := tx.ExecContext(ctx, `update usage_archive_event_refs set
 			raw_deleted_at_ms = ?
 			where run_id = ? and event_hash = ? and raw_event_id = ?
 				and raw_deleted_at_ms is null`,
-			nowMS,
-			runID,
-			candidate.EventHash,
-			candidate.ID,
-		)
-		if err != nil {
-			return DeleteBatchResult{}, err
-		}
-		updatedRef, err := refResult.RowsAffected()
-		if err != nil {
-			return DeleteBatchResult{}, err
-		}
-		if updatedRef != 1 {
-			return DeleteBatchResult{}, fmt.Errorf("%w: archive event reference %d disappeared during delete", ErrCoverageIncomplete, candidate.ID)
+				nowMS,
+				runID,
+				candidate.EventHash,
+				candidate.ID,
+			)
+			if err != nil {
+				return DeleteBatchResult{}, err
+			}
+			updatedRef, err := refResult.RowsAffected()
+			if err != nil {
+				return DeleteBatchResult{}, err
+			}
+			if updatedRef != 1 {
+				return DeleteBatchResult{}, fmt.Errorf("%w: archive event reference %d disappeared during delete", ErrCoverageIncomplete, candidate.ID)
+			}
 		}
 		day := candidate.TimestampMS / utcDayMS
 		entry := daily[day]
@@ -1495,7 +1519,7 @@ func (r *Repository) RecordFailure(ctx context.Context, runID, resumeStatus stri
 	if nowMS <= 0 {
 		return Run{}, fmt.Errorf("nowMS must be greater than zero")
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return Run{}, err
 	}
@@ -1901,7 +1925,7 @@ func validateCurrentDeleteReadiness(
 		{
 			name:             usagemonitoring.StatsRollupName,
 			expectedVersion:  usagemonitoring.SchemaVersion,
-			expectedRevision: pricingRevision,
+			expectedRevision: usagemonitoring.StatsStructureRevision(pricingRevision),
 		},
 		{
 			name:             usagemonitoring.MetadataRollupName,

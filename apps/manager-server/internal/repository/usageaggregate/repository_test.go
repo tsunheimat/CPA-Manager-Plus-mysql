@@ -15,6 +15,7 @@ import (
 
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
@@ -22,6 +23,8 @@ import (
 func TestIsCurrentStructureRevision(t *testing.T) {
 	for _, revision := range []string{
 		StructureRevision,
+		StructureRevision + ":rebuild-0123456789abcdef0123456789abcdef:cache-accounting-v2-1700000000000-42",
+		StructureRevision + ":cache-accounting-v2-1700000000000-42",
 		StructureRevision + ":rebuild-0123456789abcdef0123456789abcdef",
 	} {
 		if !IsCurrentStructureRevision(revision) {
@@ -34,8 +37,10 @@ func TestIsCurrentStructureRevision(t *testing.T) {
 		StructureRevision + ":rebuild-short",
 		StructureRevision + ":rebuild-0123456789abcdef0123456789abcdeg",
 		StructureRevision + ":cache-accounting-v2-0-42",
-		StructureRevision + ":cache-accounting-v2-1700000000000-42",
-		StructureRevision + ":rebuild-0123456789abcdef0123456789abcdef:cache-accounting-v2-1700000000000-42",
+		StructureRevision + ":cache-accounting-v2-1700000000000-0",
+		StructureRevision + ":cache-accounting-v2-01700000000000-42",
+		StructureRevision + ":cache-accounting-v2-1700000000000-42:garbage",
+		StructureRevision + ":cache-accounting-v2-1700000000000-42:rebuild-0123456789abcdef0123456789abcdef",
 	} {
 		if IsCurrentStructureRevision(revision) {
 			t.Fatalf("invalid structure revision accepted: %q", revision)
@@ -139,7 +144,7 @@ func TestCatchUpBackfillsLegacyIdentityLedger(t *testing.T) {
 	repo := New(db)
 	timestampMS := int64(1_800_000_001_000)
 	createdAtMS := timestampMS + 123
-	if _, err := db.Exec(`insert into usage_events (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_events (
 		event_hash, timestamp_ms, timestamp, model, input_tokens, output_tokens, total_tokens, created_at_ms
 	) values (?, ?, ?, ?, ?, ?, ?, ?)`,
 		"aggregate-legacy-identity",
@@ -190,7 +195,7 @@ func TestCatchUpIsIdempotentWhenCheckpointIsReplayed(t *testing.T) {
 	if _, err := repo.CatchUp(ctx, 10, baseMS+hourMS); err != nil {
 		t.Fatalf("initial catch-up: %v", err)
 	}
-	if _, err := db.Exec(`update usage_hourly_aggregate_state set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_hourly_aggregate_state set
 		status = 'pending', backfill_last_event_id = 0, coverage_event_id = 0
 		where aggregate_name = ?`, AggregateName); err != nil {
 		t.Fatalf("rewind checkpoint fixture: %v", err)
@@ -253,10 +258,10 @@ func TestCatchUpReaggregatesAcrossRevisionWithoutDoubleCount(t *testing.T) {
 	// Simulate a migration-driven revision switch: the aggregate table has been
 	// recreated empty, state points at the new revision with a zero checkpoint,
 	// and the preserved ledger row still carries the prior revision.
-	if _, err := db.Exec(`delete from usage_hourly_aggregate_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_hourly_aggregate_v1`); err != nil {
 		t.Fatalf("clear aggregate for revision switch: %v", err)
 	}
-	if _, err := db.Exec(`update usage_hourly_aggregate_state set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_hourly_aggregate_state set
 		structure_revision = 'schema-3:model-1:rebuild-test',
 		status = 'pending', backfill_last_event_id = 0,
 		coverage_event_id = 0, processed_events = 0
@@ -301,7 +306,7 @@ func TestCatchUpReaggregatesAcrossRevisionWithoutDoubleCount(t *testing.T) {
 
 	// Replaying the same new revision after rewinding the checkpoint remains
 	// idempotent instead of doubling the aggregate.
-	if _, err := db.Exec(`update usage_hourly_aggregate_state set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_hourly_aggregate_state set
 		status = 'pending', backfill_last_event_id = 0, coverage_event_id = 0
 		where aggregate_name = ?`, AggregateName); err != nil {
 		t.Fatalf("rewind checkpoint for replay: %v", err)
@@ -357,7 +362,7 @@ func TestCatchUpPreservesRebuildStateAcrossRecordedFailure(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert rebuild events: %v", err)
 	}
-	if _, err := db.Exec(`update usage_hourly_aggregate_state set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_hourly_aggregate_state set
 		status = 'pending', backfill_last_event_id = 0, coverage_event_id = 0,
 		target_event_id = 2, processed_events = 0, last_error = null
 		where aggregate_name = ?`, AggregateName); err != nil {
@@ -432,13 +437,13 @@ func TestCatchUpWaitsForExternalClearingAndPreservesFallbackOnFailure(t *testing
 	}); err != nil {
 		t.Fatalf("insert clearing event: %v", err)
 	}
-	if _, err := db.Exec(`insert into usage_hourly_aggregate_v1 (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_hourly_aggregate_v1 (
 		bucket_ms, model, billing_model, service_tier, failed, calls,
 		input_tokens, output_tokens, total_tokens, updated_at_ms
 	) values (?, 'stale-model', 'stale-model', '', 0, 99, 99, 99, 198, 1)`, baseMS); err != nil {
 		t.Fatalf("seed stale aggregate: %v", err)
 	}
-	if _, err := db.Exec(`update usage_hourly_aggregate_state set
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_hourly_aggregate_state set
 		status = 'clearing', backfill_last_event_id = 0, coverage_event_id = 0,
 		target_event_id = 1, processed_events = 0, last_error = null
 		where aggregate_name = ?`, AggregateName); err != nil {
@@ -598,7 +603,7 @@ func TestCatchUpFailureDoesNotAdvanceCoverage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
-	if _, err := db.Exec(`drop table usage_hourly_aggregate_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `drop table usage_hourly_aggregate_v1`); err != nil {
 		t.Fatalf("drop aggregate table fixture: %v", err)
 	}
 	if _, err := repo.CatchUp(ctx, 10, baseMS+hourMS); err == nil {
@@ -628,10 +633,10 @@ func TestUnsupportedSchemaPreservesRowsAndFallsBack(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
 	repo := New(db)
-	if _, err := db.Exec(`update usage_hourly_aggregate_state set schema_version = 99 where aggregate_name = ?`, AggregateName); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_hourly_aggregate_state set schema_version = 99 where aggregate_name = ?`, AggregateName); err != nil {
 		t.Fatalf("set future schema: %v", err)
 	}
-	if _, err := db.Exec(`insert into usage_hourly_aggregate_v1 (
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `insert into usage_hourly_aggregate_v1 (
 		bucket_ms, model, billing_model, service_tier, failed, calls, updated_at_ms
 	) values (0, 'preserved', 'preserved', '', 0, 1, 1)`); err != nil {
 		t.Fatalf("insert preserved aggregate row: %v", err)
@@ -665,7 +670,7 @@ func TestCatchUpRollsBackAggregateWhenLedgerCoverageFails(t *testing.T) {
 	if _, err := events.InsertBatch(ctx, []usage.Event{event}); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
-	if _, err := db.Exec(testdb.SQL(db, `create trigger reject_aggregate_ledger_coverage
+	if _, err := testdb.Admin(t, db).ExecContext(context.Background(), testdb.SQL(db, `create trigger reject_aggregate_ledger_coverage
 		before update of aggregate_schema_version on usage_event_identity_ledger
 		when new.aggregate_schema_version = 3
 		begin select raise(abort, 'blocked'); end`, `create trigger reject_aggregate_ledger_coverage before update on usage_event_identity_ledger for each row begin if new.aggregate_schema_version=3 then signal sqlstate '45000' set message_text='blocked'; end if; end`)); err != nil {
@@ -705,7 +710,7 @@ func TestRepositoryRejectsUnknownAggregateSchema(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
 	repo := New(db)
-	if _, err := db.Exec(`update usage_hourly_aggregate_state set schema_version = 99 where aggregate_name = ?`, AggregateName); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_hourly_aggregate_state set schema_version = 99 where aggregate_name = ?`, AggregateName); err != nil {
 		t.Fatalf("set future schema: %v", err)
 	}
 	if _, err := repo.CatchUp(ctx, 10, time.Now().UnixMilli()); !errors.Is(err, ErrUnsupportedSchema) {

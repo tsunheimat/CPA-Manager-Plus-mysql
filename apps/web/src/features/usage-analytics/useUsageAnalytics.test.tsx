@@ -14,8 +14,13 @@ import type {
 } from '@/services/api/usageService';
 import { useUsageAnalytics } from './useUsageAnalytics';
 
-vi.mock('@/features/monitoring/hooks/useMonitoringAnalytics', () => ({
+vi.mock('@/features/monitoring/hooks/useMonitoringAnalytics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/features/monitoring/hooks/useMonitoringAnalytics')>()),
   useMonitoringAnalytics: vi.fn(),
+}));
+
+vi.mock('@/hooks/usePanelFeatureAvailability', () => ({
+  usePanelFeatureAvailability: () => ({ checking: false }),
 }));
 
 vi.mock('@/features/monitoring/hooks/useUsageData', () => ({
@@ -31,6 +36,8 @@ vi.mock('@/features/monitoring/services/monitoringMetaService', () => ({
 }));
 
 vi.mock('@/stores', () => ({
+  useAuthStore: (selector: (state: { apiBase: string; managementKey: string }) => unknown) =>
+    selector({ apiBase: 'http://manager.local', managementKey: 'test' }),
   useConfigStore: (selector: (state: { config: null }) => unknown) => selector({ config: null }),
 }));
 
@@ -158,60 +165,61 @@ describe('useUsageAnalytics request orchestration', () => {
       enabled: Boolean(params.fromMs && params.toMs),
       loading: credentialTimeline ? credentialTimelineLoading : false,
       error: selectors ? selectorError : credentialTimeline ? credentialTimelineError : '',
-      data: emptyAuxiliarySnapshot && !main && !selectors
-        ? emptyAnalyticsResponse
-        : selectors
-        ? selectorError
-          ? null
-          : {
-              ...emptyAnalyticsResponse,
-              filter_options: {
-                models: ['gpt-a'],
-                api_key_hashes: ['key-a'],
-                providers: ['codex'],
-                auth_files: ['account.json'],
-              },
-            }
-        : main
-          ? mainData
-          : apiKeyTimeline && apiKeyTimelineAvailable
-            ? {
-                ...emptyAnalyticsResponse,
-                api_key_timeline: [
-                  {
-                    api_key_hash: 'key-a',
-                    bucket_ms: mainTimelineStartMs,
-                    calls: 2,
-                    tokens: 200,
-                    success: 2,
-                    failure: 0,
-                  },
-                  {
-                    api_key_hash: 'key-a',
-                    bucket_ms: mainTimelineStartMs + 2 * HOUR_MS,
-                    calls: 4,
-                    tokens: 400,
-                    success: 4,
-                    failure: 0,
-                  },
-                ],
-              }
-            : credentialTimeline && !credentialTimelineError && !credentialTimelineLoading
-              ? {
+      data:
+        emptyAuxiliarySnapshot && !main && !selectors
+          ? emptyAnalyticsResponse
+          : selectors
+            ? selectorError
+              ? null
+              : {
                   ...emptyAnalyticsResponse,
-                  credential_timeline: [
-                    {
-                      id: 'credential-a.json',
-                      auth_file_snapshot: 'credential-a.json',
-                      bucket_ms: 1,
-                      calls: 10,
-                      tokens: 150,
-                      success: 9,
-                      failure: 1,
-                    },
-                  ],
+                  filter_options: {
+                    models: ['gpt-a'],
+                    api_key_hashes: ['key-a'],
+                    providers: ['codex'],
+                    auth_files: ['account.json'],
+                  },
                 }
-              : null,
+            : main
+              ? mainData
+              : apiKeyTimeline && apiKeyTimelineAvailable
+                ? {
+                    ...emptyAnalyticsResponse,
+                    api_key_timeline: [
+                      {
+                        api_key_hash: 'key-a',
+                        bucket_ms: mainTimelineStartMs,
+                        calls: 2,
+                        tokens: 200,
+                        success: 2,
+                        failure: 0,
+                      },
+                      {
+                        api_key_hash: 'key-a',
+                        bucket_ms: mainTimelineStartMs + 2 * HOUR_MS,
+                        calls: 4,
+                        tokens: 400,
+                        success: 4,
+                        failure: 0,
+                      },
+                    ],
+                  }
+                : credentialTimeline && !credentialTimelineError && !credentialTimelineLoading
+                  ? {
+                      ...emptyAnalyticsResponse,
+                      credential_timeline: [
+                        {
+                          id: 'credential-a.json',
+                          auth_file_snapshot: 'credential-a.json',
+                          bucket_ms: 1,
+                          calls: 10,
+                          tokens: 150,
+                          success: 9,
+                          failure: 1,
+                        },
+                      ],
+                    }
+                  : null,
       dataStale: !main && !selectors && auxiliaryScopeStale,
       lastRefreshedAt: null,
       serviceBase: 'http://manager.local',
@@ -515,11 +523,16 @@ describe('useUsageAnalytics request orchestration', () => {
     expect(latestResult?.error).toBe('');
     expect(latestResult?.filterOptions).toBeUndefined();
 
+    const generation = lastParams((params) => Boolean(params.include?.summary))?.fetchGenerationKey;
     act(() => {
       latestResult?.refresh();
     });
-    expect(mainRefresh).toHaveBeenCalledTimes(1);
-    expect(selectorRefresh).toHaveBeenCalledTimes(1);
+    expect(lastParams((params) => Boolean(params.include?.summary))?.fetchGenerationKey).not.toBe(
+      generation
+    );
+    expect(mainRefresh).not.toHaveBeenCalled();
+    expect(selectorRefresh).not.toHaveBeenCalled();
+    expect(latestResult?.sections.selectors.error).toBe('selector failed');
   });
 
   it('loads only the selected credential timeline after the credential ranking', async () => {
@@ -530,7 +543,9 @@ describe('useUsageAnalytics request orchestration', () => {
       await Promise.resolve();
     });
 
-    const credentials = lastParams((params) => Boolean(params.include?.credential_stats));
+    const credentials = lastParams((params) =>
+      Boolean(params.include?.credential_stats && params.include.summary)
+    );
     expect(credentials?.include).toEqual({
       summary: true,
       summary_profile: 'compact',
@@ -632,21 +647,32 @@ describe('useUsageAnalytics request orchestration', () => {
       provider: 'codex',
       authIndex: 'auth-a',
     });
-    expect(latestResult?.error).toBe('meta offline');
+    expect(latestResult?.error).toBe('');
+    expect(latestResult?.sections.metadata).toMatchObject({
+      error: 'meta offline',
+      stale: true,
+      loaded: true,
+    });
   });
 
   it('recognizes successful empty auxiliary snapshots but rejects them after scope invalidation', async () => {
     emptyAuxiliarySnapshot = true;
     await renderHook();
-    await act(async () => { latestResult!.setActiveTab('credentials'); });
+    await act(async () => {
+      latestResult!.setActiveTab('credentials');
+    });
     expect(latestResult!.credentialTrendSeries).toEqual([]);
     expect(latestResult!.credentialTrendLoaded).toBe(true);
     expect(latestResult!.heatmapDateLoaded).toBe(true);
     credentialTimelineLoading = true;
-    await act(async () => { latestResult!.setSelectedCredentialId('credential-a.json'); });
+    await act(async () => {
+      latestResult!.setSelectedCredentialId('credential-a.json');
+    });
     expect(latestResult!.credentialTrendLoaded).toBe(true);
     auxiliaryScopeStale = true;
-    await act(async () => { latestResult!.setSelectedCredentialId('credential-b.json'); });
+    await act(async () => {
+      latestResult!.setSelectedCredentialId('credential-b.json');
+    });
     expect(latestResult!.credentialTrendLoaded).toBe(false);
     expect(latestResult!.heatmapDateLoaded).toBe(false);
   });

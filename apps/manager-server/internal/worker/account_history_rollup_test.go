@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
@@ -56,7 +57,7 @@ func TestAccountHistoryRollupWorkerLogsOnlyMigrationRebuilds(t *testing.T) {
 			values ('account_history', (select coalesce(max(id), 0) from usage_events), 0)
 			on conflict(name) do update set target_event_id = excluded.target_event_id, updated_at_ms = 0`,
 	} {
-		if _, err := sqlDB.Exec(statement); err != nil {
+		if _, err := sqlwrite.ExecContext(ctx, sqlDB, statement); err != nil {
 			t.Fatalf("prepare rebuild fixture: %v", err)
 		}
 	}

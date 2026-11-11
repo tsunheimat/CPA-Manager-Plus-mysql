@@ -54,6 +54,8 @@ type CommonSummaryContext = {
 };
 
 type OverviewSummaryCardsInput = CommonSummaryContext & {
+  exactStatus?: string;
+  anomalyStatus?: string;
   anomalyCount: number;
   reasoningTokens: number;
   summary: UsageSummaryMetrics;
@@ -61,6 +63,7 @@ type OverviewSummaryCardsInput = CommonSummaryContext & {
 };
 
 type TrendSummaryCardsInput = CommonSummaryContext & {
+  exactStatus?: string;
   summaryDelta: UsageSummaryDelta;
   timeline: UsageTimelinePoint[];
 };
@@ -161,6 +164,8 @@ const deltaMeta = (
     : fallback;
 
 export const buildUsageOverviewSummaryCards = ({
+  exactStatus,
+  anomalyStatus,
   anomalyCount,
   locale,
   reasoningTokens,
@@ -191,7 +196,7 @@ export const buildUsageOverviewSummaryCards = ({
       fullLabel: t('usage_analytics.success_rate'),
       icon: 'success',
       label: t('usage_analytics.success_rate'),
-      meta: `${p95LatencyLabel} ${formatUsageDurationMs(p95LatencyValue)}`,
+      meta: `${p95LatencyLabel} ${exactStatus || formatUsageDurationMs(p95LatencyValue)}`,
       tone: summary.successRate >= 0.95 ? 'good' : summary.successRate >= 0.85 ? 'warn' : 'bad',
       value: formatPercent(summary.successRate),
     },
@@ -200,7 +205,7 @@ export const buildUsageOverviewSummaryCards = ({
       fullLabel: t('usage_analytics.metric_failure_count'),
       icon: 'failure',
       label: t('usage_analytics.metric_failure_count'),
-      meta: `${anomalyCount} ${t('usage_analytics.anomaly_points_title')}`,
+      meta: `${anomalyStatus || anomalyCount} ${t('usage_analytics.anomaly_points_title')}`,
       tone: summary.failureCount > 0 ? 'bad' : 'good',
       value: formatMetricValue('requestCount', summary.failureCount),
       valueTitle: formatFullNumber(summary.failureCount, locale),
@@ -263,6 +268,7 @@ export const buildUsageOverviewSummaryCards = ({
 };
 
 export const buildUsageTrendSummaryCards = ({
+  exactStatus,
   locale,
   summaryDelta,
   timeline,
@@ -331,7 +337,7 @@ export const buildUsageTrendSummaryCards = ({
       icon: 'latency',
       label: t('usage_analytics.trend_p95_peak'),
       meta: t('usage_analytics.metric_p95_latency'),
-      value: formatUsageDurationMs(peakP95Ms),
+      value: exactStatus || formatUsageDurationMs(peakP95Ms),
     },
   ];
 };

@@ -14,11 +14,14 @@ import (
 )
 
 //go:generate go run ./internal/schemagen
+//go:generate go test . -run ^TestHourlySchemaContractAndFrozenBaseline$
 
 //go:embed schema.sql
 var schema string
 
-const schemaVersion = 1
+// schema.sql is the frozen v1 baseline. Numbered additive migrations are applied
+// identically on fresh installations and populated upgrades.
+const schemaVersion = 2
 
 func parseDSN(dsn string) (*mysqldriver.Config, error) {
 	cfg, err := mysqldriver.ParseDSN(dsn)
@@ -54,6 +57,9 @@ func parseDSN(dsn string) (*mysqldriver.Config, error) {
 	cfg.Params["transaction_isolation"] = "'REPEATABLE-READ'"
 	cfg.Params["autocommit"] = "1"
 	cfg.Params["group_concat_max_len"] = "16777216"
+	// Backups must capture the live AUTO_INCREMENT high-water mark, including
+	// deleted/archived IDs, rather than cached information_schema table stats.
+	cfg.Params["information_schema_stats_expiry"] = "0"
 	return cfg, nil
 }
 
@@ -158,23 +164,17 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	if current > schemaVersion {
 		return fmt.Errorf("MySQL schema version %d is newer than supported version %d", current, schemaVersion)
 	}
-	if current == schemaVersion {
-		return nil
+	if current < 0 {
+		return fmt.Errorf("invalid MySQL schema version %d", current)
 	}
-	// MySQL DDL commits implicitly. Every statement is restartable; write the
-	// version only after every table, index, view, and seed has succeeded.
-	for i, part := range strings.Split(schema, "-- statement") {
-		if i == 0 {
-			continue
+	if current == 0 {
+		if err := executeSchema(ctx, conn, schema); err != nil {
+			return err
 		}
-		query := strings.TrimSpace(part)
-		if query == "" {
-			continue
+		if _, err := conn.ExecContext(ctx, "insert into manager_schema_version(id,version) values(1,1) on duplicate key update version=1"); err != nil {
+			return err
 		}
-		if _, err := conn.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("MySQL schema statement %d: %w", i, err)
-		}
+		current = 1
 	}
-	_, err = conn.ExecContext(ctx, "insert into manager_schema_version(id,version) values(1,?) on duplicate key update version=?", schemaVersion, schemaVersion)
-	return err
+	return upgradeSchema(ctx, conn, current)
 }

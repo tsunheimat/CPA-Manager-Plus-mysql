@@ -10,6 +10,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
 	usagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
@@ -23,7 +24,7 @@ func TestGetArchiveDetailReturnsOnlySafePersistedProgress(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	runID := strings.Repeat("a", 32)
-	_, err = db.ExecContext(context.Background(), `insert into usage_archive_runs (
+	_, err = sqlwrite.ExecContext(context.Background(), db, `insert into usage_archive_runs (
 		id, mode, schema_version, format, status, cutoff_timestamp_ms, target_event_id,
 		event_count, created_at_ms, updated_at_ms, progress_phase, progress_current,
 		progress_total, progress_unit, progress_updated_at_ms, manifest_file, manifest_sha256,

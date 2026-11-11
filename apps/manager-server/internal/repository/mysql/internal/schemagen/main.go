@@ -1,6 +1,7 @@
-// Command schemagen generates the initial MySQL schema from a freshly migrated
-// SQLite schema. Run with go generate in internal/repository/mysql. The output
-// is checked in and reviewed; no SQLite database is created by MySQL startup.
+// Command schemagen checks the frozen initial MySQL schema against a freshly
+// migrated SQLite schema. Run with go generate in internal/repository/mysql.
+// Numbered native additions are checked by TestHourlySchemaContractAndFrozenBaseline.
+// No SQLite database is created by MySQL startup.
 package main
 
 import (
@@ -123,7 +124,17 @@ func run() error {
 		}
 		output.WriteString(seed)
 	}
-	return os.WriteFile("schema.sql", []byte(output.String()), 0o644)
+	// v1 is a historical restore/upgrade contract, not a moving snapshot. New
+	// physical structures belong in numbered native migrations. Refuse to
+	// silently rewrite the base when SQLite's layout changes.
+	baseline, err := os.ReadFile("schema.sql")
+	if err != nil {
+		return err
+	}
+	if string(baseline) != output.String() {
+		return fmt.Errorf("frozen MySQL v1 baseline differs from SQLite generation; add/review a numbered migration instead of rewriting schema.sql")
+	}
+	return nil
 }
 
 func inspect(db *sql.DB, t *table) error {

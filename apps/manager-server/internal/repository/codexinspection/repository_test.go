@@ -9,6 +9,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 )
 
@@ -323,7 +324,7 @@ func TestUpsertDisableOwnershipsIsAtomic(t *testing.T) {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec(testdb.SQL(db, `create trigger fail_second_ownership before insert on codex_inspection_disable_ownership
+	if _, err := testdb.Admin(t, db).ExecContext(context.Background(), testdb.SQL(db, `create trigger fail_second_ownership before insert on codex_inspection_disable_ownership
 		when new.auth_index = 'auth-2'
 		begin
 			select raise(abort, 'forced batch ownership failure');
@@ -627,7 +628,7 @@ func TestDisableOwnershipWritesRetrySQLiteBusy(t *testing.T) {
 			t.Cleanup(func() { _ = locker.Close() })
 			db.SetMaxOpenConns(1)
 			db.SetMaxIdleConns(1)
-			if _, err := db.ExecContext(context.Background(), `pragma busy_timeout = 1`); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db, `pragma busy_timeout = 1`); err != nil {
 				t.Fatalf("set short busy timeout: %v", err)
 			}
 			repository := New(db)

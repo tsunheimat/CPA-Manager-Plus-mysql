@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
@@ -89,8 +90,8 @@ func (r *repository) CreateRun(ctx context.Context, run model.CodexInspectionRun
 	var res sql.Result
 	err := withSQLiteBusyRetry(ctx, func() error {
 		var err error
-		res, err = r.db.ExecContext(
-			ctx,
+		res, err = sqlwrite.ExecContext(
+			ctx, r.db,
 			`insert into codex_inspection_runs (
 			trigger_type, trigger_key, status, started_at_ms, finished_at_ms,
 			total_files, probe_set_count, sampled_count, disabled_count, enabled_count,
@@ -143,8 +144,8 @@ func (r *repository) UpdateRun(ctx context.Context, run model.CodexInspectionRun
 		run.SettingsJSON = model.MarshalCodexInspectionSettings(run.Settings)
 	}
 	err := withSQLiteBusyRetry(ctx, func() error {
-		res, err := r.db.ExecContext(
-			ctx,
+		res, err := sqlwrite.ExecContext(
+			ctx, r.db,
 			`update codex_inspection_runs set
 			status = ?,
 			finished_at_ms = ?,
@@ -235,8 +236,8 @@ func (r *repository) InsertResult(ctx context.Context, result model.CodexInspect
 	}
 	var id int64
 	err := withSQLiteBusyRetry(ctx, func() error {
-		return r.db.QueryRowContext(
-			ctx,
+		return sqlwrite.QueryRowContext(
+			ctx, r.db,
 			`insert into codex_inspection_results (
 			run_id, account_key, file_name, display_account, account_snapshot, auth_index, account_id,
 			provider, disabled, status, state, action, action_reason, status_code,
@@ -318,8 +319,8 @@ func (r *repository) InsertLog(ctx context.Context, entry model.CodexInspectionL
 	}
 	var id int64
 	err := withSQLiteBusyRetry(ctx, func() error {
-		return r.db.QueryRowContext(
-			ctx,
+		return sqlwrite.QueryRowContext(
+			ctx, r.db,
 			`insert into codex_inspection_logs(run_id, level, message, detail_json, created_at_ms)
 			 values(?, ?, ?, ?, ?)
 			 returning id`,
@@ -516,7 +517,7 @@ func (r *repository) UpsertDisableOwnerships(ctx context.Context, items []model.
 		normalized[index] = item
 	}
 	return withSQLiteBusyRetry(ctx, func() error {
-		tx, err := r.db.BeginTx(ctx, nil)
+		tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 		if err != nil {
 			return err
 		}
@@ -569,7 +570,7 @@ func (r *repository) RevokeDisableOwnership(ctx context.Context, targets []model
 }
 
 func (r *repository) revokeDisableOwnershipOnce(ctx context.Context, targets []model.CodexInspectionDisableOwnershipTarget, clearAll bool) ([]model.CodexInspectionDisableOwnership, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -636,7 +637,7 @@ func (r *repository) RestoreDisableOwnership(ctx context.Context, items []model.
 }
 
 func (r *repository) restoreDisableOwnershipOnce(ctx context.Context, items []model.CodexInspectionDisableOwnership) error {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, r.db, nil)
 	if err != nil {
 		return err
 	}

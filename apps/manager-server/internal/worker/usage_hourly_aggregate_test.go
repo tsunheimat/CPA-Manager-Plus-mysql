@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
@@ -134,7 +135,7 @@ func TestUsageHourlyAggregateWorkerLogsOnlyRebuildBackfill(t *testing.T) {
 			finished_at_ms = null, last_error = null
 			where aggregate_name = 'hourly_core'`,
 	} {
-		if _, err := sqlDB.Exec(statement); err != nil {
+		if _, err := sqlwrite.ExecContext(ctx, sqlDB, statement); err != nil {
 			t.Fatalf("prepare aggregate rebuild fixture: %v", err)
 		}
 	}
@@ -169,7 +170,7 @@ func TestUsageHourlyAggregateWorkerRecordsFailure(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert event: %v", err)
 	}
-	if _, err := sqlDB.ExecContext(ctx, `drop table usage_hourly_aggregate_v1`); err != nil {
+	if _, err := sqlwrite.ExecContext(ctx, sqlDB, `drop table usage_hourly_aggregate_v1`); err != nil {
 		t.Fatalf("drop aggregate fixture: %v", err)
 	}
 

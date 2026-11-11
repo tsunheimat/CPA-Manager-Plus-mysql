@@ -34,16 +34,17 @@ type Result struct {
 }
 
 type InfoResult struct {
-	Service            string `json:"service"`
-	Mode               string `json:"mode"`
-	StartedAt          int64  `json:"startedAt"`
-	Configured         bool   `json:"configured"`
-	AdminReady         bool   `json:"adminReady"`
-	ProjectInitialized bool   `json:"projectInitialized"`
-	SetupRequired      bool   `json:"setupRequired"`
-	MigrationStatus    string `json:"migrationStatus,omitempty"`
-	DataKeyReady       bool   `json:"dataKeyReady"`
-	HasHistoricalData  bool   `json:"hasHistoricalData"`
+	Service                  string `json:"service"`
+	Mode                     string `json:"mode"`
+	StartedAt                int64  `json:"startedAt"`
+	Configured               bool   `json:"configured"`
+	AdminReady               bool   `json:"adminReady"`
+	ProjectInitialized       bool   `json:"projectInitialized"`
+	SetupRequired            bool   `json:"setupRequired"`
+	MigrationStatus          string `json:"migrationStatus,omitempty"`
+	DataKeyReady             bool   `json:"dataKeyReady"`
+	HasHistoricalData        bool   `json:"hasHistoricalData"`
+	AnalyticsSectionsVersion int    `json:"analyticsSectionsVersion,omitempty"`
 }
 
 type Service struct {
@@ -83,17 +84,22 @@ func (s *Service) Info(ctx context.Context) (InfoResult, error) {
 	if bootstrapStateOK && !projectInitialized {
 		projectInitialized = bootstrapState.ProjectInitialized
 	}
+	sectionsVersion := 0
+	if s.cfg.AnalyticsProgressiveEnabled {
+		sectionsVersion = 1
+	}
 	return InfoResult{
-		Service:            s.serviceID,
-		Mode:               "embedded",
-		StartedAt:          s.startedAt,
-		Configured:         projectInitialized,
-		AdminReady:         adminReady,
-		ProjectInitialized: projectInitialized,
-		SetupRequired:      adminReady && !projectInitialized,
-		MigrationStatus:    bootstrapState.Status,
-		DataKeyReady:       bootstrapState.DataKeyReady,
-		HasHistoricalData:  bootstrapState.HasHistoricalData,
+		AnalyticsSectionsVersion: sectionsVersion,
+		Service:                  s.serviceID,
+		Mode:                     "embedded",
+		StartedAt:                s.startedAt,
+		Configured:               projectInitialized,
+		AdminReady:               adminReady,
+		ProjectInitialized:       projectInitialized,
+		SetupRequired:            adminReady && !projectInitialized,
+		MigrationStatus:          bootstrapState.Status,
+		DataKeyReady:             bootstrapState.DataKeyReady,
+		HasHistoricalData:        bootstrapState.HasHistoricalData,
 	}, nil
 }
 

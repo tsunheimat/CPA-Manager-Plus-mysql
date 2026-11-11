@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil/testdb"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
@@ -122,7 +123,7 @@ func TestStoredCodexLegacyEvidencePreservesAuthorityAcrossBatches(t *testing.T) 
 				t.Fatal(err)
 			}
 			if test.prepare != "" {
-				if _, err := db.Exec(test.prepare); err != nil {
+				if _, err := sqlwrite.ExecContext(context.Background(), db, test.prepare); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -174,11 +175,11 @@ func TestStoredCodexLegacyEvidenceBoundsRawTailAndUsesRowID(t *testing.T) {
 				t.Fatal(err)
 			}
 			if count == 1 {
-				if _, err := db.Exec("update usage_events set id = 1000000 where id = 2"); err != nil {
+				if _, err := sqlwrite.ExecContext(context.Background(), db, "update usage_events set id = 1000000 where id = 2"); err != nil {
 					t.Fatal(err)
 				}
 			}
-			tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+			tx, err := sqlwrite.BeginTx(ctx, db, &sql.TxOptions{ReadOnly: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -240,10 +241,10 @@ func TestStoredCodexLegacyEvidenceFallsBackWhenUnavailable(t *testing.T) {
 				t.Fatal(err)
 			}
 			commitIdentityEvidenceTestBatch(t, db, 0, 1)
-			if _, err := db.Exec("update usage_codex_legacy_identity_evidence_v1 set auth_account_id_snapshot = 'stale-conflict'"); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db, "update usage_codex_legacy_identity_evidence_v1 set auth_account_id_snapshot = 'stale-conflict'"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.Exec(statement); err != nil {
+			if _, err := sqlwrite.ExecContext(context.Background(), db, statement); err != nil {
 				t.Fatal(err)
 			}
 			assertIdentityEvidenceAllowed(t, db, true)
@@ -301,7 +302,7 @@ func assertIdentityEvidenceAllowed(t testing.TB, db *sql.DB, want bool) {
 func commitIdentityEvidenceTestBatch(t testing.TB, db *sql.DB, afterID, throughID int64) {
 	t.Helper()
 	ctx := context.Background()
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := sqlwrite.BeginTx(ctx, db, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +346,7 @@ func TestCodexLegacyIdentityEvidenceSurvivesRawDeletion(t *testing.T) {
 
 	commitIdentityEvidenceTestBatch(t, db, 0, maxID)
 	// Mark status as ready
-	if _, err := db.Exec(`update usage_monitoring_rollup_state set status = 'ready' where rollup_name = ?`, CodexLegacyIdentityRollupName); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_monitoring_rollup_state set status = 'ready' where rollup_name = ?`, CodexLegacyIdentityRollupName); err != nil {
 		t.Fatalf("set status ready: %v", err)
 	}
 
@@ -361,7 +362,7 @@ func TestCodexLegacyIdentityEvidenceSurvivesRawDeletion(t *testing.T) {
 	assertIdentityEvidenceAllowed(t, db, true)
 
 	// Now simulate archive deletion: all raw events are deleted
-	if _, err := db.Exec(`delete from usage_events`); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `delete from usage_events`); err != nil {
 		t.Fatalf("delete raw events: %v", err)
 	}
 
@@ -406,7 +407,7 @@ func TestCodexLegacyIdentityEvidenceBoundedTailReader(t *testing.T) {
 	}
 
 	commitIdentityEvidenceTestBatch(t, db, 0, initialMaxID)
-	if _, err := db.Exec(`update usage_monitoring_rollup_state set status = 'ready' where rollup_name = ?`, CodexLegacyIdentityRollupName); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_monitoring_rollup_state set status = 'ready' where rollup_name = ?`, CodexLegacyIdentityRollupName); err != nil {
 		t.Fatalf("set status ready: %v", err)
 	}
 
@@ -461,7 +462,7 @@ func TestCodexLegacyIdentityEvidenceReaderRejectsDriftedSchemaVersion(t *testing
 	}
 
 	commitIdentityEvidenceTestBatch(t, db, 0, initialMaxID)
-	if _, err := db.Exec(`update usage_monitoring_rollup_state set status = 'ready' where rollup_name = ?`, CodexLegacyIdentityRollupName); err != nil {
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_monitoring_rollup_state set status = 'ready' where rollup_name = ?`, CodexLegacyIdentityRollupName); err != nil {
 		t.Fatalf("set status ready: %v", err)
 	}
 
@@ -473,7 +474,7 @@ func TestCodexLegacyIdentityEvidenceReaderRejectsDriftedSchemaVersion(t *testing
 	}
 
 	// 2. Rejects CodexLegacyIdentityEvidenceSchemaVersion + 1
-	if _, err := db.Exec(`update usage_monitoring_rollup_state set schema_version = ? where rollup_name = ?`,
+	if _, err := sqlwrite.ExecContext(context.Background(), db, `update usage_monitoring_rollup_state set schema_version = ? where rollup_name = ?`,
 		CodexLegacyIdentityEvidenceSchemaVersion+1, CodexLegacyIdentityRollupName); err != nil {
 		t.Fatalf("corrupt schema version: %v", err)
 	}

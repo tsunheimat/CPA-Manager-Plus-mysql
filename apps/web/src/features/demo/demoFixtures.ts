@@ -1925,8 +1925,32 @@ const buildMonitoringAnalytics = (
       : requestNow;
   const analyticsNow = Math.min(requestNow, rangeEnd);
   const dashboard = dashboardBase(requestNow);
-  const timeline = Array.from({ length: 14 }, (_, index) => {
-    const bucket = analyticsNow - (13 - index) * day;
+  const granularity = request?.include?.granularity === 'hour' ? 'hour' : 'day';
+  const nextBucketStart = (bucketMs: number) => {
+    const date = new Date(bucketMs);
+    if (granularity === 'day') {
+      date.setDate(date.getDate() + 1);
+    } else {
+      // A nonexistent local hour can normalize to :30 at a fractional DST change.
+      // Resume at the next calendar hour rather than carrying those minutes forward.
+      date.setHours(date.getHours() + 1, 0, 0, 0);
+    }
+    return date.getTime();
+  };
+  const bucketStarts: number[] = [];
+  if (request?.include?.granularity && request.from_ms > 0 && request.from_ms < rangeEnd) {
+    const date = new Date(request.from_ms);
+    if (granularity === 'day') date.setHours(0, 0, 0, 0);
+    else date.setMinutes(0, 0, 0);
+    for (let bucketMs = date.getTime(); bucketMs < rangeEnd; bucketMs = nextBucketStart(bucketMs)) {
+      bucketStarts.push(bucketMs);
+    }
+  } else {
+    bucketStarts.push(
+      ...Array.from({ length: 14 }, (_, index) => analyticsNow - (13 - index) * day)
+    );
+  }
+  const timeline = bucketStarts.map((bucket, index) => {
     const calls = 1180 + ((index * 137) % 620);
     const failure = index % 6 === 0 ? 54 : 18 + (index % 4) * 7;
     const success = calls - failure;
@@ -1934,8 +1958,11 @@ const buildMonitoringAnalytics = (
     const tokenSplit = splitTokens(tokens);
     return {
       bucket_ms: bucket,
-      bucket_end_ms: bucket + day,
-      label: new Date(bucket).toLocaleDateString(),
+      bucket_end_ms: nextBucketStart(bucket),
+      label:
+        granularity === 'day'
+          ? new Date(bucket).toLocaleDateString()
+          : new Date(bucket).toLocaleString(),
       calls,
       tokens,
       success,
@@ -4648,7 +4675,7 @@ const buildMonitoringAnalytics = (
     };
   });
 
-  const credentialTimeline = timeline.slice(-7).flatMap((point, dayIndex) =>
+  const credentialTimeline = timeline.flatMap((point) =>
     credentialStats.slice(0, 10).map((credential, credentialIndex) => {
       const share = [0.26, 0.22, 0.18, 0.12, 0.09, 0.05][credentialIndex] ?? 0.04;
       const calls = Math.round(point.calls * share);
@@ -4665,7 +4692,7 @@ const buildMonitoringAnalytics = (
         auth_label_snapshot: credential.auth_label_snapshot,
         auth_provider_snapshot: credential.auth_provider_snapshot,
         auth_project_id_snapshot: credential.auth_project_id_snapshot,
-        bucket_ms: point.bucket_ms + dayIndex,
+        bucket_ms: point.bucket_ms,
         bucket_label: point.label,
         calls,
         tokens,
@@ -4687,11 +4714,23 @@ const buildMonitoringAnalytics = (
     eventsPageRequest?.before_ms
   );
   const drilldownRequest = request?.include?.drilldown_preview;
-  const drilldownPreview = paginateDemoEvents(scopedEvents, drilldownRequest?.limit ?? 12, null);
+  const drilldownPreview = paginateDemoEvents(
+    drilldownRequest
+      ? scopedEvents.filter(
+          (row) =>
+            row.timestamp_ms >= drilldownRequest.from_ms &&
+            row.timestamp_ms < drilldownRequest.to_ms
+        )
+      : scopedEvents,
+    drilldownRequest?.limit ?? 12,
+    null
+  );
 
+  const spikeBucket = timeline[Math.min(9, timeline.length - 1)];
+  const failureBucket = timeline[Math.min(12, timeline.length - 1)];
   return {
     generated_at_ms: analyticsNow,
-    granularity: 'day',
+    granularity,
     summary: {
       total_calls: summaryCalls,
       success_calls: summarySuccess,
@@ -4741,15 +4780,15 @@ const buildMonitoringAnalytics = (
     heatmap,
     anomaly_points: [
       {
-        bucket_ms: timeline[9].bucket_ms,
-        bucket_end_ms: timeline[9].bucket_end_ms ?? timeline[9].bucket_ms + day,
-        label: timeline[9].label,
+        bucket_ms: spikeBucket.bucket_ms,
+        bucket_end_ms: spikeBucket.bucket_end_ms ?? spikeBucket.bucket_ms + day,
+        label: spikeBucket.label,
         severity: 'high',
         metric_keys: ['request_spike', 'cost_spike'],
-        calls: timeline[9].calls,
-        total_tokens: timeline[9].total_tokens,
-        cost: timeline[9].cost,
-        failure_rate: timeline[9].failure_rate,
+        calls: spikeBucket.calls,
+        total_tokens: spikeBucket.total_tokens,
+        cost: spikeBucket.cost,
+        failure_rate: spikeBucket.failure_rate,
         request_change: 1.18,
         cost_change: 1.34,
         tokens_per_request_change: 0.22,
@@ -4758,15 +4797,15 @@ const buildMonitoringAnalytics = (
         latency_p95_change: 0.18,
       },
       {
-        bucket_ms: timeline[12].bucket_ms,
-        bucket_end_ms: timeline[12].bucket_end_ms ?? timeline[12].bucket_ms + day,
-        label: timeline[12].label,
+        bucket_ms: failureBucket.bucket_ms,
+        bucket_end_ms: failureBucket.bucket_end_ms ?? failureBucket.bucket_ms + day,
+        label: failureBucket.label,
         severity: 'medium',
         metric_keys: ['failure_rate_spike', 'latency_spike'],
-        calls: timeline[12].calls,
-        total_tokens: timeline[12].total_tokens,
-        cost: timeline[12].cost,
-        failure_rate: timeline[12].failure_rate,
+        calls: failureBucket.calls,
+        total_tokens: failureBucket.total_tokens,
+        cost: failureBucket.cost,
+        failure_rate: failureBucket.failure_rate,
         request_change: 0.34,
         cost_change: 0.42,
         tokens_per_request_change: 0.08,
@@ -5963,10 +6002,85 @@ const filterDemoMonitoringAnalyticsByCredential = (
   };
 };
 
-export const getDemoMonitoringAnalytics = (request?: MonitoringAnalyticsRequest) =>
-  clone(
-    filterDemoMonitoringAnalyticsByCredential(buildMonitoringAnalytics(undefined, request), request)
+export const getDemoMonitoringAnalytics = (
+  request?: MonitoringAnalyticsRequest
+): MonitoringAnalyticsResponse => {
+  const full = filterDemoMonitoringAnalyticsByCredential(
+    buildMonitoringAnalytics(undefined, request),
+    request
   );
+  const include = request?.include;
+  if (!include) return clone(full);
+  const response: MonitoringAnalyticsResponse = {
+    generated_at_ms: full.generated_at_ms,
+    granularity: full.granularity,
+    coverage: full.coverage,
+  };
+  for (const key of [
+    'summary',
+    'summary_comparison',
+    'timeline',
+    'hourly_distribution',
+    'heatmap',
+    'anomaly_points',
+    'model_share',
+    'model_stats',
+    'channel_share',
+    'failure_sources',
+    'account_stats',
+    'credential_stats',
+    'credential_timeline',
+    'api_key_timeline',
+    'api_key_stats',
+    'filter_options',
+    'task_buckets',
+    'recent_failures',
+    'drilldown_preview',
+  ] as const) {
+    if (include[key]) Object.assign(response, { [key]: full[key] });
+  }
+  if (include.events_page) response.events = full.events;
+  if (
+    include.summary &&
+    response.summary &&
+    include.summary_profile === 'compact' &&
+    !include.summary_percentiles
+  ) {
+    response.summary = { ...response.summary };
+    delete response.summary.p95_latency_ms;
+    delete response.summary.p95_ttft_ms;
+  }
+  if (include.timeline_profile === 'core') {
+    response.timeline = response.timeline?.map((point) => {
+      const core = { ...point };
+      delete core.p95_latency_ms;
+      delete core.p95_ttft_ms;
+      return core;
+    });
+  }
+  if (include.percentiles) {
+    response.percentiles = {
+      ...(include.percentiles.summary
+        ? {
+            summary: {
+              p95_latency_ms: full.summary?.p95_latency_ms ?? null,
+              p95_ttft_ms: full.summary?.p95_ttft_ms ?? null,
+            },
+          }
+        : {}),
+      ...(include.percentiles.timeline
+        ? {
+            timeline: (full.timeline ?? []).map((point) => ({
+              bucket_ms: point.bucket_ms,
+              p95_latency_ms: point.p95_latency_ms ?? null,
+              p95_ttft_ms: point.p95_ttft_ms ?? null,
+            })),
+          }
+        : {}),
+    };
+  }
+  return clone(response);
+};
 export const getDemoAccountHistory = (
   request: MonitoringAccountHistoryRequest
 ): MonitoringAccountHistoryResponse => {
@@ -6125,6 +6239,7 @@ export const getDemoUsagePayload = () => {
 };
 
 export const getDemoUsageServiceInfo = (): UsageServiceInfo => ({
+  analyticsSectionsVersion: 1,
   service: 'cpa-manager-plus',
   mode: 'demo',
   startedAt: now() - 4 * day,

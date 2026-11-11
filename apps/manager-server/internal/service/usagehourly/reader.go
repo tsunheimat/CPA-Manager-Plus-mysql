@@ -2,8 +2,6 @@ package usagehourly
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -38,12 +36,13 @@ type Snapshot struct {
 	Prices     map[string]store.ModelPrice
 	ReadError  error
 
-	rows                   []store.UsageHourlyAggregateRow
-	pricingRows            []store.UsagePricingHourlyRow
-	fromMS                 int64
-	toMS                   int64
-	dashboardTimelineReady bool
-	analyticsTimelineReady bool
+	rows                    []store.UsageHourlyAggregateRow
+	pricingRows             []store.UsagePricingHourlyRow
+	fromMS                  int64
+	toMS                    int64
+	dashboardTimelineReady  bool
+	dashboardOffsetTimeline []store.TimelinePoint
+	analyticsTimelineReady  bool
 }
 
 type modelStatKey struct {
@@ -96,6 +95,9 @@ func (r *Reader) LoadAnalytics(
 	needsTimeline bool,
 	deletedEdges ...DeletedEdges,
 ) (Snapshot, bool) {
+	if err := ctx.Err(); err != nil {
+		return Snapshot{ReadError: err}, false
+	}
 	if !SupportsAnalyticsFilter(filter) {
 		return Snapshot{}, false
 	}
@@ -130,6 +132,9 @@ func SupportsAnalyticsFilter(filter store.AnalyticsFilter) bool {
 }
 
 func (r *Reader) loadRows(ctx context.Context, filter store.AnalyticsFilter, dashboardTimelineReady bool, analyticsTimelineReady bool, edges DeletedEdges) (Snapshot, bool) {
+	if err := ctx.Err(); err != nil {
+		return Snapshot{ReadError: err}, false
+	}
 	if !r.enabled {
 		return Snapshot{}, false
 	}
@@ -166,48 +171,49 @@ func (r *Reader) loadRows(ctx context.Context, filter store.AnalyticsFilter, das
 	}
 	dbSnapshot, err := r.store.LoadUsageHourlyPricingSnapshot(ctx, aggregateFilter, pricingFilter)
 	if err != nil {
-		if errors.Is(err, store.ErrUsagePricingCoverageIncomplete) ||
-			errors.Is(err, store.ErrUsagePricingRecoveryFailed) {
-			return Snapshot{ReadError: err}, false
-		}
-		r.logFallback(fmt.Sprintf("hourly pricing snapshot query failed: %v", err))
-		return Snapshot{}, false
+		return Snapshot{ReadError: err}, false
 	}
 	if !dbSnapshot.AggregateAvailable {
-		r.logFallback(fmt.Sprintf("permanent hourly aggregate unavailable: schema_version=%d status=%s", dbSnapshot.AggregateState.SchemaVersion, dbSnapshot.AggregateState.Status))
+		r.logFallback("permanent hourly aggregate unavailable")
 		return Snapshot{}, false
 	}
 	if !dbSnapshot.PricingAvailable {
-		r.logFallback(fmt.Sprintf("pricing hourly aggregate unavailable: schema_version=%d status=%s", dbSnapshot.PricingState.SchemaVersion, dbSnapshot.PricingState.Status))
+		r.logFallback("pricing hourly aggregate unavailable")
 		return Snapshot{}, false
+	}
+	// Resolve the offset timeline while errors can still be returned via
+	// ReadError. DashboardTimeline's legacy availability result must never hide
+	// a failed SQL read and trigger a duplicate raw request.
+	var offsetTimeline []store.TimelinePoint
+	if dashboardTimelineReady && filter.FromMS%hourMS != 0 {
+		offsetTimeline, err = r.store.HourlyTimelineBetween(ctx, filter.FromMS, filter.ToMS)
+		if err != nil {
+			return Snapshot{ReadError: err}, false
+		}
 	}
 	agg, _ := coreFromRows(dbSnapshot.AggregateRows)
 	modelStats := modelStatsFromPricingRows(dbSnapshot.PricingRows)
 
 	return Snapshot{
-		Aggregate:              agg,
-		ModelStats:             modelStats,
-		Prices:                 dbSnapshot.Prices,
-		rows:                   dbSnapshot.AggregateRows,
-		pricingRows:            dbSnapshot.PricingRows,
-		fromMS:                 filter.FromMS,
-		toMS:                   filter.ToMS,
-		dashboardTimelineReady: dashboardTimelineReady,
-		analyticsTimelineReady: analyticsTimelineReady,
+		Aggregate:               agg,
+		ModelStats:              modelStats,
+		Prices:                  dbSnapshot.Prices,
+		rows:                    dbSnapshot.AggregateRows,
+		pricingRows:             dbSnapshot.PricingRows,
+		fromMS:                  filter.FromMS,
+		toMS:                    filter.ToMS,
+		dashboardTimelineReady:  dashboardTimelineReady,
+		dashboardOffsetTimeline: offsetTimeline,
+		analyticsTimelineReady:  analyticsTimelineReady,
 	}, true
 }
 
 func (r *Reader) DashboardTimeline(ctx context.Context, snapshot Snapshot, fromMS, toMS int64) ([]store.TimelinePoint, bool) {
-	if !snapshot.dashboardTimelineReady {
+	if !snapshot.dashboardTimelineReady || fromMS != snapshot.fromMS || toMS != snapshot.toMS {
 		return nil, false
 	}
 	if fromMS%hourMS != 0 {
-		timeline, err := r.store.HourlyTimelineBetween(ctx, fromMS, toMS)
-		if err != nil {
-			r.logFallback(fmt.Sprintf("offset timeline query failed: %v", err))
-			return nil, false
-		}
-		return timeline, true
+		return snapshot.dashboardOffsetTimeline, true
 	}
 
 	return dashboardTimelineFromRows(snapshot.rows), true
