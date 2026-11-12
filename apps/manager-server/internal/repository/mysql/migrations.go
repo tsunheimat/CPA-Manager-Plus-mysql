@@ -185,6 +185,30 @@ func canonicalGeneration(s string) string {
 	return canonicalTokens(normalized)
 }
 
+// MySQL 8.4.13 also escapes quote delimiters in generation_expression metadata.
+// Decode only the two literal separators used by our digest frames, and only
+// when they are standalone utf8mb4 tokens. Never unescape SQL or literal content
+// globally; a changed separator, charset or nested expression must remain drift.
+func canonicalMetadataGeneration(s string) string {
+	tokens, err := lex(s)
+	if err != nil {
+		return s
+	}
+	var decoded []string
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i] == "_utf8mb4" && i+2 < len(tokens) && tokens[i+1] == `\` {
+			switch tokens[i+2] {
+			case `':\'`, `';\'`:
+				decoded = append(decoded, "'"+tokens[i+2][1:2]+"'")
+				i += 2
+				continue
+			}
+		}
+		decoded = append(decoded, tokens[i])
+	}
+	return canonicalGeneration(strings.Join(decoded, " "))
+}
+
 func canonicalTokens(tokens []string) string {
 	for len(tokens) > 1 && tokens[0] == "(" && closing(tokens, 0) == len(tokens)-1 {
 		tokens = tokens[1 : len(tokens)-1]
@@ -252,7 +276,7 @@ func columnMismatch(c schemaColumn, actual schemaColumnMetadata, comparedDefault
 		schemaDiagnosticValue(actual.kind), schemaDiagnosticValue(c.kind), schemaDiagnosticValue(actual.nullable), schemaDiagnosticValue(nullable),
 		actual.defaultValue.Valid, schemaDiagnosticValue(actual.defaultValue.String), schemaDiagnosticValue(comparedDefault.String), c.defaultValue.Valid, schemaDiagnosticValue(c.defaultValue.String),
 		schemaDiagnosticValue(actual.extra), extra, schemaDiagnosticValue(actual.collation), collation,
-		schemaDiagnosticValue(canonicalGeneration(actual.generated)), schemaDiagnosticValue(canonicalGeneration(c.generated)))
+		schemaDiagnosticValue(canonicalMetadataGeneration(actual.generated)), schemaDiagnosticValue(canonicalGeneration(c.generated)))
 }
 
 func validateTable(ctx context.Context, conn *sql.Conn, t schemaTable) error {
@@ -289,7 +313,7 @@ func validateTable(ctx context.Context, conn *sql.Conn, t schemaTable) error {
 		if def.Valid && c.defaultValue.Valid && c.defaultValue.String == "" && (canonicalGeneration(def.String) == "''" || escapedEmpty) {
 			def.String = ""
 		}
-		if name != c.name || kind != c.kind || (nullable == "NO") != c.notNull || def != c.defaultValue || canonicalGeneration(generated) != canonicalGeneration(c.generated) ||
+		if name != c.name || kind != c.kind || (nullable == "NO") != c.notNull || def != c.defaultValue || canonicalMetadataGeneration(generated) != canonicalGeneration(c.generated) ||
 			(c.generated != "" && extra != "STORED GENERATED") || (c.generated == "" && extra != "" && extra != "DEFAULT_GENERATED") ||
 			(c.kind == "longtext" && collation != "utf8mb4_0900_bin") {
 			rows.Close()
