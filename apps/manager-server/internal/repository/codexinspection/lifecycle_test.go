@@ -939,8 +939,8 @@ func insertLifecycleTestRun(t *testing.T, db *sql.DB, run model.CodexInspectionR
 	if run.SettingsJSON == "" {
 		run.SettingsJSON = model.MarshalCodexInspectionSettings(run.Settings)
 	}
-	if err := db.QueryRowContext(
-		context.Background(),
+	if err := sqlwrite.QueryRowContext(
+		context.Background(), db,
 		`insert into codex_inspection_runs (
 			trigger_type, trigger_key, status, started_at_ms, finished_at_ms,
 			settings_json, created_at_ms, updated_at_ms
