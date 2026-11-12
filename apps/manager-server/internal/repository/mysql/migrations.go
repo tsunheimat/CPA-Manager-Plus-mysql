@@ -282,7 +282,11 @@ func validateTable(ctx context.Context, conn *sql.Conn, t schemaTable) error {
 		c := t.columns[i]
 		i++
 		rawDefault := def
-		if def.Valid && c.defaultValue.Valid && c.defaultValue.String == "" && canonicalGeneration(def.String) == "''" {
+		// MySQL 8.4 expression-default metadata escapes quote delimiters even
+		// under NO_BACKSLASH_ESCAPES. Accept only the observed empty utf8mb4
+		// literal, not arbitrary unescaped expressions or nonempty defaults.
+		escapedEmpty := c.kind == "longtext" && extra == "DEFAULT_GENERATED" && def.String == `_utf8mb4\'\'`
+		if def.Valid && c.defaultValue.Valid && c.defaultValue.String == "" && (canonicalGeneration(def.String) == "''" || escapedEmpty) {
 			def.String = ""
 		}
 		if name != c.name || kind != c.kind || (nullable == "NO") != c.notNull || def != c.defaultValue || canonicalGeneration(generated) != canonicalGeneration(c.generated) ||

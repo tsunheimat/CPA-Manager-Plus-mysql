@@ -110,6 +110,56 @@ func assertHourlyMetadataRejected(t *testing.T, column string, field int, value 
 	}
 }
 
+func TestHourlySchemaAcceptsMySQL84EscapedEmptyDefault(t *testing.T) {
+	conn, b := migrationDB(t)
+	b.columnMetadata = hourlyMetadataFixtures()
+	// Captured independently from MySQL 8.4.13 in CI run 43135081132:
+	// information_schema escapes the expression's quote delimiters even with
+	// NO_BACKSLASH_ESCAPES enabled on the inspecting connection.
+	for _, row := range b.columnMetadata {
+		if row[1] == "longtext" && row[3] != nil {
+			row[3], row[5] = `_utf8mb4\'\'`, "DEFAULT_GENERATED"
+		}
+	}
+	ctx := context.Background()
+	if err := upgradeSchema(ctx, conn, 1); err != nil {
+		t.Fatal(err)
+	}
+	b.states["stats_hourly_v1"] = "complete:retained-hourly-progress"
+	before, creates := maps.Clone(b.states), b.creates
+	if err := upgradeSchema(ctx, conn, 2); err != nil {
+		t.Fatal(err)
+	}
+	if b.version != 2 || b.creates != creates || !reflect.DeepEqual(b.states, before) {
+		t.Fatal("native metadata restart changed schema or reset progress")
+	}
+}
+
+func TestHourlySchemaEscapedDefaultRequiresExpressionMetadata(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			conn, b := migrationDB(t)
+			b.columnMetadata = hourlyMetadataFixtures()
+			ctx := context.Background()
+			if version == 2 {
+				if err := upgradeSchema(ctx, conn, 1); err != nil {
+					t.Fatal(err)
+				}
+				b.states["stats_hourly_v1"] = "complete:retained-hourly-progress"
+			}
+			row := b.columnMetadata[[2]string{metadataAccountTable, "auth_account_id_snapshot"}]
+			row[3], row[5] = `_utf8mb4\'\'`, ""
+			before, creates := maps.Clone(b.states), b.creates
+			if err := upgradeSchema(ctx, conn, version); err == nil || !strings.Contains(err.Error(), "default(") {
+				t.Fatalf("escaped default without expression metadata accepted: %v", err)
+			}
+			if b.version != version || !reflect.DeepEqual(b.states, before) || (version == 2 && b.creates != creates) {
+				t.Fatal("rejected metadata advanced migration or changed durable progress")
+			}
+		})
+	}
+}
+
 func TestHourlySchemaRejectsLiteralDefaultMetadata(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -120,6 +170,11 @@ func TestHourlySchemaRejectsLiteralDefaultMetadata(t *testing.T) {
 		{"quoted_null", "'NULL'"},
 		{"nonempty", "'x'"},
 		{"nonempty_charset", "(_utf8mb4'x')"},
+		{"escaped_nonempty", `_utf8mb4\'x\'`},
+		{"escaped_space", `_utf8mb4\' \'`},
+		{"escaped_expression", `concat(_utf8mb4\'\',_utf8mb4\'\')`},
+		{"escaped_backslash", `_utf8mb4\'\\\'`},
+		{"escaped_unknown_charset", `_binary\'\'`},
 		{"raw_space", " "},
 		{"quoted_space", "' '"},
 		{"charset_space", "(_utf8mb4' ')"},
