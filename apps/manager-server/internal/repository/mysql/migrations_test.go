@@ -150,6 +150,9 @@ type migrationBackend struct {
 	version            int
 	failAfter, creates int
 	seedError          bool
+	// Literal information_schema rows override the DDL-derived state-machine fake.
+	// Metadata contract tests must not derive both sides from schemaTables.
+	columnMetadata map[[2]string][]driver.Value
 }
 type migrationConnector struct{ backend *migrationBackend }
 
@@ -217,6 +220,10 @@ func (c *migrationConn) QueryContext(_ context.Context, q string, args []driver.
 	if strings.Contains(q, "information_schema.columns") {
 		r := &admissionRows{cols: []string{"name", "kind", "nullable", "default", "generation", "extra", "collation"}}
 		for _, col := range table.columns {
+			if metadata, ok := b.columnMetadata[[2]string{table.name, col.name}]; ok {
+				r.values = append(r.values, metadata)
+				continue
+			}
 			nullable := "YES"
 			if col.notNull {
 				nullable = "NO"

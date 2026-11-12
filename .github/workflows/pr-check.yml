@@ -153,6 +153,12 @@ jobs:
           go-version-file: apps/manager-server/go.mod
           cache-dependency-path: apps/manager-server/go.sum
 
+      - name: Check MySQL schema compatibility
+        working-directory: apps/manager-server
+        env:
+          CPA_TEST_MYSQL_DSN: root:integration-test-password@tcp(127.0.0.1:3306)/cpamp_test
+        run: go test -p 1 -count=1 -v ./internal/repository/mysql -run '^TestMySQLHourlyDefaultMetadataRoundTrip$'
+
       - name: Test
         working-directory: apps/manager-server
         run: go test ./...

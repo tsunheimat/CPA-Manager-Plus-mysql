@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	_ "embed"
 	"fmt"
@@ -217,6 +218,43 @@ func validateHourlySchema(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+type schemaColumnMetadata struct {
+	name, kind, nullable, generated, extra, collation string
+	defaultValue                                      sql.NullString
+}
+
+// Diagnostics contain only schema attributes, never the DSN, SQL arguments or
+// stored rows. Quote control characters and bound each value; the digest still
+// distinguishes long generated expressions that differ beyond the shown prefix.
+func schemaDiagnosticValue(value string) string {
+	const maxBytes = 256
+	if len(value) > maxBytes {
+		return fmt.Sprintf("%q...(bytes=%d sha256=%x)", value[:maxBytes], len(value), sha256.Sum256([]byte(value)))
+	}
+	return fmt.Sprintf("%q", value)
+}
+
+func columnMismatch(c schemaColumn, actual schemaColumnMetadata, comparedDefault sql.NullString) error {
+	nullable := "YES"
+	if c.notNull {
+		nullable = "NO"
+	}
+	extra := `"" or "DEFAULT_GENERATED"`
+	if c.generated != "" {
+		extra = `"STORED GENERATED"`
+	}
+	collation := "<unconstrained>"
+	if c.kind == "longtext" {
+		collation = `"utf8mb4_0900_bin"`
+	}
+	return fmt.Errorf("incompatible column %s: name(actual=%s expected=%s); type(actual=%s expected=%s); nullable(actual=%s expected=%s); default(actual.Valid=%t actual=%s compared=%s expected.Valid=%t expected=%s); extra(actual=%s expected=%s); collation(actual=%s expected=%s); generation_canonical(actual=%s expected=%s)",
+		schemaDiagnosticValue(actual.name), schemaDiagnosticValue(actual.name), schemaDiagnosticValue(c.name),
+		schemaDiagnosticValue(actual.kind), schemaDiagnosticValue(c.kind), schemaDiagnosticValue(actual.nullable), schemaDiagnosticValue(nullable),
+		actual.defaultValue.Valid, schemaDiagnosticValue(actual.defaultValue.String), schemaDiagnosticValue(comparedDefault.String), c.defaultValue.Valid, schemaDiagnosticValue(c.defaultValue.String),
+		schemaDiagnosticValue(actual.extra), extra, schemaDiagnosticValue(actual.collation), collation,
+		schemaDiagnosticValue(canonicalGeneration(actual.generated)), schemaDiagnosticValue(canonicalGeneration(c.generated)))
+}
+
 func validateTable(ctx context.Context, conn *sql.Conn, t schemaTable) error {
 	var engine, collation string
 	if err := conn.QueryRowContext(ctx, `select engine,table_collation from information_schema.tables where table_schema=database() and table_name=? and table_type='BASE TABLE'`, t.name).Scan(&engine, &collation); err != nil {
@@ -243,6 +281,7 @@ func validateTable(ctx context.Context, conn *sql.Conn, t schemaTable) error {
 		}
 		c := t.columns[i]
 		i++
+		rawDefault := def
 		if def.Valid && c.defaultValue.Valid && c.defaultValue.String == "" && canonicalGeneration(def.String) == "''" {
 			def.String = ""
 		}
@@ -250,7 +289,10 @@ func validateTable(ctx context.Context, conn *sql.Conn, t schemaTable) error {
 			(c.generated != "" && extra != "STORED GENERATED") || (c.generated == "" && extra != "" && extra != "DEFAULT_GENERATED") ||
 			(c.kind == "longtext" && collation != "utf8mb4_0900_bin") {
 			rows.Close()
-			return fmt.Errorf("incompatible column %s", name)
+			return columnMismatch(c, schemaColumnMetadata{
+				name: name, kind: kind, nullable: nullable, defaultValue: rawDefault,
+				generated: generated, extra: extra, collation: collation,
+			}, def)
 		}
 	}
 	err = rows.Err()

@@ -95,12 +95,55 @@ describe('GitHub Actions workflow integrity', () => {
     expect(trigger).toContain('- edited');
   });
 
-  it('keeps Demo and Docs inside the stable required-check aggregate', () => {
+  it('keeps the Manager image builder on the authoritative Go module version', () => {
+    const module = readFileSync(path.join(repoRoot, 'apps/manager-server/go.mod'), 'utf8');
+    const dockerfile = readFileSync(path.join(repoRoot, 'Dockerfile.manager-server'), 'utf8');
+    const moduleVersion = module.match(/^go (\d+\.\d+\.\d+)$/m)?.[1];
+    const builderVersion = dockerfile.match(
+      /^FROM (?:--platform=\S+ )?golang:(\d+\.\d+\.\d+)-alpine AS service-build$/m
+    )?.[1];
+
+    expect(moduleVersion).toBeDefined();
+    expect(builderVersion).toBe(moduleVersion);
+  });
+
+  it.each(['build', 'deploy'])('excludes forks from the Pages %s job', (jobName) => {
+    const workflow = parse(readWorkflow('demo-pages.yml'));
+    const job = workflow.jobs[jobName];
+
+    expect(job.if).toBe("github.repository == 'seakee/CPA-Manager-Plus'");
+    expect(job['continue-on-error']).toBeUndefined();
+    expect(job.steps.every((step) => !step['continue-on-error'])).toBe(true);
+  });
+
+  it('preserves Pages branch, dispatch and build-before-deploy constraints', () => {
+    const workflow = parse(readWorkflow('demo-pages.yml'));
+
+    expect(workflow.on).toEqual({
+      push: { branches: ['main'] },
+      workflow_dispatch: null,
+    });
+    expect(workflow.jobs.build.needs).toBeUndefined();
+    expect(workflow.jobs.deploy.needs).toBe('build');
+  });
+
+  it('keeps Demo and Docs inside the stable required-check aggregate on forks', () => {
     const workflow = readWorkflow('pr-check.yml');
     const demoJob = jobBlock(workflow, 'demo-docs');
     const requiredJob = jobBlock(workflow, 'required');
+    const demoConfig = parse(workflow).jobs['demo-docs'];
 
     expect(demoJob).toContain('name: Demo and Docs');
+    expect(demoConfig.needs).toBe('changes');
+    expect(demoConfig.if).toBe("needs.changes.outputs.demo_docs == 'true'");
+    expect(demoConfig['continue-on-error']).toBeUndefined();
+    expect(demoConfig.steps.every((step) => !step['continue-on-error'])).toBe(true);
+    expect(demoConfig.steps.map((step) => step.run)).toEqual(
+      expect.arrayContaining([
+        'npm --workspace apps/web run build:demo:bundle',
+        'npm run docs:build',
+      ])
+    );
     expect(requiredJob).toContain('- demo-docs');
     expect(requiredJob).toContain("DEMO_DOCS_RESULT: ${{ needs['demo-docs'].result }}");
     expect(requiredJob).toContain('"Demo and Docs:${DEMO_DOCS_RESULT}"');
