@@ -560,6 +560,7 @@ describe('UsageAnalyticsPage', () => {
         'trends',
         'apiKeyTrend',
         'credentialTrend',
+        'heatmap',
         'heatmapDate',
       ].map((key) => [
         key,
@@ -622,6 +623,40 @@ describe('UsageAnalyticsPage', () => {
     expect(state.refresh).not.toHaveBeenCalled();
     act(() => renderer.unmount());
   });
+
+  it.each(['pending', 'failure'] as const)(
+    'keeps compact summary visible while the heatmap is %s',
+    (phase) => {
+      const retry = vi.fn();
+      const state = createUsageState({
+        activeTab: 'heatmap',
+        heatmap: [],
+        sections: makeSections({
+          heatmap: {
+            loaded: false,
+            loading: phase === 'pending',
+            error: phase === 'failure' ? 'heatmap deadline' : '',
+            retry,
+          },
+        }),
+      });
+      mocks.usageState = state;
+      const renderer = renderPage();
+      const text = getText(renderer.root);
+      expect(text).toContain('usage_analytics.summary_meta');
+      expect(text).toContain(phase === 'pending' ? 'common.loading' : 'heatmap deadline');
+      expect(renderer.root.findAllByType(EChartsView)).toHaveLength(0);
+      if (phase === 'failure') {
+        const alert = renderer.root.findAll(
+          (node) => node.props.role === 'alert' && getText(node).includes('heatmap deadline')
+        )[0];
+        clickHostButton(alert.findByType('button'));
+        expect(retry).toHaveBeenCalledTimes(1);
+        expect(state.refresh).not.toHaveBeenCalled();
+      }
+      act(() => renderer.unmount());
+    }
+  );
 
   it('does not render fabricated zero core metrics before the first successful response', () => {
     mocks.usageState = createUsageState({

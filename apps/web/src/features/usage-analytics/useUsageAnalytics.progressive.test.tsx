@@ -131,10 +131,10 @@ describe('progressive usage analytics with real request hooks', () => {
     }, [result]);
     return null;
   }
-  const render = async () => {
+  const render = async (route = '/') => {
     await act(async () => {
       renderer = create(
-        <MemoryRouter>
+        <MemoryRouter initialEntries={[route]}>
           <Harness />
         </MemoryRouter>
       );
@@ -220,6 +220,91 @@ describe('progressive usage analytics with real request hooks', () => {
       pending.forEach((p) => p.resolve(emptyResponse));
     });
     vi.useRealTimers();
+  });
+
+  it('keeps heatmap deadlines and retries independent of compact summary', async () => {
+    await render('/?tab=heatmap');
+    const isHeatmap = (p: Pending) => Boolean(p.request.include?.heatmap);
+    expect(next(isCore).request.include).not.toHaveProperty('heatmap');
+    expect(next(isHeatmap).request.include).toEqual({ granularity: 'hour', heatmap: true });
+    await resolve(isCore);
+    expect(latest.sections.core.loaded).toBe(true);
+    expect(latest.summary.requestCount).toBe(10);
+    expect(latest.sections.heatmap).toMatchObject({ loading: true, loaded: false });
+    await act(async () => {
+      next(isHeatmap).reject(new Error('analytics deadline'));
+    });
+    await resolve(isSelectors);
+    expect(latest.error).toBe('');
+    expect(latest.sections.heatmap).toMatchObject({
+      loading: false,
+      loaded: false,
+      error: 'analytics deadline',
+    });
+    expect(latest.summary.requestCount).toBe(10);
+    await act(async () => {
+      latest.sections.heatmap.retry();
+    });
+    await resolve(isHeatmap, {
+      ...emptyResponse,
+      heatmap: [
+        {
+          weekday: 1,
+          hour: 12,
+          calls: 10,
+          success: 9,
+          failure: 1,
+          tokens: 100,
+          cost: 2,
+          failure_rate: 0.1,
+        },
+      ],
+      coverage: { raw_complete: false } as MonitoringAnalyticsResponse['coverage'],
+    });
+    expect(latest.sections.heatmap.loaded).toBe(true);
+    expect(latest.sections.heatmap.coverage?.raw_complete).toBe(false);
+    expect(latest.coverage).toBeUndefined();
+    expect(latest.heatmap.some((point) => point.requestCount === 10)).toBe(true);
+    expect(pending.filter(isCore)).toHaveLength(1);
+    expect(peakActive).toBe(2);
+  });
+
+  it('cancels selected-date heatmaps on other tabs and does not refresh hidden dates', async () => {
+    await render('/?tab=heatmap');
+    const isHeatmap = (p: Pending) => Boolean(p.request.include?.heatmap);
+    await resolve(isCore);
+    await resolve(isHeatmap);
+    await resolve(isSelectors);
+    await act(async () => {
+      latest.selectHeatmapDate(latest.heatmapDateOptions[0].key);
+    });
+    const selectedDate = next(isHeatmap);
+    expect(selectedDate.request.from_ms).toBe(latest.heatmapDateOptions[0].fromMs);
+    await act(async () => {
+      latest.setActiveTab('models');
+    });
+    expect(selectedDate.signal.aborted).toBe(true);
+    expect(latest.sections.heatmapDate.enabled).toBe(false);
+    await act(async () => {
+      selectedDate.resolve(emptyResponse);
+    });
+    await resolve(isCore);
+    await resolve(isDimensions);
+    const count = pending.filter(isHeatmap).length;
+    await act(async () => {
+      latest.refresh();
+    });
+    await resolve(isCore);
+    await resolve(isDimensions);
+    await resolve(isSelectors);
+    expect(pending.filter(isHeatmap)).toHaveLength(count);
+  });
+
+  it('retains the combined legacy heatmap include without progressive support', async () => {
+    mocks.version = 0;
+    await render('/?tab=heatmap');
+    expect(next(isCore).request.include).toMatchObject({ summary: true, heatmap: true });
+    expect(pending.filter((p) => p.request.include?.heatmap)).toHaveLength(1);
   });
 
   it('renders compact core before exact details, limits all POSTs to two and freezes actual bounds', async () => {

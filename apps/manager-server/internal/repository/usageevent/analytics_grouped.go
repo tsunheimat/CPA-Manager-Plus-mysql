@@ -17,20 +17,25 @@ const groupedPricingDimensions = `analytics_model_value, billing_model_value, pr
 func groupedAnalyticsSQL(filter AnalyticsFilter, plan analyticsSQLBuckets, mode string) (string, []any) {
 	where, args := analyticsWhere(filter)
 	dimensions := plan.bucket + ", " + groupedPricingDimensions
+	reasoning := ", coalesce(sum(reasoning_tokens),0)"
+	latency := ", sum(case when latency_ms > 0 then latency_ms end), count(case when latency_ms > 0 then 1 end)"
 	switch mode {
 	case "api":
 		dimensions = "coalesce(api_key_hash, ''), " + dimensions
 	case "heatmap":
-		dimensions = plan.weekday + ", " + plan.hour + ", coalesce(api_key_hash, ''), coalesce(nullif(auth_provider_snapshot, ''), provider, ''), " + dimensions
+		// Heatmaps have no date grain or latency/reasoning metrics. Aggregate
+		// straight into the final weekday/hour grain instead of transferring
+		// per-date timeline rows and merging them a second time in Go.
+		dimensions = plan.weekday + ", " + plan.hour + ", coalesce(api_key_hash, ''), coalesce(nullif(auth_provider_snapshot, ''), provider, ''), " + groupedPricingDimensions
+		reasoning, latency = "", ""
 	case "credential":
 		dimensions = credentialIDExpr + `, coalesce(auth_file_snapshot,''), coalesce(auth_index,''), coalesce(source,''), coalesce(source_hash,''), coalesce(account_snapshot,''), coalesce(auth_label_snapshot,''), coalesce(nullif(auth_provider_snapshot,''),provider,''), coalesce(auth_account_id_snapshot,''), coalesce(auth_project_id_snapshot,''), ` + dimensions
 	}
 	query := pricingBandedUsageEventsCTEWithBaseFilter(strings.TrimPrefix(where, "where ")) + plan.cte + ` select ` + dimensions + `,
  count(*), coalesce(sum(total_tokens),0), sum(case when failed = 0 then 1 else 0 end), sum(case when failed != 0 then 1 else 0 end),
- coalesce(sum(` + normalizedInputExpr + `),0), coalesce(sum(output_tokens),0), coalesce(sum(reasoning_tokens),0),
+ coalesce(sum(` + normalizedInputExpr + `),0), coalesce(sum(output_tokens),0)` + reasoning + `,
  coalesce(sum(` + compatCachedExpr + `),0), coalesce(sum(cache_read_tokens),0), coalesce(sum(cache_creation_tokens),0),
- coalesce(sum(` + longInputExpr + `),0), coalesce(sum(` + longOutputExpr + `),0), coalesce(sum(` + longCachedExpr + `),0), coalesce(sum(` + longCacheReadExpr + `),0), coalesce(sum(` + longCacheCreationExpr + `),0),
- sum(case when latency_ms > 0 then latency_ms end), count(case when latency_ms > 0 then 1 end)
+ coalesce(sum(` + longInputExpr + `),0), coalesce(sum(` + longOutputExpr + `),0), coalesce(sum(` + longCachedExpr + `),0), coalesce(sum(` + longCacheReadExpr + `),0), coalesce(sum(` + longCacheCreationExpr + `),0)` + latency + `
  from banded_usage_events` + plan.join + ` group by ` + dimensions + ` order by min(timestamp_ms), analytics_model_value, billing_model_value, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')`
 	return query, append(args, plan.args...)
 }
@@ -120,47 +125,19 @@ func (r *repository) groupedHeatmap(ctx context.Context, filter AnalyticsFilter,
 
 func readGroupedHeatmap(rows *sql.Rows) ([]HeatmapPoint, error) {
 	defer rows.Close()
-	// The SQL grain includes the exact bucket for sharing the timeline scanner.
-	// Merge different dates with the same weekday/hour into their final heatmap.
-	type key struct {
-		weekday, hour                                int
-		api, provider, model, billing, pricing, tier string
-		threshold                                    int64
-	}
-	index := map[key]int{}
 	result := []HeatmapPoint{}
 	for rows.Next() {
-		var p TimelinePoint
-		var h HeatmapPoint
-		if err := scanGroupedTimeline(rows, &p, &h.Weekday, &h.Hour, &h.APIKeyHash, &h.Provider); err != nil {
+		var p HeatmapPoint
+		if err := rows.Scan(
+			&p.Weekday, &p.Hour, &p.APIKeyHash, &p.Provider,
+			&p.Model, &p.BillingModel, &p.PricingModel, &p.ContextThresholdTokens, &p.ServiceTier,
+			&p.Calls, &p.TotalTokens, &p.SuccessCalls, &p.FailureCalls,
+			&p.InputTokens, &p.OutputTokens, &p.CachedTokens, &p.CacheReadTokens, &p.CacheCreationTokens,
+			&p.LongInputTokens, &p.LongOutputTokens, &p.LongCachedTokens, &p.LongCacheReadTokens, &p.LongCacheCreationTokens,
+		); err != nil {
 			return nil, err
 		}
-		k := key{h.Weekday, h.Hour, h.APIKeyHash, h.Provider, p.Model, p.BillingModel, p.PricingModel, p.ServiceTier, p.ContextThresholdTokens}
-		i, ok := index[k]
-		if !ok {
-			i = len(result)
-			index[k] = i
-			h.Model = p.Model
-			h.BillingModel = p.BillingModel
-			h.ServiceTier = p.ServiceTier
-			h.PricingBand = p.PricingBand
-			result = append(result, h)
-		}
-		out := &result[i]
-		out.Calls += p.Calls
-		out.SuccessCalls += p.Success
-		out.FailureCalls += p.Failure
-		out.InputTokens += p.InputTokens
-		out.OutputTokens += p.OutputTokens
-		out.CachedTokens += p.CachedTokens
-		out.CacheReadTokens += p.CacheReadTokens
-		out.CacheCreationTokens += p.CacheCreationTokens
-		out.TotalTokens += p.Tokens
-		out.LongInputTokens += p.LongInputTokens
-		out.LongOutputTokens += p.LongOutputTokens
-		out.LongCachedTokens += p.LongCachedTokens
-		out.LongCacheReadTokens += p.LongCacheReadTokens
-		out.LongCacheCreationTokens += p.LongCacheCreationTokens
+		result = append(result, p)
 	}
 	return result, rows.Err()
 }

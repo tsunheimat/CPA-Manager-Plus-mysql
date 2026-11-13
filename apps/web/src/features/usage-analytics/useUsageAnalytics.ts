@@ -482,7 +482,7 @@ export function useUsageAnalytics() {
     [analyticsFilters, debouncedSearchQuery, selectedHeatmapDate]
   );
   const heatmapDateAnalytics = useMonitoringAnalytics({
-    enabled: !availability.checking,
+    enabled: !availability.checking && activeTabState === 'heatmap' && Boolean(selectedHeatmapDate),
     fetchGenerationKey,
     scheduler,
     timeZone: browserTimeZone,
@@ -606,7 +606,7 @@ export function useUsageAnalytics() {
   const heatmapDetailSource = selectedHeatmapDate ? heatmapDateRows : adapted.heatmap;
   const heatmapDateSection = analyticsSectionState(
     heatmapDateAnalytics,
-    Boolean(selectedHeatmapDate)
+    activeTabState === 'heatmap' && Boolean(selectedHeatmapDate)
   );
   const summaryDelta = useMemo(
     () => buildUsageSummaryDelta(adapted.summary, adapted.summaryComparison),
@@ -965,6 +965,10 @@ export function useUsageAnalytics() {
     credentialTrend: analyticsSectionState(
       selectedCredentialTimelineAnalytics,
       activeTabState === 'credentials' && Boolean(selectedCredentialFilterID)
+    ),
+    heatmap: analyticsSectionState(
+      progressive ? dimensionsAnalytics : analytics,
+      activeTabState === 'heatmap'
     ),
     heatmapDate: heatmapDateSection,
     metadata: {

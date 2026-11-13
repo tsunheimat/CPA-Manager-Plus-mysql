@@ -147,6 +147,21 @@ Increase to one million or representative production cardinality only after esti
 
 `internal/analyticsbench/BenchmarkUsageAnalyticsRollingWindow` explicitly wires `CPA_MYSQL_BENCH_NATIVE_READS`, `CPA_MYSQL_BENCH_BULK_WRITES`, and `CPA_MYSQL_BENCH_HOURLY` (`1` or `true`) into the store. All default off. It uses fixed nonmidnight 24-hour bounds, varied latency/TTFT values, ready initial rollups, and separate core, exact, concurrent core/selector, and concurrent core/selector/ingestion profiles. Ingested timestamps are beyond the frozen request window, so concurrent writes do not change the expected in-window totals. This is in-process service measurement, not browser/proxy measurement; it does not substitute for the larger retained-history/rebuild matrix below.
 
+`internal/analyticsbench/BenchmarkUsageAnalyticsHeatmap` covers fixed nonmidnight seven-/30-day windows in `Asia/Hong_Kong`, both heatmap-only and compact-summary-plus-heatmap requests. It uses the same three explicit flag inputs, synthetic pricing tiers, and up to 1,009 API keys, five providers, and 12 models. Setup/catch-up and one warmup request are excluded from the timed loop; each timed request checks calls/tokens/status totals and, for combined requests, summary/heatmap cost consistency. The normal service deadline remains enforced: a timeout fails the benchmark rather than being hidden by a larger timeout. This fixture is not a production dump, does not simulate collection gaps or retained history, and does not prove production performance. Native reads being enabled does not imply an aggregate-backed heatmap source.
+
+**Remaining heatmap limit:** the native heatmap still prices and groups filtered raw `usage_events`; it does not read the monitoring-hourly tables. `USAGE_MYSQL_HOURLY_ENABLED` therefore does not select a rollup-backed heatmap. Progressive loading now isolates heatmap from summary, and the SQL omits unused timeline metrics/date grouping, but neither is evidence that the original seven-day request meets its deadline. An aggregate-backed reader needs exact pricing/contributor dimensions, timezone and partial-hour handling, late-event tails, and verified retained coverage before it can replace this source safely.
+
+For a targeted reference/native comparison, keep the event count, hardware, and other flags identical and change only `CPA_MYSQL_BENCH_NATIVE_READS` between `false` and `true`:
+
+```sh
+CPA_MYSQL_BENCHMARK_DISPOSABLE=1 \
+CPA_MYSQL_BENCH_NATIVE_READS=true \
+CPA_MYSQL_BENCH_BULK_WRITES=false \
+CPA_MYSQL_BENCH_HOURLY=false \
+CPA_MANAGER_MONITORING_BENCH_EVENTS=100000 \
+bash bin/ci/bench-mysql-analytics.sh -bench '^BenchmarkUsageAnalyticsHeatmap$'
+```
+
 The older `internal/service/monitoring` benchmarks retain their own fixture/options behavior. Check each benchmark's flags and coverage state: an environment variable does not magically enable a fast path in a test that constructs a default store directly.
 
 A Go benchmark's average `ns/op` and a few repeated benchmark means are **not** p95/p99 request latency. Use a controlled request-level workload for tail latency and error rate. Report fixture construction separately from measured requests.
@@ -175,7 +190,7 @@ No production SLA or measured speedup is supplied by this document. Establish nu
 1. Identify the exact failed URL and sanitized include profile. The page also loads metadata; a metadata error does not prove MySQL analytics failed.
 2. Record request bounds, timezone, filters, elapsed time and HTTP/error code. Browser deadline, server analytics budget, driver socket timeout, proxy deadline and admission rejection are different outcomes.
 3. Replay the same request sequentially on staging. Disable summary percentiles, then disable **both** timeline and anomaly work, then compare compact core and each optional section. Overlapping stages make simple wall-clock subtraction misleading.
-4. Correlate request stages with pool/admission wait, active MySQL statements, statement digest deltas, current rollup coverage and resource evidence. Many occupied client connections with few active SQL statements can mean application-side waiting rather than InnoDB blocking.
+4. Correlate request stages with pool/admission wait, active MySQL statements, statement digest deltas, current rollup coverage and resource evidence. Background sections log `<section>_admission` separately from `<section>_read`, while retaining `<section>_prefetch` for their combined elapsed time. Admission includes local/shared query and percentile capacity waits; read includes repository execution, database-pool wait, row transfer and repository-side processing, not just SQL execution. A deadline during admission emits no read stage. Many occupied client connections with few active SQL statements can mean application-side waiting rather than InnoDB blocking.
 5. Capture actual translated SQL with safe bound values in a controlled environment. Start with `EXPLAIN FORMAT=TREE` or `FORMAT=JSON`. `EXPLAIN ANALYZE` executes the query; use it only for bounded approved staging measurements.
 
 Useful database evidence includes index definitions and cardinalities, statement timer/row/temp/sort counters, metadata/data-lock waits, transaction age, buffer-pool behavior, storage latency, and Manager-to-database RTT. Counts and sizes may be estimates; cumulative counters require before/after deltas. Session settings in an unrelated CLI connection do not necessarily equal the application's forced session settings. SQL cannot expose Go admission or mutex waits.

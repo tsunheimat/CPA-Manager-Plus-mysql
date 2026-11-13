@@ -79,7 +79,11 @@ func (g *analyticsQueryGroup) GoStage(stage string, query func(context.Context) 
 		defer g.waitGroup.Done()
 		started := time.Now()
 		var err error
+		admitted := false
 		defer func() {
+			if !admitted {
+				logAnalyticsStage(g.ctx, stage+"_admission", started, err)
+			}
 			logAnalyticsStage(g.ctx, stage+"_prefetch", started, err)
 			if err != nil {
 				g.errorOnce.Do(func() { g.err = err; g.cancel() })
@@ -108,7 +112,11 @@ func (g *analyticsQueryGroup) GoStage(stage string, query func(context.Context) 
 			}
 			defer releaseShared()
 		}
+		admitted = true
+		logAnalyticsStage(g.ctx, stage+"_admission", started, nil)
+		readStarted := time.Now()
 		err = query(g.ctx)
+		logAnalyticsStage(g.ctx, stage+"_read", readStarted, err)
 	}()
 }
 

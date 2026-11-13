@@ -40,9 +40,37 @@ describe('analytics section semantics', () => {
       expect(core).not.toHaveProperty('api_key_stats');
       expect(core).not.toHaveProperty('channel_share');
       expect(core).not.toHaveProperty('credential_stats');
+      expect(core).not.toHaveProperty('heatmap');
+      if (tab === 'heatmap') expect(dimensions.heatmap).toBe(true);
       expect(dimensions).not.toHaveProperty('summary');
       if (core.timeline) expect(core.timeline_profile).toBe('core');
     }
+  });
+  it('merges heatmap data without replacing compact core coverage or totals', () => {
+    const core: MonitoringAnalyticsResponse = {
+      ...response,
+      summary: { total_calls: 8 } as MonitoringAnalyticsSummary,
+    };
+    const heatmap: MonitoringAnalyticsResponse = {
+      ...response,
+      heatmap: [
+        {
+          weekday: 1,
+          hour: 12,
+          calls: 8,
+          success: 7,
+          failure: 1,
+          tokens: 100,
+          cost: 2,
+          failure_rate: 0.125,
+        },
+      ],
+      coverage: { raw_complete: false } as MonitoringAnalyticsResponse['coverage'],
+    };
+    const merged = mergeUsageAnalyticsSections(core, heatmap, null, null)!;
+    expect(merged.heatmap).toEqual(heatmap.heatmap);
+    expect(merged.summary?.total_calls).toBe(8);
+    expect(merged.coverage).toBeUndefined();
   });
   it('distinguishes empty success, missing explicit metrics, failure, and stale data', () => {
     const analytics: UseMonitoringAnalyticsReturn = {

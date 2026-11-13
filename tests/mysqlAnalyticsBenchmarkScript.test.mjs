@@ -58,7 +58,7 @@ describe('MySQL analytics benchmark guardrails', () => {
           CPA_MYSQL_BENCHMARK_COUNT: '4',
           BENCHMARK_TEST_OUTPUT: output,
         },
-        ['-timeout=10m']
+        ['-timeout=10m', '-bench', '^BenchmarkUsageAnalyticsHeatmap$']
       );
       expect(result.status).toBe(0);
       const lines = readFileSync(output, 'utf8').trim().split('\n');
@@ -79,6 +79,8 @@ describe('MySQL analytics benchmark guardrails', () => {
         './internal/service/monitoring',
         './internal/analyticsbench',
         '-timeout=10m',
+        '-bench',
+        '^BenchmarkUsageAnalyticsHeatmap$',
       ]);
       expect(result.stdout + result.stderr).not.toContain('fake-only-never-connected');
     } finally {

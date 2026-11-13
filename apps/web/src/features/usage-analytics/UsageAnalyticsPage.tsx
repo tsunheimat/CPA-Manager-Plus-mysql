@@ -2607,6 +2607,7 @@ function UsageAnalyticsPageInner() {
     { value: 'miss', label: t('usage_analytics.cache_status_miss') },
   ];
   const coreReady = !usage.sections || usage.sections.core.loaded;
+  const heatmapReady = !usage.sections?.heatmap || usage.sections.heatmap.loaded;
   const dimensionsReady =
     !usage.sections || !usage.sections.dimensions.enabled || usage.sections.dimensions.loaded;
   const noData =
@@ -3598,94 +3599,104 @@ function UsageAnalyticsPageInner() {
       {coreReady && usage.activeTab === 'heatmap' ? (
         <>
           <UsageSummarySection cards={heatmapSummaryCards} />
-          <section className={styles.chartPanel}>
-            <div className={`${styles.panelHeader} ${styles.heatmapPanelHeader}`}>
-              <div>
-                <h2>{t('usage_analytics.heatmap_title')}</h2>
-                <p>
-                  {t('usage_analytics.heatmap_hint')}{' '}
-                  {t('usage_analytics.heatmap_timezone_hint', {
-                    timeZone: usage.browserTimeZone,
-                  })}
-                </p>
-              </div>
-              <div className={styles.heatmapToolbar}>
-                <div
-                  className={`${styles.segmentedControl} ${styles.heatmapSegmented}`}
-                  aria-label={t('usage_analytics.filter_metric')}
-                >
-                  {heatmapMetricOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      aria-pressed={usage.heatmapMetric === option.value}
-                      className={`${styles.segmentButton} ${
-                        usage.heatmapMetric === option.value ? styles.segmentButtonActive : ''
-                      }`}
-                      onClick={() => usage.setHeatmapMetric(option.value)}
+          <AnalyticsSection
+            state={usage.sections?.heatmap}
+            title={t('usage_analytics.heatmap_title')}
+          />
+          {heatmapReady ? (
+            <>
+              <section className={styles.chartPanel}>
+                <div className={`${styles.panelHeader} ${styles.heatmapPanelHeader}`}>
+                  <div>
+                    <h2>{t('usage_analytics.heatmap_title')}</h2>
+                    <p>
+                      {t('usage_analytics.heatmap_hint')}{' '}
+                      {t('usage_analytics.heatmap_timezone_hint', {
+                        timeZone: usage.browserTimeZone,
+                      })}
+                    </p>
+                  </div>
+                  <div className={styles.heatmapToolbar}>
+                    <div
+                      className={`${styles.segmentedControl} ${styles.heatmapSegmented}`}
+                      aria-label={t('usage_analytics.filter_metric')}
                     >
-                      {t(option.labelKey)}
-                    </button>
-                  ))}
-                </div>
-                <div
-                  className={`${styles.segmentedControl} ${styles.heatmapSegmented}`}
-                  aria-label={t('usage_analytics.heatmap_scale_label')}
-                >
-                  {heatmapScaleOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      aria-pressed={usage.heatmapScaleMode === option.value}
-                      className={`${styles.segmentButton} ${
-                        usage.heatmapScaleMode === option.value ? styles.segmentButtonActive : ''
-                      }`}
-                      onClick={() => usage.setHeatmapScaleMode(option.value)}
+                      {heatmapMetricOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          aria-pressed={usage.heatmapMetric === option.value}
+                          className={`${styles.segmentButton} ${
+                            usage.heatmapMetric === option.value ? styles.segmentButtonActive : ''
+                          }`}
+                          onClick={() => usage.setHeatmapMetric(option.value)}
+                        >
+                          {t(option.labelKey)}
+                        </button>
+                      ))}
+                    </div>
+                    <div
+                      className={`${styles.segmentedControl} ${styles.heatmapSegmented}`}
+                      aria-label={t('usage_analytics.heatmap_scale_label')}
                     >
-                      {t(option.labelKey)}
-                    </button>
-                  ))}
+                      {heatmapScaleOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          aria-pressed={usage.heatmapScaleMode === option.value}
+                          className={`${styles.segmentButton} ${
+                            usage.heatmapScaleMode === option.value
+                              ? styles.segmentButtonActive
+                              : ''
+                          }`}
+                          onClick={() => usage.setHeatmapScaleMode(option.value)}
+                        >
+                          {t(option.labelKey)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-            <UsageHeatmapChart
-              metric={usage.heatmapMetric}
-              points={usage.heatmap}
-              scaleMode={usage.heatmapScaleMode}
-              selectedCell={usage.selectedHeatmapCell}
-              onSelect={usage.selectHeatmapCell}
-            />
-          </section>
-          <section className={styles.heatmapWorkspace}>
-            {usage.selectedHeatmapCell ? (
-              <>
-                <AnalyticsSection
-                  state={usage.sections?.heatmapDate}
-                  title={t('usage_analytics.heatmap_detail_title')}
-                />
-                <HeatmapDetailPanel
-                  dateError={usage.heatmapDateError}
-                  dateLoading={usage.heatmapDateLoading}
-                  dateLoaded={usage.heatmapDateLoaded}
-                  dateOptions={usage.heatmapDateOptions}
-                  detail={usage.heatmapDetail}
+                <UsageHeatmapChart
                   metric={usage.heatmapMetric}
+                  points={usage.heatmap}
+                  scaleMode={usage.heatmapScaleMode}
                   selectedCell={usage.selectedHeatmapCell}
-                  selectedDateKey={usage.selectedHeatmapDateKey}
-                  timeZone={usage.browserTimeZone}
-                  onClear={() => usage.selectHeatmapCell(null)}
-                  onSelectDate={usage.selectHeatmapDate}
+                  onSelect={usage.selectHeatmapCell}
                 />
-              </>
-            ) : (
-              <HeatmapHighlightsPanel
-                highlights={usage.heatmapHighlights}
-                selectedCell={usage.selectedHeatmapCell}
-                timeZone={usage.browserTimeZone}
-                onSelect={usage.selectHeatmapCell}
-              />
-            )}
-          </section>
+              </section>
+              <section className={styles.heatmapWorkspace}>
+                {usage.selectedHeatmapCell ? (
+                  <>
+                    <AnalyticsSection
+                      state={usage.sections?.heatmapDate}
+                      title={t('usage_analytics.heatmap_detail_title')}
+                    />
+                    <HeatmapDetailPanel
+                      dateError={usage.heatmapDateError}
+                      dateLoading={usage.heatmapDateLoading}
+                      dateLoaded={usage.heatmapDateLoaded}
+                      dateOptions={usage.heatmapDateOptions}
+                      detail={usage.heatmapDetail}
+                      metric={usage.heatmapMetric}
+                      selectedCell={usage.selectedHeatmapCell}
+                      selectedDateKey={usage.selectedHeatmapDateKey}
+                      timeZone={usage.browserTimeZone}
+                      onClear={() => usage.selectHeatmapCell(null)}
+                      onSelectDate={usage.selectHeatmapDate}
+                    />
+                  </>
+                ) : (
+                  <HeatmapHighlightsPanel
+                    highlights={usage.heatmapHighlights}
+                    selectedCell={usage.selectedHeatmapCell}
+                    timeZone={usage.browserTimeZone}
+                    onSelect={usage.selectHeatmapCell}
+                  />
+                )}
+              </section>
+            </>
+          ) : null}
         </>
       ) : null}
     </div>

@@ -54,7 +54,9 @@ export function buildUsageAnalyticsSections(
 ) {
   const core = buildUsageAnalyticsInclude(tab, granularity);
   const dimensions: MonitoringAnalyticsInclude = { granularity };
-  for (const key of ['channel_share', 'api_key_stats', 'credential_stats'] as const) {
+  // Heatmap pricing can scan the entire raw range. Keep it out of the compact
+  // summary POST, just like the other independently retriable dimensions.
+  for (const key of ['channel_share', 'api_key_stats', 'credential_stats', 'heatmap'] as const) {
     if (core[key]) {
       dimensions[key] = true;
       delete core[key];
@@ -90,6 +92,7 @@ export function mergeUsageAnalyticsSections(
           api_key_stats: dimensions.api_key_stats,
           credential_stats: dimensions.credential_stats,
           channel_share: dimensions.channel_share,
+          heatmap: dimensions.heatmap,
         }
       : {}),
     anomaly_points: exact?.anomaly_points,
