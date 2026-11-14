@@ -86,7 +86,7 @@ func (s *Service) Info(ctx context.Context) (InfoResult, error) {
 	}
 	sectionsVersion := 0
 	if s.cfg.AnalyticsProgressiveEnabled {
-		sectionsVersion = 1
+		sectionsVersion = 2
 	}
 	return InfoResult{
 		AnalyticsSectionsVersion: sectionsVersion,

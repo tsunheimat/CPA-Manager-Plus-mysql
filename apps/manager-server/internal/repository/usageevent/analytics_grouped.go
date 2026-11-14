@@ -3,7 +3,6 @@ package usageevent
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
@@ -16,22 +15,26 @@ const groupedPricingDimensions = `analytics_model_value, billing_model_value, pr
 // each event's band and normalized tokens, never a band inferred from a sum.
 func groupedAnalyticsSQL(filter AnalyticsFilter, plan analyticsSQLBuckets, mode string) (string, []any) {
 	where, args := analyticsWhere(filter)
+	fields := pricingTimelineFields
 	dimensions := plan.bucket + ", " + groupedPricingDimensions
 	reasoning := ", coalesce(sum(reasoning_tokens),0)"
 	latency := ", sum(case when latency_ms > 0 then latency_ms end), count(case when latency_ms > 0 then 1 end)"
 	switch mode {
 	case "api":
+		fields = pricingAPIKeyTimelineFields
 		dimensions = "coalesce(api_key_hash, ''), " + dimensions
 	case "heatmap":
+		fields = pricingHeatmapFields
 		// Heatmaps have no date grain or latency/reasoning metrics. Aggregate
 		// straight into the final weekday/hour grain instead of transferring
 		// per-date timeline rows and merging them a second time in Go.
 		dimensions = plan.weekday + ", " + plan.hour + ", coalesce(api_key_hash, ''), coalesce(nullif(auth_provider_snapshot, ''), provider, ''), " + groupedPricingDimensions
 		reasoning, latency = "", ""
 	case "credential":
+		fields = pricingCredentialTimelineFields
 		dimensions = credentialIDExpr + `, coalesce(auth_file_snapshot,''), coalesce(auth_index,''), coalesce(source,''), coalesce(source_hash,''), coalesce(account_snapshot,''), coalesce(auth_label_snapshot,''), coalesce(nullif(auth_provider_snapshot,''),provider,''), coalesce(auth_account_id_snapshot,''), coalesce(auth_project_id_snapshot,''), ` + dimensions
 	}
-	query := pricingBandedUsageEventsCTEWithBaseFilter(strings.TrimPrefix(where, "where ")) + plan.cte + ` select ` + dimensions + `,
+	query := pricingBandedUsageEventsCTEWithBaseFilter(where, fields) + plan.cte + ` select ` + dimensions + `,
  count(*), coalesce(sum(total_tokens),0), sum(case when failed = 0 then 1 else 0 end), sum(case when failed != 0 then 1 else 0 end),
  coalesce(sum(` + normalizedInputExpr + `),0), coalesce(sum(output_tokens),0)` + reasoning + `,
  coalesce(sum(` + compatCachedExpr + `),0), coalesce(sum(cache_read_tokens),0), coalesce(sum(cache_creation_tokens),0),
@@ -58,6 +61,10 @@ func scanGroupedTimeline(rows *sql.Rows, point *TimelinePoint, prefix ...any) er
 }
 
 func (r *repository) groupedAnalyticsRows(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location, mode string) (*sql.Rows, bool, error) {
+	return r.groupedAnalyticsRowsOn(ctx, r.db, filter, granularity, location, mode)
+}
+
+func (r *repository) groupedAnalyticsRowsOn(ctx context.Context, queryer SQLQueryer, filter AnalyticsFilter, granularity string, location *time.Location, mode string) (*sql.Rows, bool, error) {
 	if !r.mysqlAnalytics || !mysql.IsMySQL(r.db) {
 		return nil, false, nil
 	}
@@ -70,7 +77,7 @@ func (r *repository) groupedAnalyticsRows(ctx context.Context, filter AnalyticsF
 	if err != nil {
 		return nil, true, err
 	}
-	rows, err := r.db.QueryContext(ctx, mysql.Native(query), args...)
+	rows, err := queryer.QueryContext(ctx, mysql.Native(query), args...)
 	return rows, true, err
 }
 
@@ -177,8 +184,8 @@ func (r *repository) groupedHourlyDistribution(ctx context.Context, filter Analy
 	return result, true, rows.Err()
 }
 
-func (r *repository) groupedCredentialTimeline(ctx context.Context, filter AnalyticsFilter, granularity string, location *time.Location) ([]CredentialTimelinePoint, bool, error) {
-	rows, available, err := r.groupedAnalyticsRows(ctx, filter, granularity, location, "credential")
+func (r *repository) groupedCredentialTimelineOn(ctx context.Context, queryer SQLQueryer, filter AnalyticsFilter, granularity string, location *time.Location) ([]CredentialTimelinePoint, bool, error) {
+	rows, available, err := r.groupedAnalyticsRowsOn(ctx, queryer, filter, granularity, location, "credential")
 	if err != nil || !available {
 		return nil, available, err
 	}

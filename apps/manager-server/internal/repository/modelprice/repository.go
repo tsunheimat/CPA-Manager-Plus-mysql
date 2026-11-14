@@ -20,6 +20,9 @@ var ErrStructureChangeAfterRawDeletion = errors.New("model price structure canno
 type Repository interface {
 	LoadAll(ctx context.Context) (map[string]model.ModelPrice, error)
 	LoadAllTx(ctx context.Context, tx *sql.Tx) (map[string]model.ModelPrice, error)
+	// LoadRates omits management metadata but retains every cost field and tier.
+	LoadRates(ctx context.Context) (map[string]model.ModelPrice, error)
+	LoadRatesTx(ctx context.Context, tx *sql.Tx) (map[string]model.ModelPrice, error)
 	ReplaceAll(ctx context.Context, prices map[string]model.ModelPrice) error
 	UpsertSynced(ctx context.Context, prices map[string]model.ModelPrice) (model.ModelPriceSyncResult, error)
 }
@@ -51,12 +54,20 @@ func New(db *sql.DB) Repository {
 }
 
 func (r *repository) LoadAll(ctx context.Context) (map[string]model.ModelPrice, error) {
+	return r.load(ctx, true)
+}
+
+func (r *repository) LoadRates(ctx context.Context) (map[string]model.ModelPrice, error) {
+	return r.load(ctx, false)
+}
+
+func (r *repository) load(ctx context.Context, metadata bool) (map[string]model.ModelPrice, error) {
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	prices, err := r.LoadAllTx(ctx, tx)
+	prices, err := r.loadTx(ctx, tx, metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -67,14 +78,28 @@ func (r *repository) LoadAll(ctx context.Context) (map[string]model.ModelPrice, 
 }
 
 func (r *repository) LoadAllTx(ctx context.Context, tx *sql.Tx) (map[string]model.ModelPrice, error) {
-	rows, err := tx.QueryContext(ctx, `select
-		model, prompt_per_1m, completion_per_1m, cache_per_1m, cache_read_per_1m, cache_creation_per_1m,
-		prompt_configured, completion_configured, cache_read_configured, cache_creation_configured, source, source_model_id, raw_json,
-		updated_at_ms, synced_at_ms
-		from model_prices order by model`)
+	return r.loadTx(ctx, tx, true)
+}
+
+// LoadRatesTx participates in the caller's snapshot; it neither commits nor
+// caches the book. Numeric rates and service tiers can change without a revision.
+func (r *repository) LoadRatesTx(ctx context.Context, tx *sql.Tx) (map[string]model.ModelPrice, error) {
+	return r.loadTx(ctx, tx, false)
+}
+
+const rateColumns = `model, prompt_per_1m, completion_per_1m, cache_per_1m, cache_read_per_1m, cache_creation_per_1m,
+	prompt_configured, completion_configured, cache_read_configured, cache_creation_configured`
+
+func (r *repository) loadTx(ctx context.Context, tx *sql.Tx, metadata bool) (map[string]model.ModelPrice, error) {
+	columns := rateColumns
+	if metadata {
+		columns += `, source, source_model_id, raw_json, updated_at_ms, synced_at_ms`
+	}
+	rows, err := tx.QueryContext(ctx, `select `+columns+` from model_prices order by model`)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 
 	prices := map[string]model.ModelPrice{}
 	for rows.Next() {
@@ -83,7 +108,7 @@ func (r *repository) LoadAllTx(ctx context.Context, tx *sql.Tx) (map[string]mode
 		var source, sourceModelID, rawJSON sql.NullString
 		var syncedAt sql.NullInt64
 		var promptConfigured, completionConfigured, cacheReadConfigured, cacheCreationConfigured configuredFlag
-		if err := rows.Scan(
+		targets := []any{
 			&modelID,
 			&price.Prompt,
 			&price.Completion,
@@ -94,12 +119,11 @@ func (r *repository) LoadAllTx(ctx context.Context, tx *sql.Tx) (map[string]mode
 			&completionConfigured,
 			&cacheReadConfigured,
 			&cacheCreationConfigured,
-			&source,
-			&sourceModelID,
-			&rawJSON,
-			&price.UpdatedAtMS,
-			&syncedAt,
-		); err != nil {
+		}
+		if metadata {
+			targets = append(targets, &source, &sourceModelID, &rawJSON, &price.UpdatedAtMS, &syncedAt)
+		}
+		if err := rows.Scan(targets...); err != nil {
 			return nil, err
 		}
 		price.Source = source.String
@@ -130,6 +154,7 @@ func (r *repository) LoadAllTx(ctx context.Context, tx *sql.Tx) (map[string]mode
 	if err != nil {
 		return nil, err
 	}
+	defer tierRows.Close()
 	for tierRows.Next() {
 		var modelID string
 		var tier model.ModelPriceContextTier
@@ -177,6 +202,7 @@ func (r *repository) LoadAllTx(ctx context.Context, tx *sql.Tx) (map[string]mode
 	if err != nil {
 		return nil, err
 	}
+	defer serviceTierRows.Close()
 	for serviceTierRows.Next() {
 		var modelID string
 		var tier model.ModelPriceServiceTier

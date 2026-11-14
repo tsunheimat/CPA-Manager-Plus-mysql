@@ -25,6 +25,13 @@ const (
 // The time predicate stays inside each arm so a partial-hour read never scans
 // the full projection table. Live raw rows supply the rest of the edge.
 func RetainedEdgeSource(fromMS, toMS int64) string {
+	source, _ := UnionEventSources(RetainedEdgeSourceArms(fromMS, toMS))
+	return source
+}
+
+// RetainedEdgeSourceArms preserves the edge helper's archive-reference multiset.
+// It intentionally does not adopt the rebuild/recovery source's stronger proof.
+func RetainedEdgeSourceArms(fromMS, toMS int64) []EventSourceArm {
 	columns := []string{
 		"timestamp_ms", "model", "requested_model", "resolved_model", "service_tier", "failed",
 		"input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_tokens",
@@ -32,15 +39,14 @@ func RetainedEdgeSource(fromMS, toMS int64) string {
 		"provider", "auth_index", "source", "source_hash", "account_snapshot", "auth_label_snapshot",
 		"auth_file_snapshot", "auth_provider_snapshot", "auth_project_id_snapshot", "auth_account_id_snapshot",
 	}
-	return fmt.Sprintf(`(select e.id, e.%s from usage_events e
-		where e.timestamp_ms >= %d and e.timestamp_ms < %d
-		union all
-		select p.event_id as id, p.%s from usage_archive_event_refs archived
-		join %s p on p.event_id = archived.raw_event_id
-		where archived.raw_deleted_at_ms is not null
-			and archived.timestamp_ms >= %d and archived.timestamp_ms < %d)`,
-		strings.Join(columns, ", e."), fromMS, toMS,
-		strings.Join(columns, ", p."), EventTable, fromMS, toMS)
+	return []EventSourceArm{
+		{From: fmt.Sprintf(`(select e.id, e.%s from usage_events e
+			where e.timestamp_ms >= %d and e.timestamp_ms < %d)`, strings.Join(columns, ", e."), fromMS, toMS)},
+		{From: fmt.Sprintf(`(select p.event_id as id, p.%s from usage_archive_event_refs archived
+			join %s p on p.event_id = archived.raw_event_id
+			where archived.raw_deleted_at_ms is not null
+				and archived.timestamp_ms >= %d and archived.timestamp_ms < %d)`, strings.Join(columns, ", p."), EventTable, fromMS, toMS)},
+	}
 }
 
 func VerifyRetainedEdgeTx(ctx context.Context, tx *sql.Tx, fromMS, toMS int64) error {

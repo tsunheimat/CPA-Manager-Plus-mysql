@@ -15,16 +15,36 @@ const mocks = vi.hoisted(() => ({
   checking: false,
   meta: vi.fn(),
   aliases: vi.fn(),
+  getPrices: vi.fn(),
+  savePrices: vi.fn(),
+  loadLocalPrices: vi.fn(),
+  clearLocalPrices: vi.fn(),
+  notify: vi.fn(),
   auth: { apiBase: 'https://panel.test', managementKey: 'test' },
 }));
 vi.mock('@/services/api/usageService', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/api/usageService')>()),
   monitoringAnalyticsApi: { getAnalytics: mocks.getAnalytics },
+  usageServiceApi: {
+    getApiKeyAliases: mocks.aliases,
+    getModelPrices: mocks.getPrices,
+    saveModelPrices: mocks.savePrices,
+  },
+}));
+vi.mock('@/utils/usage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/utils/usage')>()),
+  loadModelPrices: mocks.loadLocalPrices,
+  clearModelPrices: mocks.clearLocalPrices,
+}));
+vi.mock('@/stores/useNotificationStore', () => ({
+  useNotificationStore: { getState: () => ({ showNotification: mocks.notify }) },
 }));
 vi.mock('@/hooks/usePanelFeatureAvailability', () => ({
   usePanelFeatureAvailability: () => ({
     analyticsSectionsVersion: mocks.version,
     checking: mocks.checking,
+    modelPricesAvailable: true,
+    managerServiceBase: 'https://manager.test',
   }),
 }));
 vi.mock('@/hooks/useRequestMonitoringAvailability', () => ({
@@ -34,9 +54,6 @@ vi.mock('@/hooks/useRequestMonitoringAvailability', () => ({
     serviceBase: 'https://manager.test',
     reason: '',
   }),
-}));
-vi.mock('@/features/monitoring/hooks/useUsageData', () => ({
-  useUsageData: () => ({ apiKeyAliases: [], loadApiKeyAliases: mocks.aliases }),
 }));
 vi.mock('@/features/monitoring/services/monitoringMetaService', () => ({
   loadMonitoringMetaPayload: mocks.meta,
@@ -75,6 +92,16 @@ const coreResponse = (request: MonitoringAnalyticsRequest): MonitoringAnalyticsR
   generated_at_ms: request.now_ms!,
   granularity: 'hour',
   summary,
+  ...(request.include?.anomaly_basis_version
+    ? {
+        anomaly_basis: {
+          version: 1 as const,
+          semantics: 'core_additive_exact_latency' as const,
+          core_id: `core-${request.from_ms}-${request.now_ms}`,
+          candidates: [],
+        },
+      }
+    : {}),
   model_stats: [
     {
       model: 'model-a',
@@ -98,11 +125,45 @@ const coreResponse = (request: MonitoringAnalyticsRequest): MonitoringAnalyticsR
       label: 'test',
       calls: 10,
       tokens: 100,
+      total_tokens: 100,
+      cost: 2,
+      failure_rate: 0.1,
+      bucket_range_exact: true,
       success: 9,
       failure: 1,
     },
   ],
 });
+const v2CoreResponse = (
+  request: MonitoringAnalyticsRequest,
+  coreId = 'core-a'
+): MonitoringAnalyticsResponse => {
+  const core = coreResponse(request);
+  const previous = core.timeline![0];
+  const current = {
+    ...previous,
+    bucket_ms: previous.bucket_ms + 7_200_000,
+    bucket_end_ms: previous.bucket_ms + 9_000_000,
+  };
+  core.timeline!.push(current);
+  core.anomaly_basis = {
+    version: 1,
+    semantics: 'core_additive_exact_latency',
+    core_id: coreId,
+    candidates: [
+      {
+        previous_bucket_ms: previous.bucket_ms,
+        bucket_ms: current.bucket_ms,
+        request_change: 0,
+        cost_change: 0,
+        tokens_per_request_change: 0,
+        cache_hit_rate_change: 0,
+        failure_rate_change: 0,
+      },
+    ],
+  };
+  return core;
+};
 type Pending = {
   request: MonitoringAnalyticsRequest;
   signal: AbortSignal;
@@ -176,6 +237,13 @@ describe('progressive usage analytics with real request hooks', () => {
     mocks.version = 1;
     mocks.checking = false;
     mocks.auth.managementKey = 'test';
+    mocks.auth.apiBase = 'https://panel.test';
+    mocks.aliases.mockReset().mockResolvedValue({ items: [] });
+    mocks.getPrices.mockReset().mockResolvedValue({ prices: {} });
+    mocks.savePrices.mockReset();
+    mocks.loadLocalPrices.mockReset().mockReturnValue({ legacy: { prompt: 1, completion: 2 } });
+    mocks.clearLocalPrices.mockReset();
+    mocks.notify.mockReset();
     mocks.meta.mockReset().mockResolvedValue({
       authFiles: [],
       authFilesLoaded: true,
@@ -221,6 +289,161 @@ describe('progressive usage analytics with real request hooks', () => {
     });
     vi.useRealTimers();
   });
+
+  it.each([0, 1, 2])(
+    'loads aliases without price GET/PUT or browser-price migration (v%s)',
+    async (version) => {
+      mocks.version = version;
+      await render();
+      expect(mocks.aliases).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        latest.refresh();
+      });
+      expect(mocks.aliases).toHaveBeenCalledTimes(2);
+      expect(mocks.getPrices).not.toHaveBeenCalled();
+      expect(mocks.savePrices).not.toHaveBeenCalled();
+      expect(mocks.loadLocalPrices).not.toHaveBeenCalled();
+      expect(mocks.clearLocalPrices).not.toHaveBeenCalled();
+    }
+  );
+
+  it('v2 requests only exact percentiles and composes latency-only gaps with separate coverage', async () => {
+    mocks.version = 2;
+    await render();
+    const core = v2CoreResponse(next(isCore).request);
+    core.coverage = {
+      raw_complete: false,
+      core_aggregate_used: true,
+      raw_deleted_event_count: 5,
+    } as MonitoringAnalyticsResponse['coverage'];
+    expect(next(isCore).request.include).toMatchObject({
+      timeline_profile: 'core',
+      anomaly_basis_version: 1,
+    });
+    await resolve(isCore, core);
+    await resolve(isDimensions);
+    await resolve(isSelectors);
+    expect(next(isExact).request.include).toEqual({
+      granularity: 'hour',
+      percentiles: { summary: true, timeline: true },
+    });
+    const exactCoverage = {
+      raw_complete: false,
+      core_aggregate_used: false,
+      raw_deleted_event_count: 6,
+    } as MonitoringAnalyticsResponse['coverage'];
+    await resolve(isExact, {
+      ...emptyResponse,
+      coverage: exactCoverage,
+      percentiles: {
+        summary: { p95_latency_ms: 200, p95_ttft_ms: null },
+        timeline: core.timeline!.map((point, i) => ({
+          bucket_ms: point.bucket_ms,
+          p95_latency_ms: i ? 200 : 100,
+          p95_ttft_ms: null,
+        })),
+      },
+    });
+    expect(latest.sections.anomalies).toMatchObject({
+      loaded: true,
+      coreCoverage: core.coverage,
+      coverage: exactCoverage,
+      compositionSemantics: 'core_additive_exact_latency',
+    });
+    expect(latest.coverage).toEqual(core.coverage);
+    expect(latest.anomalyPoints).toHaveLength(1);
+    expect(pending.filter(isCore)).toHaveLength(1);
+    expect(pending.filter(isExact)).toHaveLength(1);
+    expect(pending.filter((p) => p.request.include?.anomaly_points)).toHaveLength(0);
+  });
+
+  it('v2 requires core acknowledgment before launching exact and exposes protocol errors', async () => {
+    mocks.version = 2;
+    await render();
+    const core = coreResponse(next(isCore).request);
+    delete core.anomaly_basis;
+    await resolve(isCore, core);
+    await resolve(isDimensions);
+    await resolve(isSelectors);
+    expect(latest.sections.core.loaded).toBe(true);
+    expect(latest.sections.anomalies).toMatchObject({
+      loading: false,
+      loaded: false,
+      error: 'usage_analytics.section_missing',
+    });
+    expect(pending.some(isExact)).toBe(false);
+  });
+
+  it.each(['missing', 'null-fields', 'failure', 'empty'])(
+    'v2 exact %s is not silently treated as a missing population',
+    async (kind) => {
+      mocks.version = 2;
+      await finishSetup();
+      await resolve(isSelectors);
+      if (kind === 'failure') {
+        await act(async () => {
+          next(isExact).reject(new Error('exact failed'));
+        });
+      } else {
+        await resolve(
+          isExact,
+          kind === 'missing'
+            ? emptyResponse
+            : ({
+                ...emptyResponse,
+                percentiles: {
+                  summary:
+                    kind === 'null-fields' ? {} : { p95_latency_ms: null, p95_ttft_ms: null },
+                  timeline: [],
+                },
+              } as MonitoringAnalyticsResponse)
+        );
+      }
+      expect(latest.sections.anomalies.loaded).toBe(kind === 'empty');
+      expect(latest.anomalyPoints).toEqual([]);
+      if (kind !== 'empty') expect(latest.sections.anomalies.error).not.toBe('');
+    }
+  );
+
+  it.each(['refresh', 'credential', 'base', 'tab'])(
+    'v2 fences stale exact after %s and a different core_id',
+    async (change) => {
+      mocks.version = 2;
+      await render();
+      await resolve(isCore, v2CoreResponse(next(isCore).request, 'old-core'));
+      await resolve(isDimensions);
+      await resolve(isSelectors);
+      const old = next(isExact);
+      await act(async () => {
+        if (change === 'refresh') latest.refresh();
+        else if (change === 'tab') latest.setActiveTab('models');
+        else {
+          if (change === 'credential') mocks.auth.managementKey = 'new-key';
+          else mocks.auth.apiBase = 'https://another-panel.test';
+          renderer.update(
+            <MemoryRouter>
+              <Harness />
+            </MemoryRouter>
+          );
+        }
+      });
+      expect(old.signal.aborted).toBe(true);
+      expect(latest.sections.anomalies.loaded).toBe(false);
+      await act(async () => {
+        old.resolve({
+          ...emptyResponse,
+          percentiles: {
+            summary: { p95_latency_ms: 999, p95_ttft_ms: 999 },
+            timeline: [],
+          },
+        });
+      });
+      await resolve(isCore, v2CoreResponse(next(isCore).request, 'new-core'));
+      expect(latest.summary.p95LatencyMs).toBeNull();
+      expect(latest.sections.anomalies.loaded).toBe(false);
+      expect(latest.anomalyPoints).toEqual([]);
+    }
+  );
 
   it('keeps heatmap deadlines and retries independent of compact summary', async () => {
     await render('/?tab=heatmap');

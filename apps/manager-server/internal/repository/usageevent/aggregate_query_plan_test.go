@@ -38,7 +38,7 @@ func TestTopModelsQueryUsesTimestampIndexBeforePricingMaterialization(t *testing
 
 func assertTopModelsTimestampPlan(t *testing.T, db *sql.DB, requiredIndex string) {
 	t.Helper()
-	rows, err := db.Query(`explain query plan `+topModelsSQL, int64(1_000), int64(2_000), 5)
+	rows, err := db.Query(`explain query plan `+topModelsSQL, int64(1_000), int64(2_000), 5, int64(1_000), int64(2_000))
 	if err != nil {
 		t.Fatalf("explain top models query: %v", err)
 	}

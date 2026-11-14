@@ -20,7 +20,7 @@ func TestInfoAdvertisesConfiguredAnalyticsSections(t *testing.T) {
 			t.Fatal(err)
 		}
 		if enabled {
-			if info.AnalyticsSectionsVersion != 1 || !strings.Contains(string(data), `"analyticsSectionsVersion":1`) {
+			if info.AnalyticsSectionsVersion != 2 || !strings.Contains(string(data), `"analyticsSectionsVersion":2`) {
 				t.Fatalf("capability missing: %s", data)
 			}
 		} else if info.AnalyticsSectionsVersion != 0 || strings.Contains(string(data), "analyticsSectionsVersion") {

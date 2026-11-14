@@ -281,7 +281,7 @@ func (s *Service) runAnalytics(ctx context.Context, req Request) (response Respo
 	}
 	defer release()
 	plan := planAnalytics(req.Include)
-	if !plan.modelPrices {
+	if !plan.priceSnapshot {
 		return s.analytics(ctx, req, plan)
 	}
 	gateStarted := time.Now()

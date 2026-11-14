@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 type dailyAggregateAccumulator struct {
@@ -89,6 +87,7 @@ func mergeProjectedAggregate(
 	if filter.FromMS >= filter.ToMS {
 		return nil
 	}
+	options.ProjectionComplete = projectionComplete
 	source, args := filteredEventSourceSQL(
 		filter,
 		projectionCoverageEventID,
@@ -102,14 +101,7 @@ func mergeProjectedAggregate(
 		coalesce(e.cached_tokens, 0), coalesce(e.cache_tokens, 0),
 		coalesce(e.cache_read_tokens, 0), coalesce(e.cache_creation_tokens, 0),
 		coalesce(e.total_tokens, 0), e.latency_ms`,
-		eventSourceOptions{
-			AfterID:            options.AfterID,
-			UseAfter:           options.UseAfter,
-			MaxID:              options.MaxID,
-			UseMax:             options.UseMax,
-			CodexMarkerOnly:    options.CodexMarkerOnly,
-			ProjectionComplete: projectionComplete,
-		},
+		options,
 	)
 	return scanAggregateContribution(tx.QueryRowContext(ctx, `with filtered_events as (`+source+`)
 	select
@@ -241,30 +233,11 @@ func mergeProjectedModelStats(
 	if filter.FromMS >= filter.ToMS {
 		return nil
 	}
-	source, args := filteredEventSourceSQL(
-		filter,
-		projectionCoverageEventID,
-		`p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
-		p.normalized_total_input_tokens, p.output_tokens, p.reasoning_tokens,
-		p.cached_tokens, p.cache_tokens, p.cache_read_tokens,
-		p.cache_creation_tokens, p.total_tokens`,
-		usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")+`, `+usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+`, coalesce(e.resolved_model, ''),
-		coalesce(e.service_tier, ''), coalesce(e.failed, 0),
-		coalesce(e.normalized_total_input_tokens, e.input_tokens, 0),
-		coalesce(e.output_tokens, 0), coalesce(e.reasoning_tokens, 0),
-		coalesce(e.cached_tokens, 0), coalesce(e.cache_tokens, 0),
-		coalesce(e.cache_read_tokens, 0), coalesce(e.cache_creation_tokens, 0),
-		coalesce(e.total_tokens, 0)`,
-		eventSourceOptions{
-			AfterID:            options.AfterID,
-			UseAfter:           options.UseAfter,
-			MaxID:              options.MaxID,
-			UseMax:             options.UseMax,
-			CodexMarkerOnly:    options.CodexMarkerOnly,
-			ProjectionComplete: projectionComplete,
-		},
-	)
-	query := fmt.Sprintf(`%s
+	options.ProjectionComplete = projectionComplete
+	extra := []string{"reasoning_tokens"}
+	projected, raw := monitoringPricingSourceSelects(extra)
+	arms := filteredEventSourceArms(filter, projectionCoverageEventID, projected, raw, options)
+	aggregate := `
 	select
 		analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, service_tier,
@@ -281,8 +254,8 @@ func mergeProjectedModelStats(
 		coalesce(sum(total_tokens), 0)
 	from banded_events
 	group by analytics_model, billing_model_value, pricing_model_value,
-		context_threshold_tokens_value, service_tier`, monitoringBandedProjectedEventsCTE(source))
-	args = appendLongContextThresholdArgs(args)
+		context_threshold_tokens_value, service_tier`
+	query, args := monitoringPricingArmsQuery(arms, extra, aggregate, appendLongContextThresholdArgs(nil), monitoringModelAggregateColumns)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err

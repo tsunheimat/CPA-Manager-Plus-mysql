@@ -11,7 +11,8 @@ import {
   currentAnalyticsData,
   mergeUsageAnalyticsSections,
 } from './usageAnalyticsSections';
-import { useUsageData } from '@/features/monitoring/hooks/useUsageData';
+import { useApiKeyAliases } from '@/features/monitoring/hooks/useApiKeyAliases';
+import { hasAnomalyBasis, hasRequestedPercentiles } from './usageAnalyticsAnomalies';
 import { buildApiKeyDisplayMap } from '@/features/monitoring/model/apiKeys';
 import { buildMonitoringAuthMetaMap } from '@/features/monitoring/model/authMeta';
 import { readString } from '@/features/monitoring/model/base';
@@ -107,7 +108,9 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 
 export function useUsageAnalytics() {
   const availability = usePanelFeatureAvailability();
-  const progressive = (availability.analyticsSectionsVersion ?? 0) >= 1;
+  const sectionsVersion = availability.analyticsSectionsVersion ?? 0;
+  const progressive = sectionsVersion >= 1;
+  const composedAnomalies = sectionsVersion >= 2;
   const scheduler = useMemo(() => createMonitoringAnalyticsScheduler(2), []);
   const [refreshId, setRefreshId] = useState(0);
   const config = useConfigStore((state) => state.config);
@@ -116,7 +119,7 @@ export function useUsageAnalytics() {
   const metadataScope = JSON.stringify([apiBase, managementKey]);
   const metadataScopeRef = useRef(metadataScope);
   metadataScopeRef.current = metadataScope;
-  const { apiKeyAliases, loadApiKeyAliases } = useUsageData({ loadUsageEvents: false });
+  const { apiKeyAliases, loadApiKeyAliases } = useApiKeyAliases();
   const [monitoringMeta, setMonitoringMeta] = useState<UsageAnalyticsMonitoringMeta>(
     EMPTY_USAGE_ANALYTICS_MONITORING_META
   );
@@ -299,6 +302,7 @@ export function useUsageAnalytics() {
   // Bounds, now, timezone and refresh identity are shared by the actual POSTs, not
   // merely a rounded presentation key. Optional responses never cross this fence.
   const fetchGenerationKey = JSON.stringify({
+    connection: [apiBase, availability.managerServiceBase, managementKey],
     bounds,
     nowMs,
     refreshId,
@@ -308,6 +312,7 @@ export function useUsageAnalytics() {
     granularity: resolvedGranularity,
   });
   const selectorGenerationKey = JSON.stringify({
+    connection: [apiBase, availability.managerServiceBase, managementKey],
     bounds,
     nowMs,
     refreshId,
@@ -315,8 +320,8 @@ export function useUsageAnalytics() {
     searchQuery: debouncedSearchQuery,
   });
   const sectionIncludes = useMemo(
-    () => buildUsageAnalyticsSections(activeTabState, resolvedGranularity),
-    [activeTabState, resolvedGranularity]
+    () => buildUsageAnalyticsSections(activeTabState, resolvedGranularity, sectionsVersion),
+    [activeTabState, resolvedGranularity, sectionsVersion]
   );
   const include = useMemo(
     () =>
@@ -362,6 +367,14 @@ export function useUsageAnalytics() {
   const coreData = currentAnalyticsData(analytics);
   const hasDimensions = Object.keys(sectionIncludes.dimensions).length > 1;
   const hasExact = Boolean(sectionIncludes.exact.percentiles);
+  const basisComplete = !composedAnomalies || !hasExact || hasAnomalyBasis(coreData);
+  const basisError = composedAnomalies && hasExact && Boolean(coreData) && !basisComplete;
+  // The normal request hook also fences credentials/base and all POST inputs.
+  // Adding core_id prevents an exact result from an earlier core in the same
+  // generation (including a retry) from ever completing this basis.
+  const exactGenerationKey = composedAnomalies
+    ? JSON.stringify([fetchGenerationKey, coreData?.anomaly_basis?.core_id ?? null])
+    : fetchGenerationKey;
   const dimensionsAnalytics = useMonitoringAnalytics({
     enabled: progressive && !availability.checking && hasDimensions,
     fromMs: bounds?.fromMs,
@@ -377,11 +390,11 @@ export function useUsageAnalytics() {
     throttleMs: 0,
   });
   const exactAnalytics = useMonitoringAnalytics({
-    enabled: progressive && Boolean(coreData?.summary) && hasExact,
+    enabled: progressive && Boolean(coreData?.summary) && hasExact && basisComplete,
     fromMs: bounds?.fromMs,
     toMs: bounds?.toMs,
     nowMs,
-    fetchGenerationKey,
+    fetchGenerationKey: exactGenerationKey,
     scheduler,
     priority: 1,
     timeZone: browserTimeZone,
@@ -502,11 +515,26 @@ export function useUsageAnalytics() {
   const analyticsData = useMemo(
     () =>
       progressive
-        ? mergeUsageAnalyticsSections(coreData, dimensionsData, exactData, previewData)
+        ? mergeUsageAnalyticsSections(
+            coreData,
+            dimensionsData,
+            exactData,
+            previewData,
+            sectionsVersion,
+            sectionIncludes.exact.percentiles
+          )
         : coreData
           ? { ...coreData, drilldown_preview: previewData?.drilldown_preview }
           : null,
-    [coreData, dimensionsData, exactData, previewData, progressive]
+    [
+      coreData,
+      dimensionsData,
+      exactData,
+      previewData,
+      progressive,
+      sectionsVersion,
+      sectionIncludes.exact.percentiles,
+    ]
   );
   const filterSelectorsData = currentAnalyticsData(filterSelectorsAnalytics);
   const timelineBounds = include.timeline ? bounds : null;
@@ -927,10 +955,12 @@ export function useUsageAnalytics() {
 
   const exactComplete =
     !progressive ||
-    Boolean(
-      exactData?.percentiles?.timeline &&
-      (activeTabState !== 'overview' || exactData.percentiles.summary)
-    );
+    (composedAnomalies
+      ? basisComplete && hasRequestedPercentiles(exactData, sectionIncludes.exact.percentiles)
+      : Boolean(
+          exactData?.percentiles?.timeline &&
+          (activeTabState !== 'overview' || exactData.percentiles.summary)
+        ));
   const sections = {
     core: {
       ...analyticsSectionState(
@@ -942,11 +972,15 @@ export function useUsageAnalytics() {
     },
     dimensions: analyticsSectionState(progressive ? dimensionsAnalytics : analytics, hasDimensions),
     exact: analyticsSectionState(progressive ? exactAnalytics : analytics, hasExact, exactComplete),
-    anomalies: analyticsSectionState(
-      progressive ? exactAnalytics : analytics,
-      hasExact,
-      exactComplete
-    ),
+    anomalies: {
+      ...analyticsSectionState(progressive ? exactAnalytics : analytics, hasExact, exactComplete),
+      ...(composedAnomalies && hasExact
+        ? {
+            coreCoverage: coreData?.coverage,
+            compositionSemantics: 'core_additive_exact_latency' as const,
+          }
+        : {}),
+    },
     selectors: analyticsSectionState(
       filterSelectorsAnalytics,
       Boolean(bounds),
@@ -982,6 +1016,14 @@ export function useUsageAnalytics() {
       },
     },
   };
+  if (basisError) {
+    sections.exact.loading = false;
+    sections.anomalies.loading = false;
+    sections.exact.error = 'usage_analytics.section_missing';
+    sections.anomalies.error = 'usage_analytics.section_missing';
+    sections.exact.retry = refresh;
+    sections.anomalies.retry = refresh;
+  }
   if (progressive && !sections.core.loaded && !sections.core.loading) {
     // A failed prerequisite is unavailable, not an exact request still running.
     sections.exact.loading = false;

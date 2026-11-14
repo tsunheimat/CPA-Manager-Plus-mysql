@@ -29,7 +29,8 @@ type PercentilesResponse struct {
 }
 
 type analyticsPlan struct {
-	modelPrices               bool
+	priceBook                 bool
+	priceSnapshot             bool
 	latencySummary            bool
 	latencyTimeline           bool
 	legacySummaryPercentiles  bool
@@ -41,16 +42,15 @@ func planAnalytics(include Include) analyticsPlan {
 		legacySummaryPercentiles:  include.Summary && (include.SummaryProfile != "compact" || include.SummaryPercentiles),
 		legacyTimelinePercentiles: include.Timeline && include.TimelineProfile != "core",
 	}
-	// Standalone raw percentiles do not read pricing or pricing generations.
-	// Keep the existing snapshot contract for every other section. In particular
-	// anomalies also build a priced timeline, even without include.timeline.
-	standalonePercentiles := include.Percentiles != nil && (include.Percentiles.Summary || include.Percentiles.Timeline) &&
-		!include.Summary && !include.Timeline && !include.HourlyDistribution && !include.ModelShare &&
-		!include.ChannelShare && !include.ModelStats && !include.FailureSources && !include.AccountStats &&
-		!include.CredentialStats && !include.CredentialTimeline && !include.APIKeyTimeline && !include.APIKeyStats &&
-		!include.FilterOptions && !include.FilterSelectors && !include.Heatmap && !include.AnomalyPoints &&
-		!include.TaskBuckets && include.RecentFailures <= 0 && include.EventsPage == nil && include.DrilldownPreview == nil
-	plan.modelPrices = !standalonePercentiles
+	// Match execution precedence: selectors replace legacy priced filter options.
+	// Legacy anomalies build a priced timeline even without include.timeline.
+	plan.priceBook = include.Summary || include.Timeline || include.ModelShare || include.ModelStats ||
+		include.ChannelShare || include.AccountStats || include.CredentialStats || include.CredentialTimeline ||
+		include.APIKeyStats || include.APIKeyTimeline || include.Heatmap || include.AnomalyPoints ||
+		(include.FilterOptions && !include.FilterSelectors)
+	// Full event counts can use price-structure-dependent derived aggregates;
+	// bounded previews cannot. Hold this gate for the entire dependent request.
+	plan.priceSnapshot = plan.priceBook || include.EventsPage != nil
 	plan.latencySummary = plan.legacySummaryPercentiles || (include.Percentiles != nil && include.Percentiles.Summary)
 	plan.latencyTimeline = plan.legacyTimelinePercentiles || include.AnomalyPoints || (include.Percentiles != nil && include.Percentiles.Timeline)
 	return plan
@@ -59,6 +59,14 @@ func planAnalytics(include Include) analyticsPlan {
 func ValidateInclude(include Include) error {
 	if include.TimelineProfile != "" && include.TimelineProfile != "core" && include.TimelineProfile != "full" {
 		return errors.New("include.timeline_profile must be core or full")
+	}
+	if include.AnomalyBasisVersion != nil {
+		if *include.AnomalyBasisVersion != 1 {
+			return errors.New("include.anomaly_basis_version must be 1")
+		}
+		if !include.Timeline || include.TimelineProfile != "core" || include.AnomalyPoints {
+			return errors.New("include.anomaly_basis_version requires timeline with core profile and without anomaly_points")
+		}
 	}
 	return nil
 }

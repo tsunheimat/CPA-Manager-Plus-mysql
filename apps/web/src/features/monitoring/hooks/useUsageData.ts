@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import i18n from '@/i18n';
-import { useNotificationStore } from '@/stores/useNotificationStore';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useApiKeyAliases } from './useApiKeyAliases';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
 import {
   usageServiceApi,
   type ApiKeyAlias,
-  type ApiKeyAliasesResponse,
   type ModelPricesResponse,
   type ModelPriceSyncResponse,
   type UsageExportResponse,
@@ -72,10 +70,9 @@ export function useUsageData({
   const [error, setError] = useState('');
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
   const [modelPrices, setModelPricesState] = useState<Record<string, ModelPrice>>({});
-  const [apiKeyAliases, setApiKeyAliases] = useState<ApiKeyAlias[]>([]);
+  const { apiKeyAliases, loadApiKeyAliases } = useApiKeyAliases();
   const [usageServiceAvailable, setUsageServiceAvailable] = useState(false);
   const requestIdRef = useRef(0);
-  const aliasRequestIdRef = useRef(0);
   const managerServiceAvailable = featureAvailability.managerServiceAvailable;
   const modelPriceServiceBase = featureAvailability.modelPricesAvailable
     ? featureAvailability.managerServiceBase
@@ -89,24 +86,11 @@ export function useUsageData({
     ? featureAvailability.managerServiceBase
     : '';
 
-  useLayoutEffect(() => {
-    aliasRequestIdRef.current += 1;
-    setApiKeyAliases([]);
-    return () => { aliasRequestIdRef.current += 1; };
-  }, [apiBase, managementKey, modelPriceServiceBase]);
-
   const getModelPricesFromApi = useCallback(async (): Promise<ModelPricesResponse> => {
     if (!modelPriceServiceBase) {
       return { prices: {} };
     }
     return usageServiceApi.getModelPrices(modelPriceServiceBase, managementKey);
-  }, [managementKey, modelPriceServiceBase]);
-
-  const getApiKeyAliasesFromApi = useCallback(async (): Promise<ApiKeyAliasesResponse> => {
-    if (!modelPriceServiceBase) {
-      return { items: [] };
-    }
-    return usageServiceApi.getApiKeyAliases(modelPriceServiceBase, managementKey);
   }, [managementKey, modelPriceServiceBase]);
 
   const saveModelPricesToApi = useCallback(
@@ -129,12 +113,7 @@ export function useUsageData({
       if (!modelPriceServiceBase) {
         throw new Error('model_price_sync_requires_usage_service');
       }
-      return usageServiceApi.syncModelPrices(
-        modelPriceServiceBase,
-        managementKey,
-        models,
-        options
-      );
+      return usageServiceApi.syncModelPrices(modelPriceServiceBase, managementKey, models, options);
     },
     [managementKey, modelPriceServiceBase]
   );
@@ -200,19 +179,6 @@ export function useUsageData({
     }
   }, [getModelPricesFromApi, saveModelPricesToApi]);
 
-  const loadApiKeyAliases = useCallback(async () => {
-    const requestId = aliasRequestIdRef.current + 1;
-    aliasRequestIdRef.current = requestId;
-    try {
-      const response = await getApiKeyAliasesFromApi();
-      if (aliasRequestIdRef.current !== requestId) return;
-      setApiKeyAliases(Array.isArray(response.items) ? response.items : []);
-    } catch {
-      if (aliasRequestIdRef.current !== requestId) return;
-      useNotificationStore.getState().showNotification(i18n.t('notification.refresh_failed'), 'error');
-    }
-  }, [getApiKeyAliasesFromApi]);
-
   const loadUsage = useCallback(async () => {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
@@ -252,9 +218,8 @@ export function useUsageData({
 
   useEffect(() => {
     void loadModelPricesFromStorage();
-    void loadApiKeyAliases();
     void loadUsage();
-  }, [apiBase, loadApiKeyAliases, loadModelPricesFromStorage, loadUsage]);
+  }, [apiBase, loadModelPricesFromStorage, loadUsage]);
 
   const setModelPrices = useCallback(
     async (prices: Record<string, ModelPrice>) => {

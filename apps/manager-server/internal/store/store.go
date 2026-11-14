@@ -321,6 +321,12 @@ func (s *Store) LoadModelPrices(ctx context.Context) (map[string]ModelPrice, err
 	return s.ModelPrices.LoadAll(ctx)
 }
 
+// LoadAnalyticsModelPrices loads a complete cost book without management metadata.
+// Management, sync and export consumers continue to use LoadModelPrices.
+func (s *Store) LoadAnalyticsModelPrices(ctx context.Context) (map[string]ModelPrice, error) {
+	return s.ModelPrices.LoadRates(ctx)
+}
+
 func (s *Store) SaveModelPrices(ctx context.Context, prices map[string]ModelPrice) error {
 	release, err := s.modelPricesMu.acquire(ctx, true)
 	if err != nil {
@@ -737,6 +743,17 @@ func (s *Store) LoadUsageHourlyPricingSnapshot(
 	if err != nil {
 		return UsageHourlyPricingSnapshot{}, err
 	}
+	if !aggregateAvailable {
+		// Retained-edge validation and the core read above are mandatory even
+		// when unavailable. No pricing rows or book can make this core usable.
+		if err := tx.Commit(); err != nil {
+			return UsageHourlyPricingSnapshot{}, err
+		}
+		return UsageHourlyPricingSnapshot{
+			AggregateRows:  aggregateRows,
+			AggregateState: aggregateState,
+		}, nil
+	}
 	pricingRows, pricingState, pricingAvailable, pricingErr := s.UsagePricing.LoadHourlyRowsTx(ctx, tx, pricingFilter)
 	// Unavailable/stale coverage may be recovered, but a failed query is terminal.
 	// Retrying after cancellation, a connection error or invalid SQL hides the
@@ -744,7 +761,7 @@ func (s *Store) LoadUsageHourlyPricingSnapshot(
 	if pricingErr != nil {
 		return UsageHourlyPricingSnapshot{}, pricingErr
 	}
-	if aggregateAvailable && (!pricingAvailable || !hourlyPricingCoverageMatches(aggregateRows, pricingRows)) {
+	if !pricingAvailable || !hourlyPricingCoverageMatches(aggregateRows, pricingRows) {
 		pricingRows, err = s.UsagePricing.LoadHourlyRowsFromEventsTx(ctx, tx, pricingFilter)
 		if err != nil {
 			if errors.Is(err, ErrUsagePricingCoverageIncomplete) {
@@ -757,7 +774,7 @@ func (s *Store) LoadUsageHourlyPricingSnapshot(
 		}
 		pricingAvailable = true
 	}
-	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
+	prices, err := s.ModelPrices.LoadRatesTx(ctx, tx)
 	if err != nil {
 		return UsageHourlyPricingSnapshot{}, err
 	}
@@ -832,7 +849,7 @@ func (s *Store) LoadUsagePricingAccountSnapshot(ctx context.Context, accountKeys
 	}
 	available = len(incomplete) == 0
 
-	prices, err := s.ModelPrices.LoadAllTx(ctx, tx)
+	prices, err := s.ModelPrices.LoadRatesTx(ctx, tx)
 	if err != nil {
 		return UsagePricingAccountSnapshot{}, err
 	}

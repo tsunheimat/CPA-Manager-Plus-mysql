@@ -2380,7 +2380,26 @@ function AnalyticsSection({
           ) : null}
         </div>
       ) : null}
-      <UsageCoverageWarning coverage={state.coverage} t={t} />
+      {state.compositionSemantics ? (
+        <>
+          <p className={styles.inlineEmpty}>
+            {t('usage_analytics.anomaly_snapshot_semantics', {
+              defaultValue:
+                'Anomalies combine frozen core totals with a later exact latency snapshot; these are not one database snapshot.',
+            })}
+          </p>
+          <div aria-label="Core additive coverage">
+            <strong>{t('usage_analytics.section_core', { defaultValue: 'Core totals' })}</strong>
+            <UsageCoverageWarning coverage={state.coreCoverage} t={t} />
+          </div>
+          <div aria-label="Exact latency coverage">
+            <strong>{t('usage_analytics.section_exact')}</strong>
+            <UsageCoverageWarning coverage={state.coverage} t={t} />
+          </div>
+        </>
+      ) : (
+        <UsageCoverageWarning coverage={state.coverage} t={t} />
+      )}
       {state.loaded ? children : null}
     </>
   );

@@ -14,7 +14,7 @@ import (
 var retainedPricingColumns = []string{
 	"timestamp_ms", "model", "requested_model", "resolved_model", "service_tier", "failed",
 	"input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_tokens",
-	"cache_read_tokens", "cache_creation_tokens", "normalized_total_input_tokens", "total_tokens", "latency_ms",
+	"cache_read_tokens", "cache_creation_tokens", "normalized_total_input_tokens", "total_tokens",
 	"provider", "auth_index", "source", "source_hash", "account_snapshot", "auth_label_snapshot",
 	"auth_file_snapshot", "auth_provider_snapshot", "auth_project_id_snapshot", "auth_account_id_snapshot",
 }
@@ -27,11 +27,11 @@ var ErrRetainedPricingHistoryIncomplete = errors.New("retained pricing history i
 // The caller must compare the result with the permanent core snapshot before
 // treating it as complete. A projection watermark alone is not proof of data.
 func (r *repository) LoadHourlyRowsFromEventsTx(ctx context.Context, tx *sql.Tx, filter HourlyFilter) ([]HourlyRow, error) {
-	source, err := retainedEventSourceTx(ctx, tx)
+	arms, err := retainedEventSourceArmsTx(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	query, args := hourlyStatementFromEvents(filter, filter.FromMS, filter.ToMS, 0, false, source)
+	query, args := hourlyStatementFromArms(filter, filter.FromMS, filter.ToMS, 0, false, arms)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -54,12 +54,12 @@ func (r *repository) LoadAccountRowsFromEventsTx(ctx context.Context, tx *sql.Tx
 	if len(keys) == 0 {
 		return []AccountRow{}, nil
 	}
-	source, sourceArgs, err := retainedAccountEventSourceTx(ctx, tx, keys)
+	arms, err := retainedAccountEventSourceArmsTx(ctx, tx, keys)
 	if err != nil {
 		return nil, err
 	}
 	grouped := map[accountKey]*AccountRow{}
-	if err := mergeAccountRowsFromSourceArgs(ctx, tx, 0, keys, grouped, source, sourceArgs); err != nil {
+	if err := mergeAccountRowsFromArms(ctx, tx, 0, keys, grouped, arms); err != nil {
 		return nil, err
 	}
 	return sortedAccountRows(grouped), nil
@@ -88,36 +88,54 @@ func retainedPricingRebuildSourceTx(ctx context.Context, tx *sql.Tx) (string, in
 // Only genuinely deleted archive records may use a compatible retained projection.
 // This avoids losing an intact raw event when its projection is missing or stale.
 func retainedEventSourceTx(ctx context.Context, tx *sql.Tx) (string, error) {
-	coverageID, compatible, err := retainedProjectionCoverageTx(ctx, tx)
+	arms, err := retainedEventSourceArmsTx(ctx, tx)
 	if err != nil {
 		return "", err
 	}
-	if !compatible || coverageID <= 0 {
-		return "usage_events", nil
+	source, _ := usageprojection.UnionEventSources(arms)
+	return source, nil
+}
+
+func retainedEventSourceArmsTx(ctx context.Context, tx *sql.Tx) ([]usageprojection.EventSourceArm, error) {
+	coverageID, compatible, err := retainedProjectionCoverageTx(ctx, tx)
+	if err != nil {
+		return nil, err
 	}
-	return fmt.Sprintf(`(select e.id, e.%s from usage_events e
-		union all
-		select p.event_id as id, p.%s
-		from usage_archive_event_refs archived
-		join %s p on p.event_id = archived.raw_event_id
-			and archived.timestamp_ms = p.timestamp_ms
-		where archived.raw_deleted_at_ms is not null
-			and p.event_id <= %d
-			and not exists (
-				select 1 from usage_events live where live.event_hash = archived.event_hash
-			))`,
-		strings.Join(retainedPricingColumns, ", e."),
-		strings.Join(retainedPricingColumns, ", p."), usageprojection.EventTable, coverageID,
-	), nil
+	if !compatible || coverageID <= 0 {
+		return []usageprojection.EventSourceArm{{From: "usage_events"}}, nil
+	}
+	// Hourly recovery has no account/provenance dependency. Keep the archive
+	// join (including its multiplicity) and live-hash preference unchanged.
+	columns := []string{"timestamp_ms", "model", "requested_model", "resolved_model", "service_tier", "failed",
+		"input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_tokens", "cache_read_tokens",
+		"cache_creation_tokens", "normalized_total_input_tokens", "total_tokens", "latency_ms"}
+	return []usageprojection.EventSourceArm{
+		{From: fmt.Sprintf(`(select e.id, e.%s from usage_events e)`, strings.Join(columns, ", e."))},
+		{From: fmt.Sprintf(`(select p.event_id as id, p.%s
+			from usage_archive_event_refs archived
+			join %s p on p.event_id = archived.raw_event_id and archived.timestamp_ms = p.timestamp_ms
+			where archived.raw_deleted_at_ms is not null and p.event_id <= %d
+				and not exists (select 1 from usage_events live where live.event_hash = archived.event_hash))`,
+			strings.Join(columns, ", p."), usageprojection.EventTable, coverageID)},
+	}, nil
 }
 
 func retainedAccountEventSourceTx(ctx context.Context, tx *sql.Tx, accountKeys []string) (string, []any, error) {
-	coverageID, compatible, err := retainedProjectionCoverageTx(ctx, tx)
+	arms, err := retainedAccountEventSourceArmsTx(ctx, tx, accountKeys)
 	if err != nil {
 		return "", nil, err
 	}
+	source, args := usageprojection.UnionEventSources(arms)
+	return source, args, nil
+}
+
+func retainedAccountEventSourceArmsTx(ctx context.Context, tx *sql.Tx, accountKeys []string) ([]usageprojection.EventSourceArm, error) {
+	coverageID, compatible, err := retainedProjectionCoverageTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	if !compatible || coverageID <= 0 {
-		return "usage_events", nil, nil
+		return []usageprojection.EventSourceArm{{From: "usage_events"}}, nil
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(accountKeys)), ",")
 	args := make([]any, 0, len(accountKeys))
@@ -126,24 +144,19 @@ func retainedAccountEventSourceTx(ctx context.Context, tx *sql.Tx, accountKeys [
 	}
 	// Drive archived candidates from the account index. The archive timestamp
 	// index verifies actual deletion without scanning every archived credential.
-	return fmt.Sprintf(`(select e.id, e.%s from usage_events e
-		union all
-		select p.event_id as id, p.%s
-		from %s p
-		where p.account_key in (%s)
-			and p.event_id <= %d
-			and exists (
-				select 1 from usage_archive_event_refs archived
-				where archived.timestamp_ms = p.timestamp_ms
-					and archived.raw_event_id = p.event_id
-					and archived.raw_deleted_at_ms is not null
-					and not exists (
-						select 1 from usage_events live where live.event_hash = archived.event_hash
-					)
-			))`,
-		strings.Join(retainedPricingColumns, ", e."),
-		strings.Join(retainedPricingColumns, ", p."), usageprojection.EventTable, placeholders, coverageID,
-	), args, nil
+	return []usageprojection.EventSourceArm{
+		{From: fmt.Sprintf(`(select e.id, e.%s from usage_events e)`, strings.Join(retainedPricingColumns, ", e."))},
+		{From: fmt.Sprintf(`(select p.event_id as id, p.%s
+			from %s p
+			where p.account_key in (%s) and p.event_id <= %d
+				and exists (
+					select 1 from usage_archive_event_refs archived
+					where archived.timestamp_ms = p.timestamp_ms
+						and archived.raw_event_id = p.event_id
+						and archived.raw_deleted_at_ms is not null
+						and not exists (select 1 from usage_events live where live.event_hash = archived.event_hash)
+				))`, strings.Join(retainedPricingColumns, ", p."), usageprojection.EventTable, placeholders, coverageID), Args: args},
+	}, nil
 }
 
 func retainedProjectionCoverageTx(ctx context.Context, tx *sql.Tx) (int64, bool, error) {

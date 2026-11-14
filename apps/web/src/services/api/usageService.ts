@@ -1060,6 +1060,8 @@ export interface MonitoringAnalyticsInclude {
   filter_selectors?: boolean;
   heatmap?: boolean;
   anomaly_points?: boolean;
+  /** V2 core acknowledgment; requires timeline=true and timeline_profile=core. */
+  anomaly_basis_version?: 1;
   task_buckets?: boolean;
   recent_failures?: number;
   events_page?: MonitoringAnalyticsEventsPageRequest;
@@ -1595,6 +1597,24 @@ export interface MonitoringAnalyticsHeatmapPoint {
 }
 
 export type MonitoringAnalyticsAnomalySeverity = 'low' | 'medium' | 'high' | string;
+
+export interface MonitoringAnalyticsAnomalyBasisCandidate {
+  previous_bucket_ms: number;
+  bucket_ms: number;
+  request_change: number;
+  cost_change: number;
+  tokens_per_request_change: number;
+  cache_hit_rate_change: number;
+  failure_rate_change: number;
+}
+
+/** Frozen core additive values plus a later exact snapshot, NOT one DB snapshot. */
+export interface MonitoringAnalyticsAnomalyBasis {
+  version: 1;
+  semantics: 'core_additive_exact_latency';
+  core_id: string;
+  candidates: MonitoringAnalyticsAnomalyBasisCandidate[];
+}
 
 export interface MonitoringAnalyticsAnomalyPoint {
   bucket_ms: number;
@@ -2166,6 +2186,7 @@ export interface MonitoringAnalyticsResponse {
   hourly_distribution?: MonitoringAnalyticsHourlyPoint[];
   heatmap?: MonitoringAnalyticsHeatmapPoint[];
   anomaly_points?: MonitoringAnalyticsAnomalyPoint[];
+  anomaly_basis?: MonitoringAnalyticsAnomalyBasis;
   model_share?: MonitoringAnalyticsModelShareRow[];
   model_stats?: MonitoringAnalyticsModelStat[];
   channel_share?: MonitoringAnalyticsChannelShareRow[];

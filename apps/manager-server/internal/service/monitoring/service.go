@@ -181,32 +181,33 @@ type Filters struct {
 }
 
 type Include struct {
-	Summary            bool                `json:"summary"`
-	SummaryProfile     string              `json:"summary_profile"`
-	SummaryPercentiles bool                `json:"summary_percentiles"`
-	SummaryComparison  bool                `json:"summary_comparison"`
-	Timeline           bool                `json:"timeline"`
-	TimelineProfile    string              `json:"timeline_profile"`
-	Percentiles        *PercentilesInclude `json:"percentiles"`
-	HourlyDistribution bool                `json:"hourly_distribution"`
-	ModelShare         bool                `json:"model_share"`
-	ChannelShare       bool                `json:"channel_share"`
-	ModelStats         bool                `json:"model_stats"`
-	FailureSources     bool                `json:"failure_sources"`
-	AccountStats       bool                `json:"account_stats"`
-	CredentialStats    bool                `json:"credential_stats"`
-	CredentialTimeline bool                `json:"credential_timeline"`
-	APIKeyTimeline     bool                `json:"api_key_timeline"`
-	APIKeyStats        bool                `json:"api_key_stats"`
-	FilterOptions      bool                `json:"filter_options"`
-	FilterSelectors    bool                `json:"filter_selectors"`
-	Heatmap            bool                `json:"heatmap"`
-	AnomalyPoints      bool                `json:"anomaly_points"`
-	TaskBuckets        bool                `json:"task_buckets"`
-	RecentFailures     int                 `json:"recent_failures"`
-	EventsPage         *EventsPage         `json:"events_page"`
-	DrilldownPreview   *DrilldownPreview   `json:"drilldown_preview"`
-	Granularity        string              `json:"granularity"`
+	Summary             bool                `json:"summary"`
+	SummaryProfile      string              `json:"summary_profile"`
+	SummaryPercentiles  bool                `json:"summary_percentiles"`
+	SummaryComparison   bool                `json:"summary_comparison"`
+	Timeline            bool                `json:"timeline"`
+	TimelineProfile     string              `json:"timeline_profile"`
+	Percentiles         *PercentilesInclude `json:"percentiles"`
+	HourlyDistribution  bool                `json:"hourly_distribution"`
+	ModelShare          bool                `json:"model_share"`
+	ChannelShare        bool                `json:"channel_share"`
+	ModelStats          bool                `json:"model_stats"`
+	FailureSources      bool                `json:"failure_sources"`
+	AccountStats        bool                `json:"account_stats"`
+	CredentialStats     bool                `json:"credential_stats"`
+	CredentialTimeline  bool                `json:"credential_timeline"`
+	APIKeyTimeline      bool                `json:"api_key_timeline"`
+	APIKeyStats         bool                `json:"api_key_stats"`
+	FilterOptions       bool                `json:"filter_options"`
+	FilterSelectors     bool                `json:"filter_selectors"`
+	Heatmap             bool                `json:"heatmap"`
+	AnomalyPoints       bool                `json:"anomaly_points"`
+	AnomalyBasisVersion *int                `json:"anomaly_basis_version,omitempty"`
+	TaskBuckets         bool                `json:"task_buckets"`
+	RecentFailures      int                 `json:"recent_failures"`
+	EventsPage          *EventsPage         `json:"events_page"`
+	DrilldownPreview    *DrilldownPreview   `json:"drilldown_preview"`
+	Granularity         string              `json:"granularity"`
 }
 
 type EventsPage struct {
@@ -232,6 +233,7 @@ type Response struct {
 	HourlyDistribution []HourlyPoint             `json:"hourly_distribution,omitempty"`
 	Heatmap            []HeatmapPoint            `json:"heatmap,omitempty"`
 	AnomalyPoints      []AnomalyPoint            `json:"anomaly_points,omitempty"`
+	AnomalyBasis       *AnomalyBasis             `json:"anomaly_basis,omitempty"`
 	ModelShare         []ModelShareRow           `json:"model_share,omitempty"`
 	ModelStats         []ModelStat               `json:"model_stats,omitempty"`
 	ChannelShare       []ChannelShareRow         `json:"channel_share,omitempty"`
@@ -1093,8 +1095,8 @@ func (s *Service) analytics(ctx context.Context, req Request, plan analyticsPlan
 	}
 	if hourlySnapshotAvailable {
 		prices = hourlySnapshot.Prices
-	} else if plan.modelPrices {
-		prices, err = s.store.LoadModelPrices(ctx)
+	} else if plan.priceBook {
+		prices, err = s.store.LoadAnalyticsModelPrices(ctx)
 		if err != nil {
 			return Response{}, err
 		}
@@ -1464,6 +1466,12 @@ func (s *Service) analytics(ctx context.Context, req Request, plan analyticsPlan
 		}
 		if req.Include.AnomalyPoints {
 			response.AnomalyPoints = buildAnomalyPoints(timeline, granularity)
+		}
+		if req.Include.AnomalyBasisVersion != nil {
+			response.AnomalyBasis, err = buildAnomalyBasis(ctx, timeline)
+			if err != nil {
+				return Response{}, err
+			}
 		}
 		if req.Include.Timeline {
 			if !plan.legacyTimelinePercentiles {
@@ -2138,7 +2146,7 @@ func (s *Service) accountWindowUsage(ctx context.Context, req AccountWindowUsage
 			return AccountWindowUsageResponse{}, err
 		}
 	}
-	prices, err := s.store.LoadModelPrices(ctx)
+	prices, err := s.store.LoadAnalyticsModelPrices(ctx)
 	if err != nil {
 		return AccountWindowUsageResponse{}, err
 	}
@@ -3010,53 +3018,11 @@ func buildAnomalyPoints(timeline []TimelinePoint, granularity string) []AnomalyP
 	for index := 1; index < len(timeline); index++ {
 		previous := timeline[index-1]
 		current := timeline[index]
-		metricKeys := make([]string, 0, 6)
-		requestChange := percentChange(float64(current.Calls), float64(previous.Calls))
-		costChange := percentChange(current.Cost, previous.Cost)
-		tokensPerRequestChange := percentChange(averageTokensPerRequest(current), averageTokensPerRequest(previous))
-		cacheHitRateChange := cacheHitRate(current) - cacheHitRate(previous)
-		failureRateChange := current.FailureRate - previous.FailureRate
-		latencyP95Change := percentChange(floatValueOrZero(current.P95LatencyMS), floatValueOrZero(previous.P95LatencyMS))
-		if requestChange > 1 {
-			metricKeys = append(metricKeys, "request_spike")
+		candidate := prepareAnomalyCandidate(previous, current)
+		latencyChange := percentChange(floatValueOrZero(current.P95LatencyMS), floatValueOrZero(previous.P95LatencyMS))
+		if point, anomalous := finalizeAnomalyCandidate(candidate, current, latencyChange); anomalous {
+			result = append(result, point)
 		}
-		if costChange > 1 {
-			metricKeys = append(metricKeys, "cost_spike")
-		}
-		if tokensPerRequestChange > 0.5 {
-			metricKeys = append(metricKeys, "tokens_per_request_spike")
-		}
-		if cacheHitRateChange < -0.2 {
-			metricKeys = append(metricKeys, "cache_hit_drop")
-		}
-		if failureRateChange > 0.2 {
-			metricKeys = append(metricKeys, "failure_rate_spike")
-		}
-		if latencyP95Change > 0.5 {
-			metricKeys = append(metricKeys, "latency_spike")
-		}
-		if len(metricKeys) == 0 {
-			continue
-		}
-		result = append(result, AnomalyPoint{
-			BucketMS:               current.BucketMS,
-			BucketEndMS:            current.BucketEndMS,
-			BucketIntervals:        current.BucketIntervals,
-			BucketRangeExact:       current.BucketRangeExact,
-			Label:                  current.Label,
-			Severity:               anomalySeverity(len(metricKeys)),
-			MetricKeys:             metricKeys,
-			Calls:                  current.Calls,
-			TotalTokens:            current.TotalTokens,
-			Cost:                   current.Cost,
-			FailureRate:            current.FailureRate,
-			RequestChange:          requestChange,
-			CostChange:             costChange,
-			TokensPerRequestChange: tokensPerRequestChange,
-			CacheHitRateChange:     cacheHitRateChange,
-			FailureRateChange:      failureRateChange,
-			LatencyP95Change:       latencyP95Change,
-		})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		iScore := anomalyScore(result[i])

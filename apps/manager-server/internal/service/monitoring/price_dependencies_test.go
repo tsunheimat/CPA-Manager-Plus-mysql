@@ -21,29 +21,68 @@ type failingAnalyticsPriceBook struct {
 
 func (r *failingAnalyticsPriceBook) LoadAll(context.Context) (map[string]store.ModelPrice, error) {
 	r.reads.Add(1)
+	return nil, errors.New("analytics used management book")
+}
+
+func (r *failingAnalyticsPriceBook) LoadRates(context.Context) (map[string]store.ModelPrice, error) {
+	r.reads.Add(1)
 	return nil, r.err
 }
 
 func TestAnalyticsPriceDependencyPlan(t *testing.T) {
-	for _, percentiles := range []PercentilesInclude{{Summary: true}, {Timeline: true}, {Summary: true, Timeline: true}} {
-		if planAnalytics(Include{Percentiles: &percentiles}).modelPrices {
-			t.Fatalf("standalone percentiles depend on prices: %+v", percentiles)
+	for _, include := range unpricedAnalyticsIncludes() {
+		for _, exact := range []*PercentilesInclude{nil, {Summary: true}, {Timeline: true}, {Summary: true, Timeline: true}} {
+			include.Percentiles = exact
+			plan := planAnalytics(include)
+			if plan.priceBook || plan.priceSnapshot {
+				t.Fatalf("unpriced sections depend on prices: %+v -> %+v", include, plan)
+			}
 		}
 	}
-	// The exemption is deliberately narrow: do not change any existing section's
-	// consistency contract just because it is combined with explicit percentiles.
 	for _, include := range []Include{
-		{Summary: true}, {Timeline: true}, {Timeline: true, TimelineProfile: "core"},
-		{HourlyDistribution: true}, {ModelShare: true}, {ChannelShare: true}, {ModelStats: true},
-		{FailureSources: true}, {AccountStats: true}, {CredentialStats: true}, {CredentialTimeline: true},
-		{APIKeyTimeline: true}, {APIKeyStats: true}, {FilterOptions: true}, {FilterSelectors: true},
-		{Heatmap: true}, {AnomalyPoints: true}, {TaskBuckets: true}, {RecentFailures: 1},
-		{EventsPage: &EventsPage{}}, {DrilldownPreview: &DrilldownPreview{}},
+		{Summary: true}, {Timeline: true}, {Timeline: true, TimelineProfile: "core", AnomalyBasisVersion: new(1)},
+		{ModelShare: true}, {ChannelShare: true}, {ModelStats: true},
+		{AccountStats: true}, {CredentialStats: true}, {CredentialTimeline: true},
+		{APIKeyTimeline: true}, {APIKeyStats: true}, {FilterOptions: true},
+		{Heatmap: true}, {AnomalyPoints: true}, {FilterSelectors: true, Summary: true},
 	} {
 		include.Percentiles = &PercentilesInclude{Summary: true, Timeline: true}
-		if !planAnalytics(include).modelPrices {
-			t.Fatalf("existing section lost price snapshot: %+v", include)
+		plan := planAnalytics(include)
+		if !plan.priceBook || !plan.priceSnapshot {
+			t.Fatalf("priced section lost price dependency: %+v -> %+v", include, plan)
 		}
+	}
+	plan := planAnalytics(Include{EventsPage: &EventsPage{}})
+	if plan.priceBook || !plan.priceSnapshot {
+		t.Fatalf("events page requires gate but not book: %+v", plan)
+	}
+}
+
+func unpricedAnalyticsIncludes() []Include {
+	return []Include{
+		{}, {FilterSelectors: true}, {FilterSelectors: true, FilterOptions: true},
+		{DrilldownPreview: &DrilldownPreview{FromMS: 1, ToMS: 2, Limit: 2}},
+		{HourlyDistribution: true}, {FailureSources: true}, {TaskBuckets: true}, {RecentFailures: 1},
+		{FilterSelectors: true, FilterOptions: true, HourlyDistribution: true, FailureSources: true,
+			TaskBuckets: true, RecentFailures: 1, DrilldownPreview: &DrilldownPreview{FromMS: 1, ToMS: 2, Limit: 2}},
+	}
+}
+
+func TestAnalyticsUnpricedSectionsDoNotReadPriceBook(t *testing.T) {
+	st := newMonitoringTestStore(t)
+	prices := &failingAnalyticsPriceBook{Repository: st.ModelPrices, err: errors.New("unexpected price book")}
+	st.ModelPrices = prices
+	svc := New(st)
+	for _, include := range append(unpricedAnalyticsIncludes(), Include{EventsPage: &EventsPage{Limit: 2}}) {
+		for _, exact := range []*PercentilesInclude{nil, {Summary: true, Timeline: true}} {
+			include.Percentiles = exact
+			if _, err := svc.Analytics(context.Background(), Request{FromMS: 1, ToMS: 2, Include: include}); err != nil {
+				t.Fatalf("include=%+v: %v", include, err)
+			}
+		}
+	}
+	if prices.reads.Load() != 0 {
+		t.Fatalf("unpriced book reads=%d", prices.reads.Load())
 	}
 }
 
@@ -130,10 +169,13 @@ func TestAnalyticsStandalonePercentilesDoNotWaitForPriceWriter(t *testing.T) {
 		}
 	}()
 	svc := NewWithOptions(st, Options{Timeout: time.Second})
-	for _, include := range []PercentilesInclude{{Summary: true}, {Timeline: true}, {Summary: true, Timeline: true}} {
-		_, err := svc.Analytics(context.Background(), Request{FromMS: 1, ToMS: 2, Include: Include{Percentiles: &include}})
-		if err != nil {
-			t.Fatalf("standalone exact request waited for price writer: %v", err)
+	for _, include := range unpricedAnalyticsIncludes() {
+		for _, exact := range []*PercentilesInclude{nil, {Summary: true}, {Timeline: true}, {Summary: true, Timeline: true}} {
+			include.Percentiles = exact
+			_, err := svc.Analytics(context.Background(), Request{FromMS: 1, ToMS: 2, Include: include})
+			if err != nil {
+				t.Fatalf("unpriced request waited for price writer: include=%+v err=%v", include, err)
+			}
 		}
 	}
 	// Adding priced core or anomalies must still wait for that same writer,
@@ -142,6 +184,9 @@ func TestAnalyticsStandalonePercentilesDoNotWaitForPriceWriter(t *testing.T) {
 	for _, include := range []Include{
 		{Summary: true, SummaryProfile: "compact", Percentiles: &PercentilesInclude{Summary: true}},
 		{AnomalyPoints: true, Percentiles: &PercentilesInclude{Timeline: true}},
+		{Timeline: true, TimelineProfile: "core", AnomalyBasisVersion: new(1), FilterSelectors: true},
+		{Heatmap: true, DrilldownPreview: &DrilldownPreview{}},
+		{FilterOptions: true}, {EventsPage: &EventsPage{Limit: 2}},
 	} {
 		_, err := svc.Analytics(context.Background(), Request{FromMS: 1, ToMS: 2, Include: include})
 		if !errors.Is(err, ErrAnalyticsDeadlineExceeded) {

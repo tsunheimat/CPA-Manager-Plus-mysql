@@ -23,12 +23,12 @@ func retainedEventSourceFixture(t *testing.T) (context.Context, *sql.Tx) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	columns := make([]string, 0, len(retainedPricingColumns)+2)
-	columns = append(columns, "event_id integer primary key", "account_key text not null")
+	columns = append(columns, "event_id integer primary key", "account_key text not null", "latency_ms integer")
 	for _, column := range retainedPricingColumns {
 		columns = append(columns, column+" text")
 	}
 	rawColumns := make([]string, 0, len(retainedPricingColumns)+2)
-	rawColumns = append(rawColumns, "id integer primary key", "event_hash text")
+	rawColumns = append(rawColumns, "id integer primary key", "event_hash text", "latency_ms integer")
 	for _, column := range retainedPricingColumns {
 		rawColumns = append(rawColumns, column+" text")
 	}

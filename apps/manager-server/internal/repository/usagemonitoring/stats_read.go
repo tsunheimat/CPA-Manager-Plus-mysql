@@ -7,10 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 type accountStatKey struct {
@@ -52,41 +51,6 @@ type apiKeyStatAccumulator struct {
 	latencySumMS int64
 }
 
-func monitoringBandedProjectedEventsCTE(source string) string {
-	return fmt.Sprintf(`with base_events as (%s), priced_events as (
-		select
-			base_events.*,
-			coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model) as billing_model_value,
-			case
-				when billing_price.model is not null then coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model)
-				when analytics_price.model is not null then base_events.analytics_model
-				when display_price.model is not null then base_events.model
-				else coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model)
-			end as pricing_model_value,
-			max(
-				max(coalesce(cached_tokens, 0), coalesce(cache_tokens, 0)) -
-				max(coalesce(cache_read_tokens, 0), 0) -
-				max(coalesce(cache_creation_tokens, 0), 0),
-				0
-			) as compatible_cached_tokens_value,
-			normalized_total_input_tokens as normalized_input_tokens_value
-		from base_events
-		left join model_prices billing_price on billing_price.model = coalesce(nullif(base_events.resolved_model, ''), base_events.analytics_model)
-		left join model_prices analytics_price on analytics_price.model = base_events.analytics_model
-		left join model_prices display_price on display_price.model = base_events.model
-	), banded_events as (
-		select
-			priced_events.*,
-			coalesce((
-				select max(tier.threshold_tokens)
-				from model_price_context_tiers tier
-				where tier.model = priced_events.pricing_model_value
-					and priced_events.normalized_total_input_tokens > tier.threshold_tokens
-			), %d) as context_threshold_tokens_value
-		from priced_events
-	)`, source, model.ModelPriceBaseContextThreshold)
-}
-
 func (r *repository) LoadAccountStats(ctx context.Context, filter AnalyticsFilter) ([]AccountModelStat, State, bool, error) {
 	if !SupportsEventProjectionFilter(filter) {
 		return nil, State{}, false, nil
@@ -100,16 +64,15 @@ func (r *repository) LoadAccountStats(ctx context.Context, filter AnalyticsFilte
 	if err != nil || !projectionAvailable {
 		return nil, projectionState, projectionAvailable, err
 	}
-	state, revision, dailyAvailable, err := statsReadState(ctx, tx)
-	if err != nil {
-		return nil, projectionState, false, err
-	}
-
 	grouped := map[accountStatKey]*accountStatAccumulator{}
 	if SupportsStatsFilter(filter) {
+		state, revision, dailyAvailable, stateErr := statsReadState(ctx, tx)
+		if stateErr != nil {
+			return nil, projectionState, false, stateErr
+		}
 		err = r.loadAccountComposed(ctx, tx, state, dailyAvailable, projectionState, projectionComplete, revision, filter, grouped)
 	} else {
-		err = mergeProjectedAccountStats(ctx, tx, projectionState.CoverageEventID, projectionComplete, filter, eventSourceOptions{}, grouped)
+		err = mergeProjectedAccountStats(ctx, tx, projectionState.CoverageEventID, projectionComplete, filter, eventSourceOptions{DirectProjectedSearch: mysql.IsMySQL(r.db)}, grouped)
 	}
 	if err != nil {
 		return nil, projectionState, false, err
@@ -133,16 +96,15 @@ func (r *repository) LoadAPIKeyStats(ctx context.Context, filter AnalyticsFilter
 	if err != nil || !projectionAvailable {
 		return nil, projectionState, projectionAvailable, err
 	}
-	state, revision, dailyAvailable, err := statsReadState(ctx, tx)
-	if err != nil {
-		return nil, projectionState, false, err
-	}
-
 	grouped := map[apiKeyStatKey]*apiKeyStatAccumulator{}
 	if SupportsStatsFilter(filter) {
+		state, revision, dailyAvailable, stateErr := statsReadState(ctx, tx)
+		if stateErr != nil {
+			return nil, projectionState, false, stateErr
+		}
 		err = r.loadAPIKeyComposed(ctx, tx, state, dailyAvailable, projectionState, projectionComplete, revision, filter, grouped)
 	} else {
-		err = mergeProjectedAPIKeyStats(ctx, tx, projectionState.CoverageEventID, projectionComplete, filter, 0, false, grouped)
+		err = mergeProjectedAPIKeyStats(ctx, tx, projectionState.CoverageEventID, projectionComplete, filter, eventSourceOptions{DirectProjectedSearch: mysql.IsMySQL(r.db)}, grouped)
 	}
 	if err != nil {
 		return nil, projectionState, false, err
@@ -268,7 +230,7 @@ func loadAPIKeyGranularRange(
 	fullStartMS := ceilIntervalMS(filter.FromMS, grain)
 	fullEndMS := floorIntervalMS(filter.ToMS, grain)
 	if fullStartMS >= fullEndMS {
-		return mergeProjectedAPIKeyStats(ctx, tx, projectionCoverageEventID, projectionComplete, filter, 0, false, grouped)
+		return mergeProjectedAPIKeyStats(ctx, tx, projectionCoverageEventID, projectionComplete, filter, eventSourceOptions{}, grouped)
 	}
 	if err := mergeStoredAPIKeyTableStats(ctx, tx, revision, filter, fullStartMS, fullEndMS, grouped, table); err != nil {
 		return err
@@ -276,20 +238,20 @@ func loadAPIKeyGranularRange(
 	tailFilter := filter
 	tailFilter.FromMS = fullStartMS
 	tailFilter.ToMS = fullEndMS
-	if err := mergeProjectedAPIKeyStats(ctx, tx, projectionCoverageEventID, projectionComplete, tailFilter, state.CoverageEventID, true, grouped); err != nil {
+	if err := mergeProjectedAPIKeyStats(ctx, tx, projectionCoverageEventID, projectionComplete, tailFilter, eventSourceOptions{AfterID: state.CoverageEventID, UseAfter: true}, grouped); err != nil {
 		return err
 	}
 	if filter.FromMS < fullStartMS {
 		edgeFilter := filter
 		edgeFilter.ToMS = fullStartMS
-		if err := mergeProjectedAPIKeyStats(ctx, tx, projectionCoverageEventID, projectionComplete, edgeFilter, 0, false, grouped); err != nil {
+		if err := mergeProjectedAPIKeyStats(ctx, tx, projectionCoverageEventID, projectionComplete, edgeFilter, eventSourceOptions{}, grouped); err != nil {
 			return err
 		}
 	}
 	if fullEndMS < filter.ToMS {
 		edgeFilter := filter
 		edgeFilter.FromMS = fullEndMS
-		if err := mergeProjectedAPIKeyStats(ctx, tx, projectionCoverageEventID, projectionComplete, edgeFilter, 0, false, grouped); err != nil {
+		if err := mergeProjectedAPIKeyStats(ctx, tx, projectionCoverageEventID, projectionComplete, edgeFilter, eventSourceOptions{}, grouped); err != nil {
 			return err
 		}
 	}
@@ -375,37 +337,10 @@ func mergeProjectedAccountStats(
 	if filter.FromMS >= filter.ToMS {
 		return nil
 	}
-	source, args := filteredEventSourceSQL(
-		filter,
-		projectionCoverageEventID,
-		`p.timestamp_ms, p.account_snapshot, p.auth_label_snapshot, p.provider,
-		p.auth_provider_snapshot, p.auth_account_id_snapshot, p.auth_index, p.source, p.source_hash,
-		p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
-		p.normalized_total_input_tokens, p.output_tokens, p.cached_tokens,
-		p.cache_tokens, p.cache_read_tokens, p.cache_creation_tokens,
-		p.total_tokens, p.latency_ms`,
-		`e.timestamp_ms, coalesce(e.account_snapshot, ''), coalesce(e.auth_label_snapshot, ''),
-		coalesce(e.provider, ''), coalesce(e.auth_provider_snapshot, ''), coalesce(e.auth_account_id_snapshot, ''),
-		coalesce(e.auth_index, ''), coalesce(e.source, ''),
-		coalesce(e.source_hash, ''), `+usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")+`,
-		`+usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+`,
-		coalesce(e.resolved_model, ''), coalesce(e.service_tier, ''),
-		coalesce(e.failed, 0),
-		coalesce(e.normalized_total_input_tokens, e.input_tokens, 0),
-		coalesce(e.output_tokens, 0), coalesce(e.cached_tokens, 0),
-		coalesce(e.cache_tokens, 0), coalesce(e.cache_read_tokens, 0),
-		coalesce(e.cache_creation_tokens, 0), coalesce(e.total_tokens, 0),
-		e.latency_ms`,
-		eventSourceOptions{
-			AfterID:            options.AfterID,
-			UseAfter:           options.UseAfter,
-			MaxID:              options.MaxID,
-			UseMax:             options.UseMax,
-			CodexMarkerOnly:    options.CodexMarkerOnly,
-			ProjectionComplete: projectionComplete,
-		},
-	)
-	query := monitoringBandedProjectedEventsCTE(source) + `
+	options.ProjectionComplete = projectionComplete
+	projected, raw := monitoringPricingSourceSelects(monitoringAccountFields)
+	arms := filteredEventSourceArms(filter, projectionCoverageEventID, projected, raw, options)
+	aggregate := `
 		select
 		coalesce(account_snapshot, ''),
 		coalesce(auth_label_snapshot, ''),
@@ -443,7 +378,7 @@ func mergeProjectedAccountStats(
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_account_id_snapshot, auth_index,
 			source_hash, analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, coalesce(service_tier, '')`
-	args = appendLongContextThresholdArgs(args)
+	query, args := monitoringPricingArmsQuery(arms, monitoringAccountFields, aggregate, appendLongContextThresholdArgs(nil), monitoringAccountAggregateColumns)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -524,40 +459,17 @@ func mergeProjectedAPIKeyStats(
 	projectionCoverageEventID int64,
 	projectionComplete bool,
 	filter AnalyticsFilter,
-	afterID int64,
-	useAfterID bool,
+	options eventSourceOptions,
 	grouped map[apiKeyStatKey]*apiKeyStatAccumulator,
 ) error {
 	if filter.FromMS >= filter.ToMS {
 		return nil
 	}
-	source, args := filteredEventSourceSQL(
-		filter,
-		projectionCoverageEventID,
-		`p.timestamp_ms, p.api_key_hash, p.account_snapshot, p.auth_label_snapshot,
-		p.provider, p.auth_provider_snapshot, p.auth_account_id_snapshot, p.auth_index, p.source,
-		p.source_hash, p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
-		p.normalized_total_input_tokens, p.output_tokens, p.cached_tokens,
-		p.cache_tokens, p.cache_read_tokens, p.cache_creation_tokens,
-		p.total_tokens, p.latency_ms`,
-		`e.timestamp_ms, coalesce(e.api_key_hash, ''), coalesce(e.account_snapshot, ''),
-		coalesce(e.auth_label_snapshot, ''), coalesce(e.provider, ''),
-		coalesce(e.auth_provider_snapshot, ''), coalesce(e.auth_account_id_snapshot, ''), coalesce(e.auth_index, ''),
-		coalesce(e.source, ''), coalesce(e.source_hash, ''),
-		`+usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")+`, `+usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")+`, coalesce(e.resolved_model, ''),
-		coalesce(e.service_tier, ''), coalesce(e.failed, 0),
-		coalesce(e.normalized_total_input_tokens, e.input_tokens, 0),
-		coalesce(e.output_tokens, 0), coalesce(e.cached_tokens, 0),
-		coalesce(e.cache_tokens, 0), coalesce(e.cache_read_tokens, 0),
-		coalesce(e.cache_creation_tokens, 0), coalesce(e.total_tokens, 0),
-		e.latency_ms`,
-		eventSourceOptions{
-			AfterID:            afterID,
-			UseAfter:           useAfterID,
-			ProjectionComplete: projectionComplete,
-		},
-	)
-	query := monitoringBandedProjectedEventsCTE(source) + `
+	options.ProjectionComplete = projectionComplete
+	extra := append(append([]string{}, monitoringAccountFields...), "api_key_hash")
+	projected, raw := monitoringPricingSourceSelects(extra)
+	arms := filteredEventSourceArms(filter, projectionCoverageEventID, projected, raw, options)
+	aggregate := `
 	select
 		coalesce(api_key_hash, ''),
 		coalesce(account_snapshot, ''),
@@ -594,7 +506,7 @@ func mergeProjectedAPIKeyStats(
 		coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_account_id_snapshot, auth_index,
 			source_hash, analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, coalesce(service_tier, '')`
-	args = appendLongContextThresholdArgs(args)
+	query, args := monitoringPricingArmsQuery(arms, extra, aggregate, appendLongContextThresholdArgs(nil), monitoringAPIKeyAggregateColumns)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err

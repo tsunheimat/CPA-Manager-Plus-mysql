@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
@@ -14,47 +13,6 @@ var (
 	requestedModelExpr = usageidentity.SQLEffectiveRequestedModelExpression("model", "requested_model")
 	analyticsModelExpr = usageidentity.SQLRequestAnalyticsModelExpression("model", "requested_model")
 )
-
-func pricingBandedUsageEventsCTEWithBaseFilter(baseFilter string) string {
-	whereClause := ""
-	if baseFilter != "" {
-		whereClause = "\n\twhere " + baseFilter
-	}
-	return fmt.Sprintf(`with pricing_base_events as (
-	select
-		usage_events.*,
-		%s as requested_model_value,
-		%s as analytics_model_value,
-		coalesce(nullif(resolved_model, ''), %s) as billing_model_value,
-		coalesce(normalized_total_input_tokens, input_tokens, 0) as normalized_input_tokens_value
-	from usage_events%s
-), pricing_resolved_events as (
-	select
-		pricing_base_events.*,
-		case
-			when billing_price.model is not null then billing_model_value
-			when analytics_price.model is not null then pricing_base_events.analytics_model_value
-			when display_price.model is not null then pricing_base_events.requested_model_value
-			else billing_model_value
-		end as pricing_model_value
-	from pricing_base_events
-	left join model_prices billing_price on billing_price.model = pricing_base_events.billing_model_value
-	left join model_prices analytics_price on analytics_price.model = pricing_base_events.analytics_model_value
-	left join model_prices display_price on display_price.model = pricing_base_events.requested_model_value
-), banded_usage_events as (
-	select
-		pricing_resolved_events.*,
-		coalesce((
-			select max(tier.threshold_tokens)
-			from model_price_context_tiers tier
-			where tier.model = pricing_resolved_events.pricing_model_value
-				and pricing_resolved_events.normalized_input_tokens_value > tier.threshold_tokens
-		), %d) as context_threshold_tokens_value
-	from pricing_resolved_events
-	)`, requestedModelExpr, analyticsModelExpr, analyticsModelExpr, whereClause, model.ModelPriceBaseContextThreshold)
-}
-
-var pricingBandedUsageEventsCTE = pricingBandedUsageEventsCTEWithBaseFilter("")
 
 // Aggregate captures roll-up metrics for a usage_events window.
 type Aggregate struct {
@@ -172,46 +130,14 @@ func (r *repository) AggregateBetween(ctx context.Context, fromMs, toMs int64) (
 	return agg, nil
 }
 
-var topModelsSQL = fmt.Sprintf(pricingBandedUsageEventsCTEWithBaseFilter("timestamp_ms >= ? and timestamp_ms < ?")+`, top_models as (
-	select
-		analytics_model_value as model,
-		count(*) as model_calls
-	from banded_usage_events
-	group by analytics_model_value
-	order by model_calls desc
-	limit ?
-)
-select
-	e.analytics_model_value as model,
-	e.billing_model_value as billing_model,
-	e.pricing_model_value,
-	e.context_threshold_tokens_value,
-	coalesce(e.service_tier, '') as service_tier,
-	count(*) as calls,
-	sum(case when e.failed = 0 then 1 else 0 end) as success,
-	coalesce(sum(coalesce(e.normalized_total_input_tokens, e.input_tokens)), 0),
-	coalesce(sum(e.output_tokens), 0),
-	coalesce(sum(e.reasoning_tokens), 0),
-	coalesce(sum(max(max(e.cached_tokens, e.cache_tokens) - max(e.cache_read_tokens, 0) - max(e.cache_creation_tokens, 0), 0)), 0),
-	coalesce(sum(e.cache_read_tokens), 0),
-	coalesce(sum(e.cache_creation_tokens), 0),
-	coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then coalesce(e.normalized_total_input_tokens, e.input_tokens) else 0 end), 0),
-	coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then e.output_tokens else 0 end), 0),
-	coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then max(max(e.cached_tokens, e.cache_tokens) - max(e.cache_read_tokens, 0) - max(e.cache_creation_tokens, 0), 0) else 0 end), 0),
-	coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then e.cache_read_tokens else 0 end), 0),
-	coalesce(sum(case when coalesce(e.normalized_total_input_tokens, e.input_tokens) > %[1]d then e.cache_creation_tokens else 0 end), 0),
-	coalesce(sum(e.total_tokens), 0)
-from banded_usage_events e
-join top_models t on t.model = e.analytics_model_value
-group by e.analytics_model_value, billing_model, e.pricing_model_value, e.context_threshold_tokens_value, coalesce(e.service_tier, '')
-order by max(t.model_calls) desc, e.analytics_model_value, calls desc`, usage.LongContextInputTokenThreshold)
+var topModelsSQL = topModelPricingBandsSQL("timestamp_ms >= ? and timestamp_ms < ?")
 
 // TopModelsBetween returns the most active models ordered by call count.
 func (r *repository) TopModelsBetween(ctx context.Context, fromMs, toMs int64, limit int) ([]ModelStat, error) {
 	if limit <= 0 {
 		limit = 5
 	}
-	rows, err := r.db.QueryContext(ctx, topModelsSQL, fromMs, toMs, limit)
+	rows, err := r.db.QueryContext(ctx, topModelsSQL, topModelPricingArgs([]any{fromMs, toMs}, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -248,32 +174,9 @@ func (r *repository) TopModelsBetween(ctx context.Context, fromMs, toMs int64, l
 	return stats, rows.Err()
 }
 
-var modelStatsSQL = fmt.Sprintf(pricingBandedUsageEventsCTE+`
-select
-	analytics_model_value as model,
-	billing_model_value as billing_model,
-	pricing_model_value,
-	context_threshold_tokens_value,
-	coalesce(service_tier, '') as service_tier,
-	count(*) as calls,
-	sum(case when failed = 0 then 1 else 0 end) as success,
-	coalesce(sum(coalesce(normalized_total_input_tokens, input_tokens)), 0),
-	coalesce(sum(output_tokens), 0),
-	coalesce(sum(reasoning_tokens), 0),
-	coalesce(sum(max(max(cached_tokens, cache_tokens) - max(cache_read_tokens, 0) - max(cache_creation_tokens, 0), 0)), 0),
-	coalesce(sum(cache_read_tokens), 0),
-	coalesce(sum(cache_creation_tokens), 0),
-	coalesce(sum(case when coalesce(normalized_total_input_tokens, input_tokens) > %[1]d then coalesce(normalized_total_input_tokens, input_tokens) else 0 end), 0),
-	coalesce(sum(case when coalesce(normalized_total_input_tokens, input_tokens) > %[1]d then output_tokens else 0 end), 0),
-	coalesce(sum(case when coalesce(normalized_total_input_tokens, input_tokens) > %[1]d then max(max(cached_tokens, cache_tokens) - max(cache_read_tokens, 0) - max(cache_creation_tokens, 0), 0) else 0 end), 0),
-	coalesce(sum(case when coalesce(normalized_total_input_tokens, input_tokens) > %[1]d then cache_read_tokens else 0 end), 0),
-	coalesce(sum(case when coalesce(normalized_total_input_tokens, input_tokens) > %[1]d then cache_creation_tokens else 0 end), 0),
-	coalesce(sum(total_tokens), 0)
-from banded_usage_events
-where timestamp_ms >= ? and timestamp_ms < ?
-group by analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
-order by calls desc, analytics_model_value, billing_model, pricing_model_value,
-coalesce(service_tier, ''), context_threshold_tokens_value`, usage.LongContextInputTokenThreshold)
+var modelStatsSQL = pricingBandedUsageEventsCTEWithBaseFilter("timestamp_ms >= ? and timestamp_ms < ?", pricingModelFields) + "\n" + modelPricingBandsSQL + `
+order by calls desc, model, billing_model, pricing_model_value,
+coalesce(service_tier, ''), context_threshold_tokens_value`
 
 // ModelStatsBetween returns per-model totals for all models in a window.
 func (r *repository) ModelStatsBetween(ctx context.Context, fromMs, toMs int64) ([]ModelStat, error) {

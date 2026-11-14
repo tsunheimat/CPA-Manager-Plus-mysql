@@ -20,14 +20,18 @@ vi.mock('@/features/monitoring/hooks/useMonitoringAnalytics', async (importOrigi
 }));
 
 vi.mock('@/hooks/usePanelFeatureAvailability', () => ({
-  usePanelFeatureAvailability: () => ({ checking: false }),
+  usePanelFeatureAvailability: () => ({
+    checking: false,
+    analyticsSectionsVersion: monitoringMetaMocks.version,
+  }),
 }));
 
-vi.mock('@/features/monitoring/hooks/useUsageData', () => ({
-  useUsageData: () => ({ apiKeyAliases: [], loadApiKeyAliases: vi.fn() }),
+vi.mock('@/features/monitoring/hooks/useApiKeyAliases', () => ({
+  useApiKeyAliases: () => ({ apiKeyAliases: [], loadApiKeyAliases: vi.fn() }),
 }));
 
 const monitoringMetaMocks = vi.hoisted(() => ({
+  version: 0,
   load: vi.fn(),
 }));
 
@@ -242,6 +246,7 @@ describe('useUsageAnalytics request orchestration', () => {
   }
 
   beforeEach(() => {
+    monitoringMetaMocks.version = 0;
     selectorError = '';
     credentialTimelineError = '';
     credentialTimelineLoading = false;
@@ -280,6 +285,44 @@ describe('useUsageAnalytics request orchestration', () => {
       await Promise.resolve();
     });
   };
+
+  it('changes the exact fetch identity when core_id changes without a generation change', async () => {
+    monitoringMetaMocks.version = 2;
+    let coreId = 'first-core';
+    useMonitoringAnalyticsMock.mockImplementation((params) => {
+      const result = resultFor(params);
+      if (!params.include?.summary) return result;
+      return {
+        ...result,
+        enabled: true,
+        dataStale: false,
+        data: {
+          ...emptyAnalyticsResponse,
+          summary: { total_calls: 0 } as NonNullable<MonitoringAnalyticsResponse['summary']>,
+          timeline: [],
+          anomaly_basis: {
+            version: 1,
+            semantics: 'core_additive_exact_latency',
+            core_id: coreId,
+            candidates: [],
+          },
+        },
+      };
+    });
+    await renderHook();
+    const generation = latestResult!.fetchGenerationKey;
+    const first = lastParams((params) => Boolean(params.include?.percentiles));
+    expect(first?.enabled).toBe(true);
+    expect(JSON.parse(first!.fetchGenerationKey!)).toEqual([generation, 'first-core']);
+    coreId = 'replacement-core';
+    await act(async () => {
+      latestResult!.setTrendMetric('totalTokens');
+    });
+    const replacement = lastParams((params) => Boolean(params.include?.percentiles));
+    expect(latestResult!.fetchGenerationKey).toBe(generation);
+    expect(replacement?.fetchGenerationKey).not.toBe(first?.fetchGenerationKey);
+    expect(JSON.parse(replacement!.fetchGenerationKey!)).toEqual([generation, 'replacement-core']);
+  });
 
   it('uses a tab-scoped main request and a tab-independent selector request', async () => {
     await renderHook();

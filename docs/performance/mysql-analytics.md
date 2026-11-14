@@ -4,7 +4,7 @@
 
 The MySQL analytics work preserves exact metrics and the existing SQLite API behavior. It targets foreground request cost, shared-pool starvation, network-sensitive write loops, rolling-window aggregation, and historical-data correctness. It is not a claim that a compatibility test or a SQLite benchmark establishes MySQL performance.
 
-**Live MySQL validation is deferred for this development session.** Native query plans, populated upgrades, native bulk-write behavior, and measured MySQL latency must be accepted on a disposable MySQL 8.4 instance before enabling the native optimizations. Never use a production DSN for test fixtures, load tests, or migration experiments.
+**The current SQL redesign has not yet received native MySQL acceptance.** The earlier released baseline passed CI integration/recovery, but that does not validate the current working-tree pricing-query rewrite or establish production performance. New semantic, plan, and moderate-data sentinel tests must run on disposable MySQL 8.4. Never use a production DSN for test fixtures, load tests, or migration experiments. The complete baseline query/index inventory and implementation deltas are in [Usage analytics SQL catalog](usage-analytics-sql-catalog.md).
 
 ## Architecture
 
@@ -12,7 +12,9 @@ The MySQL analytics work preserves exact metrics and the existing SQLite API beh
 
 An analytics-section capability lets the page fetch core totals and a core timeline without exact percentile work. Exact summary/bucket P95 and complete anomaly analysis load independently; dimension statistics, selectors, previews, and dependent trends have separate request state. An optional failure must not erase a successful core response or be presented as a zero metric.
 
-Legacy callers retain the existing include semantics when the new fields are absent. Older servers that do not advertise the capability continue to receive legacy combined requests. Requests share frozen client bounds and filter scope, but separate requests are not a single database snapshot. Coverage and generation checks remain important during ingestion, price edits, retention, and refreshes.
+The current implementation advertises `analyticsSectionsVersion=2` when progressive support is enabled. New clients request `anomaly_basis_version:1` with the core timeline: the server returns an acknowledged additive anomaly basis and opaque `core_id`. The later exact POST requests percentiles only; the client completes anomalies against that frozen core, preserving thresholds/ranking without asking the server to rebuild the priced timeline. Missing acknowledgment or required exact fields is incomplete, not an empty success. Core and exact coverage remain separate, and the two responses are explicitly not an atomic database snapshot.
+
+Legacy capability 0/1 clients retain their existing include semantics when the new fields are absent. Older servers that do not advertise the capability continue to receive legacy combined requests. Requests share frozen client bounds and filter scope, but separate requests are not a single database snapshot. Coverage and generation checks remain important during ingestion, price edits, retention, and refreshes.
 
 Exact P95 still requires examining its sample population. With native analytics enabled, combining requested results and returning only winners avoids duplicate application work and raw-sample transfer; it does not prove a single physical scan or eliminate the global/bucket sorts. With native analytics disabled on MySQL, a separate reference route counts independent positive metric populations and streams ordered samples within one read-only snapshot, retaining only per-bucket counters/results—not the full sample population in Go. This fallback still transfers samples and may do multiple passes, so it is not a constant-cost or native-performance claim. SQLite retains its portable ranked implementation. Never compute an overall P95 by averaging hourly P95 values. Archived TTFT samples that were not retained cannot be reconstructed by a new schema.
 
@@ -59,7 +61,15 @@ MySQL hourly account/API-key/selector side structures supplement, rather than re
 
 Grouped native readers return sufficient aggregate statistics rather than every event. Go remains authoritative for timezone bucket mapping, including fractional offsets and daylight-saving changes; MySQL timezone-table installation is not a prerequisite.
 
-Search retains arbitrary substring behavior. A plain MySQL FULLTEXT word index is not an equivalent substitute for SQLite's trigram search. Time-scoped candidate filtering helps, but substring performance still needs representative measurement.
+Search retains arbitrary substring behavior. MySQL's projected search now filters the time-scoped projection directly instead of using the SQLite FTS-shaped subquery against a plain MySQL view. SQLite retains eligible FTS5 trigram search. A plain MySQL FULLTEXT word index is not an equivalent substitute; wildcard/fallback and search/key-hash OR contracts remain unchanged.
+
+### Pricing query redesign
+
+Priced raw and derived reads use explicit field projections and filter source rows before classification. Configured context tiers are converted once per SQL statement into nonoverlapping intervals with catalog-only `LEAD`; events join by full pricing-model identity and strict-lower/inclusive-upper input bounds. This removes the event-dependent `MAX(threshold_tokens)` lookup. Model fallback, configured zero, strict threshold equality, legacy long-context measures and grouped monetary clamping remain exact. No new schema, index, feature flag or timeout setting is required.
+
+Priced read source arms aggregate before union at their existing grain. Retained-history maintenance deliberately keeps its verified event-union source, including ordinary catch-up after archival; the separate account-history endpoint can also request catch-up. It is not on the usage-analytics page read path, and no claim is made that every maintenance union is aggregate-first. Native materialization and speedup must be verified by the authored plan/sentinel tests rather than inferred from CTE syntax.
+
+Pure selectors, previews, explicit percentiles and other unpriced sections skip unused catalog reads and price-gate acquisition. Full event pages conservatively retain their price-structure gate but avoid loading unused rate books. Priced requests use narrow rate-only catalog loads; management APIs retain full metadata. Analytics bootstrap uses aliases-only loading and no longer fetches or migrates browser model prices.
 
 ## Configuration and safe rollout
 
@@ -149,7 +159,7 @@ Increase to one million or representative production cardinality only after esti
 
 `internal/analyticsbench/BenchmarkUsageAnalyticsHeatmap` covers fixed nonmidnight seven-/30-day windows in `Asia/Hong_Kong`, both heatmap-only and compact-summary-plus-heatmap requests. It uses the same three explicit flag inputs, synthetic pricing tiers, and up to 1,009 API keys, five providers, and 12 models. Setup/catch-up and one warmup request are excluded from the timed loop; each timed request checks calls/tokens/status totals and, for combined requests, summary/heatmap cost consistency. The normal service deadline remains enforced: a timeout fails the benchmark rather than being hidden by a larger timeout. This fixture is not a production dump, does not simulate collection gaps or retained history, and does not prove production performance. Native reads being enabled does not imply an aggregate-backed heatmap source.
 
-**Remaining heatmap limit:** the native heatmap still prices and groups filtered raw `usage_events`; it does not read the monitoring-hourly tables. `USAGE_MYSQL_HOURLY_ENABLED` therefore does not select a rollup-backed heatmap. Progressive loading now isolates heatmap from summary, and the SQL omits unused timeline metrics/date grouping, but neither is evidence that the original seven-day request meets its deadline. An aggregate-backed reader needs exact pricing/contributor dimensions, timezone and partial-hour handling, late-event tails, and verified retained coverage before it can replace this source safely.
+**Remaining heatmap limit:** the heatmap still prices and groups filtered raw `usage_events`; it does not read the monitoring-hourly tables. `USAGE_MYSQL_HOURLY_ENABLED` therefore does not select a rollup-backed heatmap. The current redesign additionally narrows/filter-scopes pricing inputs and uses small catalog tier intervals instead of event-dependent tier subqueries. This is a query-work correction, not proof that the original seven-day request meets its deadline. Measure it on representative disposable fixtures before concluding that a further aggregate-backed reader is necessary; such a reader would still require exact pricing/contributor dimensions, timezone/partial-hour handling, late-event tails and verified retained coverage.
 
 For a targeted reference/native comparison, keep the event count, hardware, and other flags identical and change only `CPA_MYSQL_BENCH_NATIVE_READS` between `false` and `true`:
 

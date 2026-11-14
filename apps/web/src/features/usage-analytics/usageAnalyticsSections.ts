@@ -4,6 +4,7 @@ import type {
   MonitoringAnalyticsCoverage,
 } from '@/services/api/usageService';
 import type { UseMonitoringAnalyticsReturn } from '@/features/monitoring/hooks/useMonitoringAnalytics';
+import { completeUsageAnomalies, hasRequestedPercentiles } from './usageAnalyticsAnomalies';
 import {
   buildUsageAnalyticsInclude,
   type UsageAnalyticsTab,
@@ -17,6 +18,9 @@ export interface UsageAnalyticsSectionState {
   error: string;
   stale: boolean;
   coverage?: MonitoringAnalyticsCoverage;
+  /** V2 anomalies retain both snapshots' provenance; never merge counts. */
+  coreCoverage?: MonitoringAnalyticsCoverage;
+  compositionSemantics?: 'core_additive_exact_latency';
   retry: () => void;
 }
 
@@ -50,7 +54,8 @@ export function analyticsSectionState(
 
 export function buildUsageAnalyticsSections(
   tab: UsageAnalyticsTab,
-  granularity: UsageAnalyticsResolvedGranularity
+  granularity: UsageAnalyticsResolvedGranularity,
+  sectionsVersion = 1
 ) {
   const core = buildUsageAnalyticsInclude(tab, granularity);
   const dimensions: MonitoringAnalyticsInclude = { granularity };
@@ -66,8 +71,12 @@ export function buildUsageAnalyticsSections(
   if (core.timeline) core.timeline_profile = 'core';
   if (tab === 'overview' || tab === 'trends') {
     exact.percentiles = { summary: tab === 'overview', timeline: true };
-    // The service reuses the same exact bucket percentiles for anomaly detection.
-    exact.anomaly_points = true;
+    if (sectionsVersion >= 2) {
+      core.anomaly_basis_version = 1;
+    } else {
+      // Capability 1 keeps server-computed anomalies and its priced timeline.
+      exact.anomaly_points = true;
+    }
   }
   delete core.summary_percentiles;
   delete core.anomaly_points;
@@ -81,9 +90,12 @@ export function mergeUsageAnalyticsSections(
   core: MonitoringAnalyticsResponse | null,
   dimensions: MonitoringAnalyticsResponse | null,
   exact: MonitoringAnalyticsResponse | null,
-  preview: MonitoringAnalyticsResponse | null
+  preview: MonitoringAnalyticsResponse | null,
+  sectionsVersion = 1,
+  requestedPercentiles?: MonitoringAnalyticsInclude['percentiles']
 ): MonitoringAnalyticsResponse | null {
   if (!core) return null;
+  if (sectionsVersion >= 2 && !hasRequestedPercentiles(exact, requestedPercentiles)) exact = null;
   const byBucket = new Map(exact?.percentiles?.timeline?.map((point) => [point.bucket_ms, point]));
   return {
     ...core,
@@ -95,7 +107,8 @@ export function mergeUsageAnalyticsSections(
           heatmap: dimensions.heatmap,
         }
       : {}),
-    anomaly_points: exact?.anomaly_points,
+    anomaly_points:
+      sectionsVersion >= 2 ? completeUsageAnomalies(core, exact) : exact?.anomaly_points,
     percentiles: exact?.percentiles,
     summary: core.summary ? { ...core.summary, ...exact?.percentiles?.summary } : undefined,
     timeline: core.timeline?.map((point) => {

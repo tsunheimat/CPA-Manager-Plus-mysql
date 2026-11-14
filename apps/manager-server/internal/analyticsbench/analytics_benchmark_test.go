@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ import (
 // sample populations fixed. Setup/catch-up are excluded from measured requests.
 // Without a test DSN this measures SQLite only, never MySQL performance.
 func BenchmarkUsageAnalyticsRollingWindow(b *testing.B) {
-	for _, profile := range []string{"core", "exact", "browser_pair", "browser_pair_with_ingestion"} {
+	for _, profile := range []string{"core", "percentiles_only", "core_selectors_pair", "core_selectors_pair_with_ingestion", "overview_v1_sections", "overview_v2_sections"} {
 		b.Run(profile, func(b *testing.B) {
 			ctx := context.Background()
 			cfg := config.Config{DBDriver: "sqlite", DBPath: filepath.Join(b.TempDir(), "usage.sqlite")}
@@ -37,6 +38,23 @@ func BenchmarkUsageAnalyticsRollingWindow(b *testing.B) {
 				b.Fatal(err)
 			}
 			defer db.Close()
+			pageProfile := strings.HasPrefix(profile, "overview_")
+			if pageProfile {
+				book := make(map[string]store.ModelPrice)
+				for i := 0; i < 12; i++ {
+					book[fmt.Sprintf("test-model-%d", i)] = store.ModelPrice{
+						Prompt: 1, Completion: 2, PromptConfigured: true, CompletionConfigured: true,
+						RawJSON: `{"catalog_metadata":"` + strings.Repeat("m", 32768) + `"}`,
+						ContextTiers: []store.ModelPriceContextTier{
+							{ThresholdTokens: 128, Prompt: 3, PromptConfigured: true},
+							{ThresholdTokens: 256, Completion: 4, CompletionConfigured: true},
+						},
+					}
+				}
+				if err := db.SaveModelPrices(ctx, book); err != nil {
+					b.Fatal(err)
+				}
+			}
 			const toMS int64 = 1782227112345
 			fromMS := toMS - int64(24*time.Hour/time.Millisecond)
 			count := eventCount()
@@ -44,7 +62,14 @@ func BenchmarkUsageAnalyticsRollingWindow(b *testing.B) {
 				end := min(offset+200, count)
 				events := make([]usage.Event, 0, end-offset)
 				for index := offset; index < end; index++ {
-					events = append(events, event(index, fromMS+int64(index)*(toMS-fromMS)/int64(count)))
+					e := event(index, fromMS+int64(index)*(toMS-fromMS)/int64(count))
+					if pageProfile {
+						e.RawJSON = `{"diagnostic":"` + strings.Repeat("d", 1024) + `"}`
+						if e.Failed {
+							e.FailBody = `{"error":{"message":"` + strings.Repeat("retry detail ", 315) + `"}}`
+						}
+					}
+					events = append(events, e)
 				}
 				if _, err := db.InsertEvents(ctx, events); err != nil {
 					b.Fatal(err)
@@ -67,9 +92,17 @@ func BenchmarkUsageAnalyticsRollingWindow(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for iteration := 0; iteration < b.N; iteration++ {
-				if profile == "core" || profile == "exact" {
+				if profile == "overview_v1_sections" || profile == "overview_v2_sections" {
+					for _, section := range overviewPageRequests(fromMS, toMS, "UTC", profile == "overview_v2_sections") {
+						if _, err := svc.Analytics(ctx, section.request); err != nil {
+							b.Fatalf("%s: %v", section.name, err)
+						}
+					}
+					continue
+				}
+				if profile == "core" || profile == "percentiles_only" {
 					request := core
-					if profile == "exact" {
+					if profile == "percentiles_only" {
 						request = exact
 					}
 					if _, err := svc.Analytics(ctx, request); err != nil {
@@ -87,7 +120,7 @@ func BenchmarkUsageAnalyticsRollingWindow(b *testing.B) {
 						errors <- err
 					}(request)
 				}
-				if profile == "browser_pair_with_ingestion" {
+				if profile == "core_selectors_pair_with_ingestion" {
 					group.Add(1)
 					go func(sequence int) {
 						defer group.Done()

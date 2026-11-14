@@ -139,7 +139,7 @@ func (r *repository) loadAPIKeyComposed(ctx context.Context, tx *sql.Tx, daily S
 		part := filter
 		part.FromMS, part.ToMS = span.from, span.to
 		if span.grain == 0 {
-			err = mergeProjectedAPIKeyStats(ctx, tx, projection.CoverageEventID, complete, part, 0, false, grouped)
+			err = mergeProjectedAPIKeyStats(ctx, tx, projection.CoverageEventID, complete, part, eventSourceOptions{}, grouped)
 		} else {
 			table := "usage_monitoring_api_key_daily_rollups_v1"
 			if span.grain == hourMS {
@@ -172,7 +172,7 @@ func (r *repository) loadSelectorsComposed(ctx context.Context, tx *sql.Tx, dail
 				return err
 			}
 		}
-		if err := mergeProjectedSelectorRows(ctx, tx, projection.CoverageEventID, complete, part, span.state.CoverageEventID, span.grain != 0, grouped); err != nil {
+		if err := mergeProjectedSelectorRows(ctx, tx, projection.CoverageEventID, complete, part, eventSourceOptions{AfterID: span.state.CoverageEventID, UseAfter: span.grain != 0, DirectProjectedSearch: mysql.IsMySQL(r.db)}, grouped); err != nil {
 			return err
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageprojection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
@@ -68,7 +69,7 @@ func (r *repository) LoadFilterOptions(ctx context.Context, filter AnalyticsFilt
 		coalesce(e.executor_type, ''), coalesce(e.header_error_kind, ''),
 		coalesce(e.header_error_code, ''), coalesce(e.header_quota_plan_type, ''),
 		coalesce(e.header_trace_id, '')`,
-		eventSourceOptions{ProjectionComplete: projectionComplete},
+		eventSourceOptions{ProjectionComplete: projectionComplete, DirectProjectedSearch: mysql.IsMySQL(r.db)},
 	)
 	var encoded [8]string
 	err = tx.QueryRowContext(ctx, `with filtered_events as (`+source+`)
@@ -138,16 +139,15 @@ func (r *repository) LoadFilterSelectors(ctx context.Context, filter AnalyticsFi
 	if err != nil || !projectionAvailable {
 		return FilterSelectorValues{}, projectionState, projectionAvailable, err
 	}
-	state, err := stateQuery(ctx, tx, MetadataRollupName)
-	if err != nil {
-		return FilterSelectorValues{}, projectionState, false, err
-	}
-
 	grouped := map[selectorKey]*selectorRow{}
 	if SupportsSelectorFilter(filter) {
+		state, stateErr := stateQuery(ctx, tx, MetadataRollupName)
+		if stateErr != nil {
+			return FilterSelectorValues{}, projectionState, false, stateErr
+		}
 		err = r.loadSelectorsComposed(ctx, tx, state, projectionState, projectionComplete, filter, grouped)
 	} else {
-		err = mergeProjectedSelectorRows(ctx, tx, projectionState.CoverageEventID, projectionComplete, filter, 0, false, grouped)
+		err = mergeProjectedSelectorRows(ctx, tx, projectionState.CoverageEventID, projectionComplete, filter, eventSourceOptions{DirectProjectedSearch: mysql.IsMySQL(r.db)}, grouped)
 	}
 	if err != nil {
 		return FilterSelectorValues{}, projectionState, false, err
@@ -200,8 +200,7 @@ func mergeProjectedSelectorRows(
 	projectionCoverageEventID int64,
 	projectionComplete bool,
 	filter AnalyticsFilter,
-	afterID int64,
-	useAfterID bool,
+	options eventSourceOptions,
 	grouped map[selectorKey]*selectorRow,
 ) error {
 	if filter.FromMS >= filter.ToMS {
@@ -220,9 +219,16 @@ func mergeProjectedSelectorRows(
 		coalesce(e.auth_label_snapshot, ''), coalesce(e.auth_index, ''),
 		coalesce(e.source, ''), coalesce(e.source_hash, '')`,
 		eventSourceOptions{
-			AfterID:            afterID,
-			UseAfter:           useAfterID,
-			ProjectionComplete: projectionComplete,
+			AfterID:               options.AfterID,
+			UseAfter:              options.UseAfter,
+			MaxID:                 options.MaxID,
+			UseMax:                options.UseMax,
+			CodexMarkerOnly:       options.CodexMarkerOnly,
+			BeforeMS:              options.BeforeMS,
+			BeforeID:              options.BeforeID,
+			RequireRawEvent:       options.RequireRawEvent,
+			ProjectionComplete:    projectionComplete,
+			DirectProjectedSearch: options.DirectProjectedSearch,
 		},
 	)
 	rows, err := tx.QueryContext(ctx, `with filtered_events as (`+source+`)

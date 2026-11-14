@@ -15,6 +15,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usagepricingsql"
 )
 
 const (
@@ -549,12 +550,27 @@ func bandedEventsCTE(whereClause string) string {
 }
 
 func bandedEventsFromSourceCTE(whereClause, source string) string {
-	accountKeyExpression := usageidentity.SQLAccountKeyExpression("e")
+	return bandedEventsFromSourceFieldsCTE(whereClause, source, true)
+}
+
+func bandedEventsFromSourceFieldsCTE(whereClause, source string, account bool) string {
+	fields := []string{"timestamp_ms", "service_tier", "failed", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens", "total_tokens"}
+	accountProjection := ""
+	if account {
+		fields = append(fields, "account_snapshot", "auth_label_snapshot", "auth_provider_snapshot", "provider", "auth_index", "source", "source_hash")
+		accountProjection = ", " + usageidentity.SQLAccountKeyExpression("e") + " as account_key_value"
+	} else {
+		fields = append(fields, "latency_ms")
+	}
+	resolvedFields := append(append([]string{}, fields...), "analytics_model_value", "billing_model_value", "normalized_input_tokens_value", "compatible_cached_tokens_value")
+	if account {
+		resolvedFields = append(resolvedFields, "account_key_value")
+	}
 	requestedModelExpression := usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")
 	analyticsModelExpression := usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")
-	return fmt.Sprintf(`with base_events as (
+	return fmt.Sprintf(`with %s, base_events as (
 		select
-			e.*,
+			e.%s,
 			%s as requested_model_value,
 			%s as analytics_model_value,
 			coalesce(nullif(e.resolved_model, ''), %s) as billing_model_value,
@@ -564,13 +580,12 @@ func bandedEventsFromSourceCTE(whereClause, source string) string {
 				max(coalesce(e.cache_read_tokens, 0), 0) -
 				max(coalesce(e.cache_creation_tokens, 0), 0),
 				0
-			) as compatible_cached_tokens_value,
-			%s as account_key_value
+			) as compatible_cached_tokens_value%s
 		from %s e
 		where %s
 	), priced_events as (
 		select
-			base_events.*,
+			base_events.%s,
 			case
 				when billing_price.model is not null then billing_model_value
 				when analytics_price.model is not null then base_events.analytics_model_value
@@ -579,23 +594,26 @@ func bandedEventsFromSourceCTE(whereClause, source string) string {
 			end as pricing_model_value
 		from base_events
 		left join model_prices billing_price on billing_price.model = base_events.billing_model_value
-		left join model_prices analytics_price on analytics_price.model = base_events.analytics_model_value
-		left join model_prices display_price on display_price.model = base_events.requested_model_value
+		left join model_prices analytics_price on billing_price.model is null and analytics_price.model = base_events.analytics_model_value
+		left join model_prices display_price on billing_price.model is null and analytics_price.model is null and display_price.model = base_events.requested_model_value
 	), banded_events as (
 		select
-			priced_events.*,
-			coalesce((
-				select max(tier.threshold_tokens)
-				from model_price_context_tiers tier
-				where tier.model = priced_events.pricing_model_value
-					and priced_events.normalized_input_tokens_value > tier.threshold_tokens
-			), %d) as context_threshold_tokens_value
-		from priced_events
-		)`, requestedModelExpression, analyticsModelExpression, analyticsModelExpression, accountKeyExpression, source, whereClause, model.ModelPriceBaseContextThreshold)
+			priced_events.%s, priced_events.pricing_model_value,
+			coalesce(tier.threshold_tokens, %d) as context_threshold_tokens_value
+		from priced_events%s
+		)`, usagepricingsql.ContextIntervalsCTE("pricing_context_intervals"), strings.Join(fields, ", e."),
+		requestedModelExpression, analyticsModelExpression, analyticsModelExpression, accountProjection, source, whereClause,
+		strings.Join(resolvedFields, ", base_events."), strings.Join(resolvedFields, ", priced_events."), model.ModelPriceBaseContextThreshold,
+		usagepricingsql.ContextBandJoin("pricing_context_intervals", "tier", "priced_events.pricing_model_value", "priced_events.normalized_input_tokens_value"))
 }
 
 func upsertHourlyBatch(ctx context.Context, tx *sql.Tx, source, revision string, afterID, throughID, nowMS int64) error {
-	query := bandedEventsFromSourceCTE("e.id > ? and e.id <= ?", source) + fmt.Sprintf(`
+	_, err := tx.ExecContext(ctx, hourlyBatchSQL(source), afterID, throughID, revision, nowMS)
+	return err
+}
+
+func hourlyBatchSQL(source string) string {
+	query := bandedEventsFromSourceFieldsCTE("e.id > ? and e.id <= ?", source, false) + fmt.Sprintf(`
 	insert into usage_pricing_hourly_rollups_v1 (
 		structure_revision, bucket_ms, model, billing_model, pricing_model,
 		service_tier, context_threshold_tokens, failed, calls,
@@ -661,11 +679,15 @@ func upsertHourlyBatch(ctx context.Context, tx *sql.Tx, source, revision string,
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
 	)
-	_, err := tx.ExecContext(ctx, query, afterID, throughID, revision, nowMS)
-	return err
+	return query
 }
 
 func upsertAccountBatch(ctx context.Context, tx *sql.Tx, source, revision string, afterID, throughID, nowMS int64) error {
+	_, err := tx.ExecContext(ctx, accountBatchSQL(source), afterID, throughID, revision, nowMS)
+	return err
+}
+
+func accountBatchSQL(source string) string {
 	query := bandedEventsFromSourceCTE("e.id > ? and e.id <= ?", source) + fmt.Sprintf(`
 	insert into usage_pricing_account_rollups_v1 (
 		structure_revision, account_key, account_snapshot, auth_label_snapshot,
@@ -748,8 +770,7 @@ func upsertAccountBatch(ctx context.Context, tx *sql.Tx, source, revision string
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
 	)
-	_, err := tx.ExecContext(ctx, query, afterID, throughID, revision, nowMS)
-	return err
+	return query
 }
 
 func (r *repository) LoadHourlyRows(ctx context.Context, filter HourlyFilter) ([]HourlyRow, State, bool, error) {
@@ -878,7 +899,7 @@ func mergeRawHourlyRows(
 }
 
 func mergeRetainedEdgeHourlyRows(ctx context.Context, tx *sql.Tx, filter HourlyFilter, fromMS, toMS int64, grouped map[hourlyKey]*HourlyRow) error {
-	query, args := hourlyStatementFromEvents(filter, fromMS, toMS, 0, false, usageprojection.RetainedEdgeSource(fromMS, toMS))
+	query, args := hourlyStatementFromArms(filter, fromMS, toMS, 0, false, usageprojection.RetainedEdgeSourceArms(fromMS, toMS))
 	return mergeHourlyEventRows(ctx, tx, query, args, grouped)
 }
 
@@ -889,6 +910,31 @@ func mergeHourlyEventRows(ctx context.Context, tx *sql.Tx, query string, args []
 	}
 	defer rows.Close()
 	return scanAndMergeHourlyRows(rows, grouped)
+}
+
+// Only aggregate rows cross the union. SQL merges their sufficient statistics
+// at the original grain before scanning or applying any monetary calculation.
+func hourlyStatementFromArms(filter HourlyFilter, fromMS, toMS, afterID int64, useAfterID bool, arms []usageprojection.EventSourceArm) (string, []any) {
+	queries := make([]string, 0, len(arms))
+	var args []any
+	for _, arm := range arms {
+		query, filterArgs := hourlyStatementFromEvents(filter, fromMS, toMS, afterID, useAfterID, arm.From)
+		queries = append(queries, query)
+		args = append(args, arm.Args...)
+		args = append(args, filterArgs...)
+	}
+	columns := []usageprojection.AggregateColumn{
+		{Name: "bucket_ms"}, {Name: "model"}, {Name: "billing_model"}, {Name: "pricing_model"},
+		{Name: "service_tier"}, {Name: "context_threshold_tokens"}, {Name: "failed"},
+	}
+	for _, name := range strings.Fields("calls input_tokens output_tokens reasoning_tokens cached_tokens cache_read_tokens cache_creation_tokens long_input_tokens long_output_tokens long_cached_tokens long_cache_read_tokens long_cache_creation_tokens total_tokens latency_sum_ms latency_samples zero_token_calls") {
+		columns = append(columns, usageprojection.AggregateColumn{Name: name, Merge: "sum"})
+	}
+	query := usageprojection.MergeAggregateQueries(queries, columns)
+	if len(arms) > 1 {
+		query += " order by 1, 2, 3, 4, 5, 6, 7"
+	}
+	return query, args
 }
 
 func rawHourlyStatement(filter HourlyFilter, fromMS, toMS, afterID int64, useAfterID bool) (string, []any) {
@@ -920,7 +966,7 @@ func hourlyStatementFromEvents(filter HourlyFilter, fromMS, toMS, afterID int64,
 	if filter.CollapseBuckets {
 		bucketExpr = "0"
 	}
-	query := bandedEventsFromSourceCTE(strings.Join(conditions, " and "), source) + fmt.Sprintf(`
+	query := bandedEventsFromSourceFieldsCTE(strings.Join(conditions, " and "), source, false) + fmt.Sprintf(`
 	select
 		%s,
 			analytics_model_value, billing_model_value, pricing_model_value, coalesce(service_tier, ''),
@@ -1173,8 +1219,47 @@ func mergeAccountRowsFromSourceArgs(
 	source string,
 	sourceArgs []any,
 ) error {
+	return mergeAccountRowsFromArms(ctx, tx, afterID, accountKeys, grouped, []usageprojection.EventSourceArm{{From: source, Args: sourceArgs}})
+}
+
+func mergeAccountRowsFromArms(ctx context.Context, tx *sql.Tx, afterID int64, accountKeys []string, grouped map[accountKey]*AccountRow, arms []usageprojection.EventSourceArm) error {
+	query, args := accountStatementFromArms(afterID, accountKeys, arms)
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	return scanAndMergeAccountRows(rows, grouped)
+}
+
+func accountStatementFromArms(afterID int64, accountKeys []string, arms []usageprojection.EventSourceArm) (string, []any) {
+	queries := make([]string, 0, len(arms))
+	var args []any
+	for _, arm := range arms {
+		query, armArgs := accountStatementFromSource(afterID, accountKeys, arm.From, arm.Args)
+		queries = append(queries, query)
+		args = append(args, armArgs...)
+	}
+	columns := []usageprojection.AggregateColumn{
+		{Name: "account_key"}, {Name: "account_snapshot", Merge: "max"}, {Name: "auth_label_snapshot", Merge: "max"},
+		{Name: "auth_provider_snapshot", Merge: "max"}, {Name: "auth_index", Merge: "max"},
+		{Name: "source", Merge: "max"}, {Name: "source_hash", Merge: "max"},
+		{Name: "model"}, {Name: "billing_model"}, {Name: "pricing_model"}, {Name: "service_tier"}, {Name: "context_threshold_tokens"},
+	}
+	for _, name := range strings.Fields("calls success_calls failure_calls input_tokens output_tokens reasoning_tokens cached_tokens cache_read_tokens cache_creation_tokens long_input_tokens long_output_tokens long_cached_tokens long_cache_read_tokens long_cache_creation_tokens total_tokens") {
+		columns = append(columns, usageprojection.AggregateColumn{Name: name, Merge: "sum"})
+	}
+	columns = append(columns, usageprojection.AggregateColumn{Name: "first_seen_ms", Merge: "min"}, usageprojection.AggregateColumn{Name: "last_seen_ms", Merge: "max"}, usageprojection.AggregateColumn{Name: "updated_at_ms", Merge: "max"})
+	query := usageprojection.MergeAggregateQueries(queries, columns)
+	if len(arms) > 1 {
+		query += " order by account_key, last_seen_ms desc"
+	}
+	return query, args
+}
+
+func accountStatementFromSource(afterID int64, accountKeys []string, source string, sourceArgs []any) (string, []any) {
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(accountKeys)), ",")
-	query := bandedEventsFromSourceCTE("e.id > ?", source) + fmt.Sprintf(`
+	query := bandedEventsFromSourceCTE("e.id > ? and "+usageidentity.SQLAccountKeyExpression("e")+" in ("+placeholders+")", source) + fmt.Sprintf(`
 	select
 		account_key_value,
 		coalesce(max(nullif(account_snapshot, '')), ''),
@@ -1201,7 +1286,6 @@ func mergeAccountRowsFromSourceArgs(
 		coalesce(sum(case when normalized_input_tokens_value > %d then cache_creation_tokens else 0 end), 0),
 		coalesce(sum(total_tokens), 0), min(timestamp_ms), max(timestamp_ms), 0
 	from banded_events
-	where account_key_value in (%s)
 		group by account_key_value, analytics_model_value, billing_model_value, pricing_model_value,
 		coalesce(service_tier, ''), context_threshold_tokens_value
 	order by account_key_value, max(timestamp_ms) desc`,
@@ -1210,7 +1294,6 @@ func mergeAccountRowsFromSourceArgs(
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
 		usage.LongContextInputTokenThreshold,
-		placeholders,
 	)
 	args := make([]any, 0, len(sourceArgs)+len(accountKeys)+1)
 	args = append(args, sourceArgs...)
@@ -1218,12 +1301,7 @@ func mergeAccountRowsFromSourceArgs(
 	for _, key := range accountKeys {
 		args = append(args, key)
 	}
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	return scanAndMergeAccountRows(rows, grouped)
+	return query, args
 }
 
 func scanAndMergeAccountRows(rows *sql.Rows, grouped map[accountKey]*AccountRow) error {

@@ -35,8 +35,8 @@ vi.mock('@/hooks/useRequestMonitoringAvailability', () => ({
     reason: '',
   }),
 }));
-vi.mock('@/features/monitoring/hooks/useUsageData', () => ({
-  useUsageData: () => ({ apiKeyAliases: [], loadApiKeyAliases: mocks.aliases }),
+vi.mock('@/features/monitoring/hooks/useApiKeyAliases', () => ({
+  useApiKeyAliases: () => ({ apiKeyAliases: [], loadApiKeyAliases: mocks.aliases }),
 }));
 vi.mock('@/stores', () => ({
   useConfigStore: (select: (state: { config: Config | null }) => unknown) =>

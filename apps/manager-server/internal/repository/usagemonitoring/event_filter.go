@@ -18,6 +18,15 @@ type eventSourceOptions struct {
 	BeforeID           int64
 	ProjectionComplete bool
 	RequireRawEvent    bool
+	// MySQL's search relation is a plain view, not SQLite's trigram index.
+	DirectProjectedSearch bool
+}
+
+// eventSourceArm keeps each source's predicates and bindings together. Priced
+// readers aggregate arms independently; unpriced consumers retain the UNION API.
+type eventSourceArm struct {
+	SQL  string
+	Args []any
 }
 
 func filteredEventSourceSQL(
@@ -27,7 +36,18 @@ func filteredEventSourceSQL(
 	rawSelect string,
 	options eventSourceOptions,
 ) (string, []any) {
-	projectionConditions, projectionArgs := eventFilterConditions(filter, "p.", true)
+	arms := filteredEventSourceArms(filter, coverageEventID, projectionSelect, rawSelect, options)
+	queries := make([]string, 0, len(arms))
+	var args []any
+	for _, arm := range arms {
+		queries = append(queries, arm.SQL)
+		args = append(args, arm.Args...)
+	}
+	return strings.Join(queries, " union all "), args
+}
+
+func filteredEventSourceArms(filter AnalyticsFilter, coverageEventID int64, projectionSelect, rawSelect string, options eventSourceOptions) []eventSourceArm {
+	projectionConditions, projectionArgs := eventFilterConditionsWithSearch(filter, "p.", true, options.DirectProjectedSearch)
 	rawConditions, rawArgs := eventFilterConditions(filter, "e.", false)
 	if options.UseAfter {
 		projectionConditions = append(projectionConditions, "p.event_id > ?")
@@ -65,40 +85,25 @@ func filteredEventSourceSQL(
 		)
 	}
 
-	if options.ProjectionComplete {
-		query := fmt.Sprintf(`select %s
-			from usage_monitoring_event_projection_v1 p
-			where p.event_id <= ? and %s`,
-			projectionSelect,
-			strings.Join(projectionConditions, " and "),
-		)
-		args := make([]any, 0, len(projectionArgs)+1)
-		args = append(args, coverageEventID)
-		args = append(args, projectionArgs...)
-		return query, args
+	arms := []eventSourceArm{{
+		SQL: fmt.Sprintf(`select %s from usage_monitoring_event_projection_v1 p
+			where p.event_id <= ? and %s`, projectionSelect, strings.Join(projectionConditions, " and ")),
+		Args: append([]any{coverageEventID}, projectionArgs...),
+	}}
+	if !options.ProjectionComplete {
+		arms = append(arms, eventSourceArm{
+			SQL:  fmt.Sprintf(`select %s from usage_events e where e.id > ? and %s`, rawSelect, strings.Join(rawConditions, " and ")),
+			Args: append([]any{coverageEventID}, rawArgs...),
+		})
 	}
-
-	query := fmt.Sprintf(`select %s
-		from usage_monitoring_event_projection_v1 p
-		where p.event_id <= ? and %s
-	union all
-	select %s
-		from usage_events e
-		where e.id > ? and %s`,
-		projectionSelect,
-		strings.Join(projectionConditions, " and "),
-		rawSelect,
-		strings.Join(rawConditions, " and "),
-	)
-	args := make([]any, 0, len(projectionArgs)+len(rawArgs)+2)
-	args = append(args, coverageEventID)
-	args = append(args, projectionArgs...)
-	args = append(args, coverageEventID)
-	args = append(args, rawArgs...)
-	return query, args
+	return arms
 }
 
 func eventFilterConditions(filter AnalyticsFilter, prefix string, projected bool) ([]string, []any) {
+	return eventFilterConditionsWithSearch(filter, prefix, projected, false)
+}
+
+func eventFilterConditionsWithSearch(filter AnalyticsFilter, prefix string, projected, directSearch bool) ([]string, []any) {
 	column := func(name string) string { return prefix + name }
 	conditions := []string{column("timestamp_ms") + " >= ?", column("timestamp_ms") + " < ?"}
 	args := []any{filter.FromMS, filter.ToMS}
@@ -109,7 +114,7 @@ func eventFilterConditions(filter AnalyticsFilter, prefix string, projected bool
 		like := "%" + query + "%"
 		searchConditions := make([]string, 0, len(usageprojection.SearchColumns)+1)
 		if projected {
-			if likePattern, ok := usageprojection.SearchIndexLikePattern(query); ok {
+			if likePattern, ok := usageprojection.SearchIndexLikePattern(query); ok && !directSearch {
 				searchConditions = append(searchConditions, fmt.Sprintf(
 					"%s in (select rowid from %s where search_text like ?)",
 					column("event_id"),
@@ -150,11 +155,20 @@ func eventFilterConditions(filter AnalyticsFilter, prefix string, projected bool
 		conditions = append(conditions, fmt.Sprintf("coalesce(%s, '') in (select value from json_each(?))", expression))
 		args = append(args, encodeJSONFilterValues(normalized))
 	}
-	modelExpression := column("analytics_model")
-	if !projected {
-		modelExpression = usageidentity.SQLRequestAnalyticsModelExpression(column("model"), column("requested_model"))
+	models := normalizeModelFilterValues(filter.Models)
+	if projected {
+		switch len(models) {
+		case 0:
+		case 1:
+			conditions = append(conditions, column("analytics_model")+" = ?")
+			args = append(args, models[0])
+		default:
+			conditions = append(conditions, column("analytics_model")+" in (select value from json_each(?))")
+			args = append(args, encodeJSONFilterValues(models))
+		}
+	} else {
+		addInCondition(usageidentity.SQLRequestAnalyticsModelExpression(column("model"), column("requested_model")), models)
 	}
-	addInCondition(modelExpression, normalizeModelFilterValues(filter.Models))
 	addProviderEventCondition(filter.Providers, prefix, &conditions, &args)
 	addAccountEventCondition(filter.Accounts, prefix, &conditions, &args)
 	credentialExpr := fmt.Sprintf("coalesce(nullif(%sauth_file_snapshot, ''), nullif(%sauth_index, ''), nullif(%ssource_hash, ''), nullif(%ssource, ''), '-')", prefix, prefix, prefix, prefix)

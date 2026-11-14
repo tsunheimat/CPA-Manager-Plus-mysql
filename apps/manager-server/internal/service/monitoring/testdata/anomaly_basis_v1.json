@@ -1,0 +1,72 @@
+{
+  "semantics": "core_additive_exact_latency",
+  "cases": [
+    {
+      "name": "empty",
+      "timeline": [], "candidates": [], "exact": [], "expected": []
+    },
+    {
+      "name": "single_null",
+      "timeline": [{"bucket_ms": 1, "bucket_end_ms": 2, "bucket_range_exact": true, "label": "one", "calls": 0, "tokens": 0, "success": 0, "failure": 0, "total_tokens": 0, "cost": 0, "failure_rate": 0}],
+      "candidates": [], "exact": [{"bucket_ms": 1, "p95_latency_ms": null, "p95_ttft_ms": 9}], "expected": []
+    },
+    {
+      "name": "latency_only_existing_gap_disconnected_membership",
+      "timeline": [
+        {"bucket_ms": 100, "bucket_end_ms": 200, "bucket_range_exact": true, "label": "before", "calls": 2, "tokens": 20, "success": 2, "failure": 0, "total_tokens": 20, "cost": 2, "failure_rate": 0},
+        {"bucket_ms": 900, "bucket_end_ms": 1300, "bucket_range_exact": false, "bucket_intervals": [{"from_ms": 800, "to_ms": 1000}, {"from_ms": 1200, "to_ms": 1300}], "label": "fold", "calls": 2, "tokens": 20, "success": 2, "failure": 0, "total_tokens": 20, "cost": 2, "failure_rate": 0}
+      ],
+      "candidates": [{"previous_bucket_ms": 100, "bucket_ms": 900, "request_change": 0, "cost_change": 0, "tokens_per_request_change": 0, "cache_hit_rate_change": 0, "failure_rate_change": 0}],
+      "exact": [{"bucket_ms": 100, "p95_latency_ms": 100, "p95_ttft_ms": 900}, {"bucket_ms": 500, "p95_latency_ms": 999, "p95_ttft_ms": null}, {"bucket_ms": 900, "p95_latency_ms": 200, "p95_ttft_ms": null}],
+      "expected": [{"bucket_ms": 900, "bucket_end_ms": 1300, "bucket_range_exact": false, "bucket_intervals": [{"from_ms": 800, "to_ms": 1000}, {"from_ms": 1200, "to_ms": 1300}], "label": "fold", "calls": 2, "total_tokens": 20, "cost": 2, "failure_rate": 0, "request_change": 0, "cost_change": 0, "tokens_per_request_change": 0, "cache_hit_rate_change": 0, "failure_rate_change": 0, "latency_p95_change": 1, "metric_keys": ["latency_spike"], "severity": "low"}]
+    },
+    {
+      "name": "strict_thresholds",
+      "timeline": [
+        {"bucket_ms": 1, "bucket_end_ms": 2, "bucket_range_exact": true, "label": "a", "calls": 2, "tokens": 20, "success": 2, "failure": 0, "total_tokens": 20, "cost": 2, "failure_rate": 0, "cache_hit_rate": 0.2},
+        {"bucket_ms": 2, "bucket_end_ms": 3, "bucket_range_exact": true, "label": "b", "calls": 4, "tokens": 60, "success": 3, "failure": 1, "total_tokens": 60, "cost": 4, "failure_rate": 0.2, "cache_hit_rate": 0}
+      ],
+      "candidates": [{"previous_bucket_ms": 1, "bucket_ms": 2, "request_change": 1, "cost_change": 1, "tokens_per_request_change": 0.5, "cache_hit_rate_change": -0.2, "failure_rate_change": 0.2}],
+      "exact": [{"bucket_ms": 1, "p95_latency_ms": 100, "p95_ttft_ms": null}, {"bucket_ms": 2, "p95_latency_ms": 150, "p95_ttft_ms": 999}],
+      "expected": []
+    },
+    {
+      "name": "all_metrics_cache_fallback_fractional_offset",
+      "timeline": [
+        {"bucket_ms": 1772936100000, "bucket_end_ms": 1772939700000, "bucket_range_exact": true, "label": "05:00", "calls": 2, "tokens": 20, "success": 2, "failure": 0, "total_tokens": 20, "cost": 2, "failure_rate": 0, "cache_hit_rate": 0, "input_tokens": 100, "cached_tokens": 50, "cache_read_tokens": 50},
+        {"bucket_ms": 1772939700000, "bucket_end_ms": 1772943300000, "bucket_range_exact": true, "label": "06:00", "calls": 8, "tokens": 160, "success": 4, "failure": 4, "total_tokens": 160, "cost": 8, "failure_rate": 0.5, "cache_hit_rate": 0.5}
+      ],
+      "candidates": [{"previous_bucket_ms": 1772936100000, "bucket_ms": 1772939700000, "request_change": 3, "cost_change": 3, "tokens_per_request_change": 1, "cache_hit_rate_change": -0.5, "failure_rate_change": 0.5}],
+      "exact": [{"bucket_ms": 1772936100000, "p95_latency_ms": 100, "p95_ttft_ms": 900}, {"bucket_ms": 1772939700000, "p95_latency_ms": 200, "p95_ttft_ms": null}],
+      "expected": [{"bucket_ms": 1772939700000, "bucket_end_ms": 1772943300000, "bucket_range_exact": true, "label": "06:00", "calls": 8, "total_tokens": 160, "cost": 8, "failure_rate": 0.5, "request_change": 3, "cost_change": 3, "tokens_per_request_change": 1, "cache_hit_rate_change": -0.5, "failure_rate_change": 0.5, "latency_p95_change": 1, "metric_keys": ["request_spike", "cost_spike", "tokens_per_request_spike", "cache_hit_drop", "failure_rate_spike", "latency_spike"], "severity": "high"}]
+    },
+    {
+      "name": "nonpositive_missing_exact_and_zero_baselines",
+      "timeline": [
+        {"bucket_ms": 1, "bucket_end_ms": 2, "bucket_range_exact": true, "label": "a", "calls": 0, "tokens": 0, "success": 0, "failure": 0, "total_tokens": 0, "cost": -1, "failure_rate": 0},
+        {"bucket_ms": 5, "bucket_end_ms": 6, "bucket_range_exact": true, "label": "b", "calls": 1, "tokens": 10, "success": 1, "failure": 0, "total_tokens": 10, "cost": 2, "failure_rate": 0},
+        {"bucket_ms": 9, "bucket_end_ms": 10, "bucket_range_exact": true, "label": "c", "calls": 0, "tokens": 0, "success": 0, "failure": 0, "total_tokens": 0, "cost": 0, "failure_rate": 0}
+      ],
+      "candidates": [
+        {"previous_bucket_ms": 1, "bucket_ms": 5, "request_change": 1, "cost_change": 1, "tokens_per_request_change": 1, "cache_hit_rate_change": 0, "failure_rate_change": 0},
+        {"previous_bucket_ms": 5, "bucket_ms": 9, "request_change": -1, "cost_change": -1, "tokens_per_request_change": -1, "cache_hit_rate_change": 0, "failure_rate_change": 0}
+      ],
+      "exact": [{"bucket_ms": 5, "p95_latency_ms": 1, "p95_ttft_ms": null}, {"bucket_ms": 9, "p95_latency_ms": null, "p95_ttft_ms": 999}],
+      "expected": [{"bucket_ms": 5, "bucket_end_ms": 6, "bucket_range_exact": true, "label": "b", "calls": 1, "total_tokens": 10, "cost": 2, "failure_rate": 0, "request_change": 1, "cost_change": 1, "tokens_per_request_change": 1, "cache_hit_rate_change": 0, "failure_rate_change": 0, "latency_p95_change": 1, "metric_keys": ["tokens_per_request_spike", "latency_spike"], "severity": "medium"}]
+    },
+    {
+      "name": "acknowledged_empty_exact_is_not_missing",
+      "timeline": [
+        {"bucket_ms": 1, "bucket_end_ms": 2, "bucket_range_exact": true, "label": "a", "calls": 1, "tokens": 0, "success": 1, "failure": 0, "total_tokens": 0, "cost": 0, "failure_rate": 0},
+        {"bucket_ms": 3, "bucket_end_ms": 4, "bucket_range_exact": true, "label": "b", "calls": 1, "tokens": 0, "success": 1, "failure": 0, "total_tokens": 0, "cost": 0, "failure_rate": 0}
+      ],
+      "candidates": [{"previous_bucket_ms": 1, "bucket_ms": 3, "request_change": 0, "cost_change": 0, "tokens_per_request_change": 0, "cache_hit_rate_change": 0, "failure_rate_change": 0}],
+      "exact": [], "expected": []
+    }
+  ],
+  "ranking": {
+    "bucket_count": 122,
+    "alternating_latency_ms": [100, 200],
+    "expected_bucket_ms": [121,119,117,115,113,111,109,107,105,103,101,99,97,95,93,91,89,87,85,83,81,79,77,75,73,71,69,67,65,63,61,59,57,55,53,51,49,47,45,43,41,39,37,35,33,31,29,27,25,23]
+  }
+}

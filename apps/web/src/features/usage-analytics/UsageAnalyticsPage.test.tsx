@@ -594,6 +594,43 @@ describe('UsageAnalyticsPage', () => {
     act(() => renderer.unmount());
   });
 
+  it('shows v2 core and exact coverage separately with explicit composition provenance', () => {
+    const coverage = {
+      scope: 'time_range',
+      mode: 'mixed',
+      raw_complete: false,
+      core_aggregate_used: true,
+      raw_event_count: 4,
+      raw_deleted_event_count: 2,
+      min_deleted_timestamp_ms: 1,
+      max_deleted_timestamp_ms: 2,
+      fidelity_limitations: ['event_details_require_raw_events'],
+    };
+    mocks.usageState = createUsageState({
+      sections: makeSections({
+        anomalies: {
+          compositionSemantics: 'core_additive_exact_latency',
+          coreCoverage: coverage,
+          coverage: {
+            ...coverage,
+            core_aggregate_used: false,
+            raw_deleted_event_count: 3,
+            fidelity_limitations: ['timeline_percentiles_require_raw_events'],
+          },
+        },
+      }),
+    });
+    const renderer = renderPage();
+    expect(getText(renderer.root)).toContain('usage_analytics.anomaly_snapshot_semantics');
+    const core = renderer.root.findByProps({ 'aria-label': 'Core additive coverage' });
+    const exact = renderer.root.findByProps({ 'aria-label': 'Exact latency coverage' });
+    expect(getText(core)).toContain('monitoring.coverage_warning_title');
+    expect(getText(exact)).toContain('monitoring.coverage_warning_title');
+    expect(getText(core)).toContain('usage_analytics.section_core');
+    expect(getText(exact)).toContain('usage_analytics.section_exact');
+    act(() => renderer.unmount());
+  });
+
   it('offers a section-only retry after exact failure and keeps preview errors distinct from empty', () => {
     const retry = vi.fn();
     const state = createUsageState({

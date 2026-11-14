@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/mysql"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/sqlwrite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
@@ -34,8 +35,9 @@ func (r *repository) LoadEventsCount(ctx context.Context, filter AnalyticsFilter
 		"p.event_id as id",
 		"e.id",
 		eventSourceOptions{
-			ProjectionComplete: projectionComplete,
-			RequireRawEvent:    true,
+			ProjectionComplete:    projectionComplete,
+			RequireRawEvent:       true,
+			DirectProjectedSearch: mysql.IsMySQL(r.db),
 		},
 	)
 	var total int64
@@ -78,10 +80,11 @@ func (r *repository) LoadEventsPage(
 		"p.event_id as id, p.timestamp_ms",
 		"e.id, e.timestamp_ms",
 		eventSourceOptions{
-			BeforeMS:           beforeMS,
-			BeforeID:           beforeID,
-			ProjectionComplete: projectionComplete,
-			RequireRawEvent:    true,
+			BeforeMS:              beforeMS,
+			BeforeID:              beforeID,
+			ProjectionComplete:    projectionComplete,
+			RequireRawEvent:       true,
+			DirectProjectedSearch: mysql.IsMySQL(r.db),
 		},
 	)
 	args = append(args, limit+1)

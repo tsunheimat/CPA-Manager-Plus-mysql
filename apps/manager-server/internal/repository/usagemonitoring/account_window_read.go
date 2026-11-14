@@ -104,8 +104,8 @@ func mergeProjectedAccountWindowStats(ctx context.Context, tx *sql.Tx, windows [
 }
 
 func mergeProjectedAccountWindowGrainStats(ctx context.Context, tx *sql.Tx, windows []AccountWindowUsageQuery, projectionCoverageEventID int64, projectionComplete bool, statsCoverageEventID int64, dailyAvailable bool, grouped map[accountWindowStatKey]*AccountWindowModelStat, grain int64) error {
-	source, args := accountWindowEventSourceGrainSQL(windows, projectionCoverageEventID, projectionComplete, statsCoverageEventID, dailyAvailable, grain)
-	query := fmt.Sprintf(`%s
+	arms := accountWindowEventSourceGrainArms(windows, projectionCoverageEventID, projectionComplete, statsCoverageEventID, dailyAvailable, grain)
+	aggregate := `
 		select request_index, analytics_model, billing_model_value, pricing_model_value,
 		context_threshold_tokens_value, coalesce(service_tier, ''), count(*),
 		coalesce(sum(case when failed = 0 then 1 else 0 end), 0),
@@ -121,8 +121,8 @@ func mergeProjectedAccountWindowGrainStats(ctx context.Context, tx *sql.Tx, wind
 		coalesce(sum(total_tokens), 0), max(timestamp_ms)
 	from banded_events
 	group by request_index, analytics_model, billing_model_value, pricing_model_value,
-		context_threshold_tokens_value, coalesce(service_tier, '')`, monitoringBandedProjectedEventsCTE(source))
-	args = appendLongContextThresholdArgs(args)
+		context_threshold_tokens_value, coalesce(service_tier, '')`
+	query, args := monitoringPricingArmsQuery(arms, []string{"request_index", "timestamp_ms"}, aggregate, appendLongContextThresholdArgs(nil), monitoringWindowAggregateColumns)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -285,6 +285,17 @@ func accountWindowEventSourceSQL(windows []AccountWindowUsageQuery, coverageEven
 }
 
 func accountWindowEventSourceGrainSQL(windows []AccountWindowUsageQuery, coverageEventID int64, projectionComplete bool, statsCoverageEventID int64, dailyAvailable bool, grain int64) (string, []any) {
+	arms := accountWindowEventSourceGrainArms(windows, coverageEventID, projectionComplete, statsCoverageEventID, dailyAvailable, grain)
+	queries := make([]string, 0, len(arms))
+	var args []any
+	for i, arm := range arms {
+		queries = append(queries, fmt.Sprintf("select * from (%s) window_arm_%d", arm.SQL, i))
+		args = append(args, arm.Args...)
+	}
+	return strings.Join(queries, " union all "), args
+}
+
+func accountWindowEventSourceGrainArms(windows []AccountWindowUsageQuery, coverageEventID int64, projectionComplete bool, statsCoverageEventID int64, dailyAvailable bool, grain int64) []eventSourceArm {
 	values := make([]string, 0, len(windows))
 	args := make([]any, 0, len(windows)*8+4)
 	for _, window := range windows {
@@ -293,26 +304,28 @@ func accountWindowEventSourceGrainSQL(windows []AccountWindowUsageQuery, coverag
 		args = append(args, window.RequestIndex, window.FromMS, window.ToMS, ceilIntervalMS(window.FromMS, grain), floorIntervalMS(window.ToMS, grain), accountKey, legacyAccountKey, accountWindowCanUseDaily(window))
 	}
 	rawIdentity := usageidentity.SQLAccountKeyExpression("e")
-	query := `with window_targets(request_index, from_ms, to_ms, full_start_ms, full_end_ms, account_key, legacy_account_key, use_daily) as (values ` + strings.Join(values, ",") + `)
-	select w.request_index, p.requested_model as model, p.analytics_model, p.resolved_model, p.service_tier, p.failed,
-		p.normalized_total_input_tokens, p.output_tokens, p.cached_tokens, p.cache_tokens, p.cache_read_tokens, p.cache_creation_tokens, p.total_tokens, p.timestamp_ms
+	targets := `with window_targets(request_index, from_ms, to_ms, full_start_ms, full_end_ms, account_key, legacy_account_key, use_daily) as (values ` + strings.Join(values, ",") + `) `
+	targetArgs := append([]any{}, args...)
+	projected, raw := monitoringPricingSourceSelects([]string{"timestamp_ms"})
+	query := targets + `select w.request_index, ` + projected + `
 	from window_targets w join usage_monitoring_event_projection_v1 p on p.event_id <= ? and p.timestamp_ms >= w.from_ms and p.timestamp_ms < w.to_ms and p.account_key in (w.account_key, w.legacy_account_key)`
 	args = append(args, coverageEventID)
 	if dailyAvailable {
 		query += ` and (w.use_daily = 0 or p.timestamp_ms < w.full_start_ms or p.timestamp_ms >= w.full_end_ms or p.event_id > ? or (` + codexAccountDailyExcludedSQL("p") + `))`
 		args = append(args, statsCoverageEventID)
 	}
+	arms := []eventSourceArm{{SQL: query, Args: args}}
 	if projectionComplete {
-		return query, args
+		return arms
 	}
-	query += ` union all select w.request_index, ` + usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model") + `, ` + usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model") + `, coalesce(e.resolved_model, ''), coalesce(e.service_tier, ''), coalesce(e.failed, 0), coalesce(e.normalized_total_input_tokens, e.input_tokens, 0), coalesce(e.output_tokens, 0), coalesce(e.cached_tokens, 0), coalesce(e.cache_tokens, 0), coalesce(e.cache_read_tokens, 0), coalesce(e.cache_creation_tokens, 0), coalesce(e.total_tokens, 0), e.timestamp_ms
+	query = targets + `select w.request_index, ` + raw + `
 	from window_targets w join usage_events e on e.id > ? and e.timestamp_ms >= w.from_ms and e.timestamp_ms < w.to_ms and ` + rawIdentity + ` in (w.account_key, w.legacy_account_key)`
-	args = append(args, coverageEventID)
+	args = append(targetArgs, coverageEventID)
 	if dailyAvailable {
 		query += ` and (w.use_daily = 0 or e.timestamp_ms < w.full_start_ms or e.timestamp_ms >= w.full_end_ms or e.id > ? or (` + codexAccountDailyExcludedSQL("e") + `))`
 		args = append(args, statsCoverageEventID)
 	}
-	return query, args
+	return append(arms, eventSourceArm{SQL: query, Args: args})
 }
 
 func accountWindowCanUseDaily(window AccountWindowUsageQuery) bool {

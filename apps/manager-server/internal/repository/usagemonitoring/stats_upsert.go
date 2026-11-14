@@ -9,14 +9,18 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usagepricingsql"
 )
 
 func monitoringBandedEventsCTE(eventSource, whereClause string) string {
 	requestedModelExpression := usageidentity.SQLEffectiveRequestedModelExpression("e.model", "e.requested_model")
 	analyticsModelExpression := usageidentity.SQLRequestAnalyticsModelExpression("e.model", "e.requested_model")
-	return fmt.Sprintf(`with base_events as (
+	fields := []string{"timestamp_ms", "service_tier", "failed", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens", "total_tokens", "latency_ms",
+		"account_snapshot", "auth_label_snapshot", "provider", "auth_provider_snapshot", "auth_account_id_snapshot", "auth_index", "source", "source_hash", "auth_file_snapshot", "api_key_hash", "executor_type"}
+	resolvedFields := append(append([]string{}, fields...), "analytics_model_value", "billing_model_value", "normalized_input_tokens_value", "compatible_cached_tokens_value")
+	return fmt.Sprintf(`with %s, base_events as (
 		select
-			e.*,
+			e.%s,
 			%s as requested_model_value,
 			%s as analytics_model_value,
 			coalesce(nullif(e.resolved_model, ''), %s) as billing_model_value,
@@ -31,7 +35,7 @@ func monitoringBandedEventsCTE(eventSource, whereClause string) string {
 		where %s
 	), priced_events as (
 		select
-			base_events.*,
+			base_events.%s,
 			case
 				when billing_price.model is not null then billing_model_value
 				when analytics_price.model is not null then base_events.analytics_model_value
@@ -40,19 +44,17 @@ func monitoringBandedEventsCTE(eventSource, whereClause string) string {
 			end as pricing_model_value
 		from base_events
 		left join model_prices billing_price on billing_price.model = base_events.billing_model_value
-		left join model_prices analytics_price on analytics_price.model = base_events.analytics_model_value
-		left join model_prices display_price on display_price.model = base_events.requested_model_value
+		left join model_prices analytics_price on billing_price.model is null and analytics_price.model = base_events.analytics_model_value
+		left join model_prices display_price on billing_price.model is null and analytics_price.model is null and display_price.model = base_events.requested_model_value
 	), banded_events as (
 		select
-			priced_events.*,
-			coalesce((
-				select max(tier.threshold_tokens)
-				from model_price_context_tiers tier
-				where tier.model = priced_events.pricing_model_value
-					and priced_events.normalized_input_tokens_value > tier.threshold_tokens
-			), %d) as context_threshold_tokens_value
-		from priced_events
-	)`, requestedModelExpression, analyticsModelExpression, analyticsModelExpression, eventSource, whereClause, model.ModelPriceBaseContextThreshold)
+			priced_events.%s, priced_events.pricing_model_value,
+			coalesce(tier.threshold_tokens, %d) as context_threshold_tokens_value
+		from priced_events%s
+	)`, usagepricingsql.ContextIntervalsCTE("pricing_context_intervals"), strings.Join(fields, ", e."),
+		requestedModelExpression, analyticsModelExpression, analyticsModelExpression, eventSource, whereClause,
+		strings.Join(resolvedFields, ", base_events."), strings.Join(resolvedFields, ", priced_events."), model.ModelPriceBaseContextThreshold,
+		usagepricingsql.ContextBandJoin("pricing_context_intervals", "tier", "priced_events.pricing_model_value", "priced_events.normalized_input_tokens_value"))
 }
 
 // codexAccountDailyExcludedSQL identifies Codex events whose legacy Workspace
@@ -79,6 +81,11 @@ func upsertAccountDailyBatch(ctx context.Context, tx *sql.Tx, revision, eventSou
 }
 
 func upsertAccountBatch(ctx context.Context, tx *sql.Tx, table string, bucketSize int64, revision, eventSource string, afterID, throughID, nowMS int64) error {
+	_, err := tx.ExecContext(ctx, monitoringAccountBatchSQL(table, bucketSize, eventSource), afterID, throughID, revision, nowMS)
+	return err
+}
+
+func monitoringAccountBatchSQL(table string, bucketSize int64, eventSource string) string {
 	query := monitoringBandedEventsCTE(eventSource, "e.id > ? and e.id <= ? and not ("+codexAccountDailyExcludedSQL("e")+")") + fmt.Sprintf(`
 	insert into usage_monitoring_account_daily_rollups_v1 (
 		structure_revision, bucket_ms, account_snapshot, auth_label_snapshot,
@@ -169,9 +176,7 @@ func upsertAccountBatch(ctx context.Context, tx *sql.Tx, table string, bucketSiz
 		usage.LongContextInputTokenThreshold,
 		bucketSize,
 	)
-	query = strings.ReplaceAll(query, "usage_monitoring_account_daily_rollups_v1", table)
-	_, err := tx.ExecContext(ctx, query, afterID, throughID, revision, nowMS)
-	return err
+	return strings.ReplaceAll(query, "usage_monitoring_account_daily_rollups_v1", table)
 }
 
 func upsertAPIKeyDailyBatch(ctx context.Context, tx *sql.Tx, revision, eventSource string, afterID, throughID, nowMS int64) error {
@@ -179,6 +184,11 @@ func upsertAPIKeyDailyBatch(ctx context.Context, tx *sql.Tx, revision, eventSour
 }
 
 func upsertAPIKeyBatch(ctx context.Context, tx *sql.Tx, table string, bucketSize int64, revision, eventSource string, afterID, throughID, nowMS int64) error {
+	_, err := tx.ExecContext(ctx, monitoringAPIKeyBatchSQL(table, bucketSize, eventSource), afterID, throughID, revision, nowMS)
+	return err
+}
+
+func monitoringAPIKeyBatchSQL(table string, bucketSize int64, eventSource string) string {
 	query := monitoringBandedEventsCTE(eventSource, "e.id > ? and e.id <= ?") + fmt.Sprintf(`
 	insert into usage_monitoring_api_key_daily_rollups_v1 (
 		structure_revision, bucket_ms, api_key_hash, account_snapshot,
@@ -269,7 +279,5 @@ func upsertAPIKeyBatch(ctx context.Context, tx *sql.Tx, table string, bucketSize
 		usage.LongContextInputTokenThreshold,
 		bucketSize,
 	)
-	query = strings.ReplaceAll(query, "usage_monitoring_api_key_daily_rollups_v1", table)
-	_, err := tx.ExecContext(ctx, query, afterID, throughID, revision, nowMS)
-	return err
+	return strings.ReplaceAll(query, "usage_monitoring_api_key_daily_rollups_v1", table)
 }
