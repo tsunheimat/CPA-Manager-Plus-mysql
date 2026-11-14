@@ -5,6 +5,8 @@ COPY package*.json ./
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci
 COPY apps/web ./apps/web
+# TypeScript parity tests import the canonical Go fixture.
+COPY apps/manager-server/internal/service/monitoring/testdata/anomaly_basis_v1.json ./apps/manager-server/internal/service/monitoring/testdata/anomaly_basis_v1.json
 WORKDIR /app/apps/web
 RUN VERSION=$VERSION npm run build
 

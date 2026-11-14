@@ -107,6 +107,38 @@ describe('GitHub Actions workflow integrity', () => {
     expect(builderVersion).toBe(moduleVersion);
   });
 
+  it('copies the shared anomaly fixture to its imported path before the web image build', () => {
+    const fixturePath =
+      'apps/manager-server/internal/service/monitoring/testdata/anomaly_basis_v1.json';
+    const testPath = 'apps/web/src/features/usage-analytics/usageAnalyticsAnomalies.test.ts';
+    const testSource = readFileSync(path.join(repoRoot, testPath), 'utf8');
+    const fixtureImport = testSource.match(
+      /^import \w+ from ['"]([^'"]+\/anomaly_basis_v1\.json)['"];$/m
+    )?.[1];
+
+    expect(fixtureImport).toBeDefined();
+    expect(path.posix.join(path.posix.dirname(testPath), fixtureImport)).toBe(fixturePath);
+    expect(existsSync(path.join(repoRoot, fixturePath))).toBe(true);
+
+    const dockerfile = readFileSync(path.join(repoRoot, 'Dockerfile.manager-server'), 'utf8');
+    const webBuild = dockerfile
+      .split(/(?=^FROM )/m)
+      .find((stage) => /^FROM [^\n]+ AS web-build$/m.test(stage));
+    expect(webBuild).toBeDefined();
+
+    const lines = webBuild.split('\n').map((line) => line.trim());
+    const fixtureCopy = lines.indexOf(`COPY ${fixturePath} ./${fixturePath}`);
+    const build = lines.indexOf('RUN VERSION=$VERSION npm run build');
+    expect(fixtureCopy).toBeGreaterThan(-1);
+    expect(build).toBeGreaterThan(fixtureCopy);
+    expect(
+      lines
+        .slice(0, fixtureCopy)
+        .filter((line) => line.startsWith('WORKDIR '))
+        .at(-1)
+    ).toBe('WORKDIR /app');
+  });
+
   it.each(['build', 'deploy'])('excludes forks from the Pages %s job', (jobName) => {
     const workflow = parse(readWorkflow('demo-pages.yml'));
     const job = workflow.jobs[jobName];
