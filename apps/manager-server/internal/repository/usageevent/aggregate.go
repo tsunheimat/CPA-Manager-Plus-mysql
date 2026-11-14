@@ -1,9 +1,11 @@
 package usageevent
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
@@ -48,6 +50,22 @@ type ModelStat struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	TotalTokens         int64
+}
+
+// SortModelStats orders unlimited results by calls, then the complete pricing
+// grain. Compare full fields in Go, independent of MySQL TEXT sort prefixes or
+// delimiter collisions. Limited readers retain their total-model ranking instead.
+func SortModelStats(stats []ModelStat) {
+	slices.SortFunc(stats, func(a, b ModelStat) int {
+		return cmp.Or(
+			cmp.Compare(b.Calls, a.Calls),
+			cmp.Compare(a.Model, b.Model),
+			cmp.Compare(a.BillingModel, b.BillingModel),
+			cmp.Compare(a.PricingModel, b.PricingModel),
+			cmp.Compare(a.ContextThresholdTokens, b.ContextThresholdTokens),
+			cmp.Compare(a.ServiceTier, b.ServiceTier),
+		)
+	})
 }
 
 // RecentFailure holds the columns required to display a recent failure entry.
@@ -174,9 +192,7 @@ func (r *repository) TopModelsBetween(ctx context.Context, fromMs, toMs int64, l
 	return stats, rows.Err()
 }
 
-var modelStatsSQL = pricingBandedUsageEventsCTEWithBaseFilter("timestamp_ms >= ? and timestamp_ms < ?", pricingModelFields) + "\n" + modelPricingBandsSQL + `
-order by calls desc, model, billing_model, pricing_model_value,
-coalesce(service_tier, ''), context_threshold_tokens_value`
+var modelStatsSQL = pricingBandedUsageEventsCTEWithBaseFilter("timestamp_ms >= ? and timestamp_ms < ?", pricingModelFields) + "\n" + modelPricingBandsSQL
 
 // ModelStatsBetween returns per-model totals for all models in a window.
 func (r *repository) ModelStatsBetween(ctx context.Context, fromMs, toMs int64) ([]ModelStat, error) {
@@ -214,6 +230,7 @@ func (r *repository) ModelStatsBetween(ctx context.Context, fromMs, toMs int64) 
 		}
 		stats = append(stats, stat)
 	}
+	SortModelStats(stats)
 	return stats, rows.Err()
 }
 

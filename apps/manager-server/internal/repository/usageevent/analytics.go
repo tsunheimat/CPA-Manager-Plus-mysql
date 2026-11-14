@@ -530,7 +530,7 @@ func (r *repository) ModelStatsWithFilter(ctx context.Context, filter AnalyticsF
 		query = topModelPricingBandsSQL(where)
 		args = topModelPricingArgs(args, limit)
 	} else {
-		query = pricingBandedUsageEventsCTEWithBaseFilter(where, pricingModelFields) + "\n" + modelPricingBandsSQL + "\norder by calls desc"
+		query = pricingBandedUsageEventsCTEWithBaseFilter(where, pricingModelFields) + "\n" + modelPricingBandsSQL
 	}
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -565,6 +565,9 @@ func (r *repository) ModelStatsWithFilter(ctx context.Context, filter AnalyticsF
 			return nil, err
 		}
 		stats = append(stats, stat)
+	}
+	if limit <= 0 {
+		SortModelStats(stats)
 	}
 	return stats, rows.Err()
 }

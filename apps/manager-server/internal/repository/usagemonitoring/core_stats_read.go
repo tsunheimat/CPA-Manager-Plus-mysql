@@ -3,9 +3,9 @@ package usagemonitoring
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"sort"
 	"strings"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 )
 
 type dailyAggregateAccumulator struct {
@@ -326,25 +326,6 @@ func sortedDailyModelStats(grouped map[dailyModelStatKey]*ModelStat) []ModelStat
 	for _, row := range grouped {
 		result = append(result, *row)
 	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Calls != result[j].Calls {
-			return result[i].Calls > result[j].Calls
-		}
-		left := fmt.Sprintf("%s\x00%s\x00%s\x00%020d\x00%s",
-			result[i].Model,
-			result[i].BillingModel,
-			result[i].PricingModel,
-			result[i].ContextThresholdTokens,
-			result[i].ServiceTier,
-		)
-		right := fmt.Sprintf("%s\x00%s\x00%s\x00%020d\x00%s",
-			result[j].Model,
-			result[j].BillingModel,
-			result[j].PricingModel,
-			result[j].ContextThresholdTokens,
-			result[j].ServiceTier,
-		)
-		return left < right
-	})
+	usageevent.SortModelStats(result)
 	return result
 }
