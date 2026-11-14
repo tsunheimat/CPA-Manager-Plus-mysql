@@ -106,8 +106,14 @@ func TestAnalyticsControllerReturns503And504WithRequestCorrelation(t *testing.T)
 			t.Error(err)
 		}
 	}()
+	// A priced section keeps the admitted request blocked on the price writer.
+	pricedRequest := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/v0/management/monitoring/analytics", bytes.NewBufferString(`{"from_ms":1,"to_ms":2,"include":{"summary":true,"summary_profile":"compact"}}`))
+		r.Header.Set("Authorization", "Bearer "+analyticsAdminKey)
+		return r
+	}
 	first := make(chan *httptest.ResponseRecorder, 1)
-	go func() { w := httptest.NewRecorder(); h.Handle(w, analyticsHTTPRequest()); first <- w }()
+	go func() { w := httptest.NewRecorder(); h.Handle(w, pricedRequest()); first <- w }()
 	deadline := time.After(2 * time.Second)
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
@@ -119,7 +125,7 @@ func TestAnalyticsControllerReturns503And504WithRequestCorrelation(t *testing.T)
 		}
 	}
 	overload := httptest.NewRecorder()
-	h.Handle(overload, analyticsHTTPRequest())
+	h.Handle(overload, pricedRequest())
 	if overload.Code != 503 || overload.Header().Get("Retry-After") != "1" {
 		t.Fatalf("overload=%d %s", overload.Code, overload.Body.String())
 	}

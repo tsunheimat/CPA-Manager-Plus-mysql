@@ -180,7 +180,7 @@ func TestAnalyticsTotalDeadlineIncludesPriceGate(t *testing.T) {
 	go func() { writerDone <- st.SaveModelPrices(context.Background(), nil) }()
 	<-prices.entered
 	svc := NewWithOptions(st, Options{Timeout: 20 * time.Millisecond})
-	_, err := svc.Analytics(context.Background(), Request{FromMS: 1, ToMS: 2})
+	_, err := svc.Analytics(context.Background(), Request{FromMS: 1, ToMS: 2, Include: Include{Summary: true, SummaryProfile: "compact"}})
 	close(release)
 	if writerErr := <-writerDone; writerErr != nil {
 		t.Fatal(writerErr)
